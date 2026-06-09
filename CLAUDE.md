@@ -8,7 +8,7 @@ A generic, manifest-driven [MCP](https://modelcontextprotocol.io) server for Git
 
 The design splits two jobs that want different owners:
 
-- **Mechanism** (this server's job): fetch a repository's issues/PRs via the `gh` CLI, apply that repository's conventions, reduce a large raw landscape to compact structured facts. Deterministic.
+- **Mechanism** (this server's job): fetch a repository's issues and PRs from the GitHub GraphQL API (using the operator's `gh` credentials), apply that repository's conventions, reduce a large raw landscape to compact structured facts. Deterministic.
 - **Judgment and presentation** (the caller's job): decide how to narrate and present the facts. The server renders nothing of its own.
 
 Conventions (label taxonomy, staleness thresholds, milestone format, work-stream ordering) are supplied **declaratively** through a per-repo manifest, deep-merged over generic defaults — so a single server serves any repository without code changes. Repo targeting is explicit (`owner/repo`); there is no ambient default repository.
@@ -17,14 +17,17 @@ See `README.md` for the full design.
 
 ## Status and layout
 
-The repository is scaffolded and builds a runnable binary, but the server exposes **no tools yet** — it constructs, serves over stdio, and classifies shutdown. The `backlog_review` tool, `gh` fetching, and manifest resolution arrive in their own changes.
+The server exposes the `backlog_review` tool: given an explicit `owner/repo`, it resolves that repo's manifest conventions, fetches open issues from the GitHub GraphQL API, and returns compact staleness facts. The remaining issue-centric reductions, the mirrored Claude/Cursor render skills, and milestone-track parsing arrive in their own changes.
 
 ```
 cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
-internal/server/      # MCP server construction and the tool contract
+internal/server/      # MCP server construction, the tool contract, and backlog_review
+internal/manifest/    # per-repo convention resolution (deep-merged over generic defaults)
+internal/github/      # in-process GitHub GraphQL data layer (gh-sourced credentials)
+internal/backlog/     # the staleness reduction (pure functions, structured facts)
 ```
 
-Manifest loading, `gh` fetchers, and the issue-reduction logic arrive in their own changes and will add packages (under `internal/`) as that code lands. Do not create those packages speculatively — add them when a change needs them.
+Further reductions and the packages they need arrive in their own changes — do not create packages speculatively; add them when a change needs them.
 
 ## Build, test, lint
 
@@ -61,7 +64,7 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 - **MCP over stdio is JSON-RPC.** stdout carries the protocol and nothing else — send diagnostics to stderr (`log`), never to stdout. Exiting on stdin EOF is normal shutdown.
 - **The server reduces; the caller renders.** Tools return compact structured facts, not prose or pre-rendered markdown. Presentation and narrative judgment live in the calling agent. This boundary is load-bearing — it is what lets one server serve many callers (Claude, Cursor) and many rendering styles.
 - **Conventions are declarative, not hardcoded.** A repository's label taxonomy, thresholds, and milestone format come from a per-repo manifest deep-merged over generic defaults — never from Go constants. This is what makes the server generic across repositories.
-- **GitHub access is via the `gh` CLI**, shelling out rather than calling the API directly, so the server inherits the user's existing `gh` authentication.
+- **GitHub data is fetched in-process from the GraphQL API**, with credentials sourced from the operator's `gh` CLI (`gh auth token`) — so the server inherits existing `gh` authentication (no separate token to configure) without a subprocess per fetch. `gh` is shelled out to only for that credential bootstrap.
 
 ## Conventions in this repo
 
