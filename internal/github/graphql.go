@@ -14,6 +14,10 @@ const (
 	defaultEndpoint = "https://api.github.com/graphql"
 	pageSize        = 100
 	httpTimeout     = 30 * time.Second
+	// userAgent identifies overstory to GitHub. The API expects a descriptive
+	// User-Agent; relying on the net/http default risks being throttled or
+	// blocked.
+	userAgent = "overstory"
 )
 
 // issuesQuery fetches a page of open issues newest-activity-last. owner/name are
@@ -120,6 +124,7 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 	}
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, doErr := f.client.Do(req)
 	if doErr != nil {
