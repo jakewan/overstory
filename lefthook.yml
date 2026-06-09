@@ -1,0 +1,20 @@
+pre-commit:
+  parallel: true
+  commands:
+    go-fmt:
+      glob: "**/*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+      skip: merge
+
+pre-push:
+  piped: true
+  commands:
+    go-lint:
+      priority: 1
+      run: just lint
+      skip: merge
+    go-test:
+      priority: 2
+      run: just test
+      skip: merge

@@ -1,0 +1,76 @@
+# overstory — Agent Guide
+
+This file orients an AI agent (or a new contributor) working in this repository. It is self-contained: everything needed to work here is described below or in the linked in-repo files.
+
+## What overstory is
+
+A generic, manifest-driven [MCP](https://modelcontextprotocol.io) server for GitHub project management. It surveys a repository's issue and PR landscape from above — hot spots, stale pockets, whole-project trends — and returns compact structured facts for the calling agent to render.
+
+The design splits two jobs that want different owners:
+
+- **Mechanism** (this server's job): fetch a repository's issues/PRs via the `gh` CLI, apply that repository's conventions, reduce a large raw landscape to compact structured facts. Deterministic.
+- **Judgment and presentation** (the caller's job): decide how to narrate and present the facts. The server renders nothing of its own.
+
+Conventions (label taxonomy, staleness thresholds, milestone format, work-stream ordering) are supplied **declaratively** through a per-repo manifest, deep-merged over generic defaults — so a single server serves any repository without code changes. Repo targeting is explicit (`owner/repo`); there is no ambient default repository.
+
+See `README.md` for the full design.
+
+## Status and layout
+
+The repository is scaffolded and builds a runnable binary, but the server exposes **no tools yet** — it constructs, serves over stdio, and classifies shutdown. The `backlog_review` tool, `gh` fetching, and manifest resolution arrive in their own changes.
+
+```
+cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
+internal/server/      # MCP server construction and the tool contract
+```
+
+Manifest loading, `gh` fetchers, and the issue-reduction logic arrive in their own changes and will add packages (under `internal/`) as that code lands. Do not create those packages speculatively — add them when a change needs them.
+
+## Build, test, lint
+
+Tool versions are managed by [mise](https://mise.jdx.dev/) (`mise.toml`); tasks run through [just](https://github.com/casey/just) (`justfile`). One-time setup:
+
+```sh
+mise install     # install pinned Go, golangci-lint, just, lefthook
+just hooks       # install git hooks (lefthook)
+```
+
+Everyday commands:
+
+```sh
+just build       # build the binary to bin/
+just test        # go test ./...
+just lint        # golangci-lint run ./...
+just fmt         # gofmt -w .
+just tidy        # go mod tidy
+just verify      # go mod verify
+just install     # build and install to ~/.local/bin
+```
+
+Formatting is enforced by golangci-lint's configured formatters (`gofmt`, `goimports`) — there is no separate format-check step. The `lefthook` hooks run formatting on commit and lint/test on push.
+
+## Development approach
+
+This project uses [BDD][bdd]-style/outside-in [TDD][tdd] for non-trivial code: write a failing behavior test from the caller's perspective first, let it drive the API, then implement the minimum to pass and refactor under the test's safety net. Tests use the standard `testing` package (no external frameworks), favor table-driven cases, exercise tool behavior through an in-memory MCP client/server session, and isolate filesystem state with `t.TempDir()`. Skip the ceremony for trivial work (typos, single-line fixes, documentation, these instruction files).
+
+Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when editing Go).
+
+## Key design decisions
+
+- **Single binary, daemonless.** It serves a session over stdio and exits. No background process, no network service.
+- **MCP over stdio is JSON-RPC.** stdout carries the protocol and nothing else — send diagnostics to stderr (`log`), never to stdout. Exiting on stdin EOF is normal shutdown.
+- **The server reduces; the caller renders.** Tools return compact structured facts, not prose or pre-rendered markdown. Presentation and narrative judgment live in the calling agent. This boundary is load-bearing — it is what lets one server serve many callers (Claude, Cursor) and many rendering styles.
+- **Conventions are declarative, not hardcoded.** A repository's label taxonomy, thresholds, and milestone format come from a per-repo manifest deep-merged over generic defaults — never from Go constants. This is what makes the server generic across repositories.
+- **GitHub access is via the `gh` CLI**, shelling out rather than calling the API directly, so the server inherits the user's existing `gh` authentication.
+
+## Conventions in this repo
+
+- `.claude/rules/go-practices.md` — Go authoring conventions (path-conditioned to Go files).
+- `.claude/rules/pr-conventions.md` — PR descriptions, commit format, changelog policy, branch freshness, fix-vs-defer.
+- `.claude/rules/pr-waste-patterns.md` — what counts as reviewer-distracting waste in a diff.
+- `.claude/rules/no-personal-details.md` — keep personal/identifying details out of this public repo.
+- `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
+- `.github/copilot-instructions.md` — review guidance for GitHub Copilot.
+
+[bdd]: https://en.wikipedia.org/wiki/Behavior-driven_development
+[tdd]: https://en.wikipedia.org/wiki/Test-driven_development
