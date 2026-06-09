@@ -8,6 +8,19 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/jakewan/overstory/internal/backlog"
+	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -16,12 +29,172 @@ const (
 	serverVersion = "0.1.0"
 )
 
-// New builds the overstory MCP server. It exposes no tools yet: the
-// backlog_review tool and the manifest resolution behind it arrive in their
-// own changes. When tools are added, register them with mcp.AddTool, publish
-// their input constraints (defaults, bounds, required fields) in the JSON
-// schema rather than in handler code, and guard a literal-null arguments
-// payload with a receiving middleware so schema defaults apply cleanly.
-func New() *mcp.Server {
-	return mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
+// config holds the server's resolved dependencies. Options override the
+// production defaults; tests inject fakes for hermetic coverage.
+type config struct {
+	fetcher       github.IssueFetcher
+	manifestRoot  string
+	manifestFiles []string
+	now           func() time.Time
+}
+
+// Option configures the server's dependencies.
+type Option func(*config)
+
+// WithFetcher overrides the GitHub issue fetcher (tests inject a fake).
+func WithFetcher(f github.IssueFetcher) Option {
+	return func(c *config) { c.fetcher = f }
+}
+
+// WithManifestRoot overrides the manifests.d discovery directory.
+func WithManifestRoot(dir string) Option {
+	return func(c *config) { c.manifestRoot = dir }
+}
+
+// WithManifestFiles overrides discovery with an explicit ordered file list,
+// taking precedence over the directory.
+func WithManifestFiles(files []string) Option {
+	return func(c *config) { c.manifestFiles = files }
+}
+
+// WithClock overrides the wall clock used to measure staleness (tests inject a
+// fixed time for determinism).
+func WithClock(now func() time.Time) Option {
+	return func(c *config) { c.now = now }
+}
+
+// New builds the overstory MCP server and registers the backlog_review tool.
+// With no options it uses production defaults: issues fetched via the GitHub
+// GraphQL API (credentials from gh), manifests discovered from
+// $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
+// wall clock. This is the one place process environment is read.
+func New(opts ...Option) *mcp.Server {
+	cfg := config{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.fetcher == nil {
+		cfg.fetcher = github.NewGraphQLFetcher()
+	}
+	if cfg.now == nil {
+		cfg.now = time.Now
+	}
+
+	root, files := cfg.manifestRoot, cfg.manifestFiles
+	if root == "" && len(files) == 0 {
+		if files = manifestFilesFromEnv(); len(files) == 0 {
+			root = defaultManifestRoot()
+		}
+	}
+	resolver := manifest.NewResolver(root, files)
+
+	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
+	mcp.AddTool(srv, backlogReviewTool(), backlogReviewHandler(resolver, cfg.fetcher, cfg.now))
+	return srv
+}
+
+// manifestFilesFromEnv parses OVERSTORY_MANIFESTS as a colon-separated file
+// list, treating empty-after-trim as unset.
+func manifestFilesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("OVERSTORY_MANIFESTS"))
+	if raw == "" {
+		return nil
+	}
+	var files []string
+	for _, p := range strings.Split(raw, ":") {
+		if p = strings.TrimSpace(p); p != "" {
+			files = append(files, p)
+		}
+	}
+	return files
+}
+
+// defaultManifestRoot resolves the XDG drop-in directory, falling back to
+// ~/.config when XDG_CONFIG_HOME is unset. An empty result yields generic
+// defaults rather than an error.
+func defaultManifestRoot() string {
+	base := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME"))
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "overstory", "manifests.d")
+}
+
+// backlogReviewInput is the tool's decoded input. Constraints (required fields,
+// limit default and bounds) live in the published schema, not here.
+type backlogReviewInput struct {
+	Owner string `json:"owner"`
+	Repo  string `json:"repo"`
+	Limit int    `json:"limit"`
+}
+
+// backlogReviewTool publishes the input contract via a hand-written schema. The
+// installed jsonschema-go infers neither defaults nor bounds from struct tags
+// (and would mark every field required), so the schema is written explicitly:
+// owner/repo required, limit optional with a default and 1..100 bounds applied
+// by the SDK before the handler runs.
+func backlogReviewTool() *mcp.Tool {
+	minLimit, maxLimit := 1.0, 100.0
+	return &mcp.Tool{
+		Name:        "backlog_review",
+		Description: "Survey a GitHub repository's open-issue backlog for staleness and return compact structured facts (an exact open count, inactivity-band counts, and the stalest issues) for the caller to render.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"owner": {Type: "string", Description: "repository owner (user or org)"},
+				"repo":  {Type: "string", Description: "repository name"},
+				"limit": {
+					Type:        "integer",
+					Description: "maximum number of stale issues to list",
+					Default:     json.RawMessage("20"),
+					Minimum:     &minLimit,
+					Maximum:     &maxLimit,
+				},
+			},
+			Required: []string{"owner", "repo"},
+		},
+	}
+}
+
+// backlogReviewHandler resolves the repo's conventions, fetches its open issues,
+// and reduces them to staleness facts. Errors are returned plain so the SDK
+// surfaces them as tool errors (IsError); a manifest error names a file, so it
+// is logged to stderr and replaced with a repo-named message on the caller
+// channel.
+func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.StalenessFacts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.StalenessFacts, error) {
+		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
+		if owner == "" || repo == "" {
+			return nil, backlog.StalenessFacts{}, fmt.Errorf("owner and repo are required")
+		}
+		ownerRepo := owner + "/" + repo
+
+		cfg, matched, err := resolver.Resolve(ownerRepo)
+		if err != nil {
+			log.Printf("overstory: manifest resolution for %s: %v", ownerRepo, err)
+			return nil, backlog.StalenessFacts{}, fmt.Errorf("manifest configuration error for %s", ownerRepo)
+		}
+
+		result, err := fetcher.ListOpenIssues(ctx, ownerRepo, cfg.Staleness.FetchLimit)
+		if err != nil {
+			return nil, backlog.StalenessFacts{}, fmt.Errorf("fetching issues for %s: %w", ownerRepo, err)
+		}
+
+		facts := backlog.ReduceStaleness(result.Issues, result.TotalOpen, cfg.Staleness.ThresholdDays, in.Limit, now())
+		facts.Repo = ownerRepo
+		facts.FetchLimit = cfg.Staleness.FetchLimit
+		facts.ThresholdSource = thresholdSource(matched)
+		return nil, facts, nil
+	}
+}
+
+func thresholdSource(matched bool) string {
+	if matched {
+		return "manifest"
+	}
+	return "default"
 }

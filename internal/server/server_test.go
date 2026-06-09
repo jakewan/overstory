@@ -39,12 +39,11 @@ func connect(t *testing.T, srv *mcp.Server) *mcp.ClientSession {
 	return clientSession
 }
 
-// TestServerExposesNoToolsYet pins the bootstrap contract: the server
-// constructs, completes the MCP initialize handshake over a real client/server
-// session, and registers no tools. It is the end-to-end wiring proof and the
-// anchor the first real tool's test will extend — when backlog_review lands,
-// this expectation changes with it.
-func TestServerExposesNoToolsYet(t *testing.T) {
+// TestServerExposesBacklogReview pins the tool contract: the server constructs,
+// completes the MCP initialize handshake over a real client/server session, and
+// registers exactly the backlog_review tool. It is the end-to-end wiring proof;
+// the tool's behavior is covered in backlog_review_test.go.
+func TestServerExposesBacklogReview(t *testing.T) {
 	ctx := context.Background()
 	cs := connect(t, New())
 
@@ -52,7 +51,10 @@ func TestServerExposesNoToolsYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(res.Tools) != 0 {
-		t.Errorf("ListTools returned %d tools, want 0", len(res.Tools))
+	if len(res.Tools) != 1 {
+		t.Fatalf("ListTools returned %d tools, want 1", len(res.Tools))
+	}
+	if got := res.Tools[0].Name; got != "backlog_review" {
+		t.Errorf("tool name = %q, want backlog_review", got)
 	}
 }
