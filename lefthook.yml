@@ -1,9 +1,12 @@
 pre-commit:
   parallel: true
   commands:
-    go-fmt:
+    go-format:
       glob: "**/*.go"
-      run: gofmt -w {staged_files}
+      # golangci-lint fmt applies the formatters configured in .golangci.yml
+      # (gofmt + goimports) — the same set CI enforces — so a commit can't pass
+      # the hook with import ordering that would later fail the lint job.
+      run: golangci-lint fmt {staged_files}
       stage_fixed: true
       skip: merge
 
