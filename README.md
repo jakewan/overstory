@@ -8,7 +8,8 @@ project's conventions (label taxonomy, staleness thresholds, milestone format, w
 ordering) are supplied declaratively through a per-repo manifest, so a single server serves any
 repository without code changes.
 
-The server reduces and computes; the caller renders. It fetches via the `gh` CLI, applies the
+The server reduces and computes; the caller renders. It fetches issues in-process from the
+GitHub GraphQL API — authenticated with the operator's existing `gh` credentials — applies the
 repository's manifest-declared conventions, and returns compact structured facts — leaving
 narrative and presentation to the agent or tool driving it.
 
