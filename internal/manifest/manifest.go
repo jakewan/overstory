@@ -64,6 +64,7 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 
 	key := strings.ToLower(strings.TrimSpace(ownerRepo))
 	var winning *fileConfig // last file with the key wins, whole entry
+	var winningFile string  // its source path, for naming validation errors
 	for _, p := range paths {
 		entries, lerr := loadFile(p)
 		if lerr != nil {
@@ -72,6 +73,7 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 		if fc, ok := entries[key]; ok {
 			entry := fc
 			winning = &entry
+			winningFile = p
 		}
 	}
 
@@ -80,7 +82,7 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 	if matched {
 		merged = mergeConfig(merged, *winning)
 	}
-	if verr := validate(merged, ownerRepo); verr != nil {
+	if verr := validate(merged, ownerRepo, winningFile); verr != nil {
 		return Config{}, false, verr
 	}
 	return merged, matched, nil
@@ -156,12 +158,12 @@ func mergeConfig(base Config, o fileConfig) Config {
 	return base
 }
 
-func validate(c Config, ownerRepo string) error {
+func validate(c Config, ownerRepo, file string) error {
 	if c.Staleness.ThresholdDays <= 0 {
-		return fmt.Errorf("manifest for %q: staleness.thresholdDays must be > 0, got %d", ownerRepo, c.Staleness.ThresholdDays)
+		return fmt.Errorf("manifest %q for %q: staleness.thresholdDays must be > 0, got %d", file, ownerRepo, c.Staleness.ThresholdDays)
 	}
 	if c.Staleness.FetchLimit <= 0 {
-		return fmt.Errorf("manifest for %q: staleness.fetchLimit must be > 0, got %d", ownerRepo, c.Staleness.FetchLimit)
+		return fmt.Errorf("manifest %q for %q: staleness.fetchLimit must be > 0, got %d", file, ownerRepo, c.Staleness.FetchLimit)
 	}
 	return nil
 }
