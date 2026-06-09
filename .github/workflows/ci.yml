@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  # dorny/paths-filter reads the PR's changed-file list via the API on
+  # pull_request events.
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Gate the Go jobs on whether the change can affect a Go build/lint outcome.
+  # A job skipped via job-level `if:` is reported as "skipped" = passing for
+  # required status checks, so a doc-only PR stays mergeable once test/lint are
+  # required — without the workflow-level `paths:` filter that would leave
+  # required checks permanently pending.
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.filter.outputs.go }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            go:
+              - '**/*.go'
+              - 'go.mod'
+              - 'go.sum'
+              - '.golangci.yml'
+              - '.github/workflows/ci.yml'
+
+  test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # go-version-file keeps the Go version single-sourced in go.mod;
+      # setup-go@v6 enables module caching by default.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go build ./...
+
+      - run: go test -race ./...
+
+  lint:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # golangci-lint-action needs the version explicitly; this is the one
+      # intentional duplication of the pin in mise.toml. Keep the two in lockstep.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2

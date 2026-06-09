@@ -1,0 +1,8 @@
+[tools]
+go = "1.26.4"
+# The golangci-lint version is pinned identically here and in the CI workflow's
+# golangci-lint-action `version:` — treat them as one atomic value so local and
+# CI lint run the same binary against the same config schema.
+golangci-lint = "2.12.2"
+just = "1.52.0"
+lefthook = "2.1.9"
