@@ -32,8 +32,9 @@ In priority order:
 1. **MCP stdio safety** — nothing but protocol JSON-RPC on stdout (see above).
 2. **Correctness and edge cases** — logic errors, nil dereferences, off-by-one, unhandled inputs (empty result sets, missing manifest entries, malformed or error GraphQL responses — including an `errors` array returned on an HTTP 200). Result-set limits must be surfaced, never silently truncated.
 3. **Error handling** — errors wrapped with context using `%w` (`fmt.Errorf("doing X: %w", err)`); resources cleaned up on error paths (`defer`); `context.Context` passed as the first parameter.
-4. **Test coverage** — new production `.go` files should have `_test.go` coverage. Tests should describe behavior from the caller's perspective (what), not mirror implementation (how), and cover invalid input and error paths, not just the happy path.
-5. **Focus** — every change should serve the PR's stated purpose; flag unrelated drive-by changes.
+4. **Credential safety** — the GitHub token (sourced from `gh auth token`) is a secret. Flag any code path that logs it, folds it into an error message, or otherwise writes it where it could reach the caller-facing result or stderr.
+5. **Test coverage** — new production `.go` files should have `_test.go` coverage. Tests should describe behavior from the caller's perspective (what), not mirror implementation (how), and cover invalid input and error paths, not just the happy path.
+6. **Focus** — every change should serve the PR's stated purpose; flag unrelated drive-by changes.
 
 ## Personal-details check
 
