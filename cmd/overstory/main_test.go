@@ -26,6 +26,13 @@ func (nopWriteCloser) Close() error { return nil }
 func TestRunReturnsNilOnPeerDisconnect(t *testing.T) {
 	ctx := context.Background()
 	pr, pw := io.Pipe()
+	// pr has no OS handle to leak, but closing what we open keeps the test's
+	// resource handling symmetric with its explicit pw.Close below.
+	t.Cleanup(func() {
+		if err := pr.Close(); err != nil {
+			t.Errorf("close pipe reader: %v", err)
+		}
+	})
 	transport := &mcp.IOTransport{Reader: pr, Writer: nopWriteCloser{io.Discard}}
 
 	srv := server.New()
