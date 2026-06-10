@@ -67,17 +67,54 @@ func TestResolveCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestResolveLastLoadedWins(t *testing.T) {
+func TestResolveRejectsKeySplitAcrossFiles(t *testing.T) {
 	dir := t.TempDir()
-	// Sorted glob loads a-repos before b-repos; the later file's entry wins.
+	// A repo's entry must live in exactly one file; spread across two it is a
+	// misconfiguration, not a silent last-loaded-wins.
 	writeManifest(t, dir, "a-repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 10\n")
 	writeManifest(t, dir, "b-repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 20\n")
-	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err == nil {
+		t.Fatal("Resolve accepted a key split across files, want error")
 	}
-	if cfg.Staleness.ThresholdDays != 20 {
-		t.Errorf("ThresholdDays = %d, want 20 (last-loaded wins)", cfg.Staleness.ThresholdDays)
+	if !strings.Contains(err.Error(), "a-repos.yml") || !strings.Contains(err.Error(), "b-repos.yml") {
+		t.Errorf("error %q does not name both contributing files", err)
+	}
+}
+
+func TestResolveRejectsKeySplitCaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	// Case-variant keys in different files normalize to the same repo and must
+	// still be rejected.
+	writeManifest(t, dir, "a-repos.yml", "Acme/Widgets:\n  staleness:\n    thresholdDays: 10\n")
+	writeManifest(t, dir, "b-repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 20\n")
+	if _, _, err := NewResolver(dir, nil).Resolve("acme/widgets"); err == nil {
+		t.Error("Resolve accepted a case-variant key split across files, want error")
+	}
+}
+
+func TestResolveRejectsKeySplitAcrossExplicitFiles(t *testing.T) {
+	dir := t.TempDir()
+	// Detection applies in OVERSTORY_MANIFESTS mode too, not just glob discovery.
+	writeManifest(t, dir, "a.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 10\n")
+	writeManifest(t, dir, "b.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 20\n")
+	files := []string{filepath.Join(dir, "a.yml"), filepath.Join(dir, "b.yml")}
+	if _, _, err := NewResolver("", files).Resolve("acme/widgets"); err == nil {
+		t.Error("Resolve accepted a key split across explicit files, want error")
+	}
+}
+
+func TestResolveRejectsDuplicateKeyWithinFile(t *testing.T) {
+	dir := t.TempDir()
+	// Two case-variant keys in one file collide on normalization; the second
+	// would silently overwrite the first, so reject at parse time.
+	writeManifest(t, dir, "repos.yml", "Acme/Widgets:\n  staleness:\n    thresholdDays: 10\nacme/widgets:\n  staleness:\n    thresholdDays: 20\n")
+	_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err == nil {
+		t.Fatal("Resolve accepted a duplicate key within one file, want error")
+	}
+	if !strings.Contains(err.Error(), "repos.yml") {
+		t.Errorf("error %q does not name the offending file", err)
 	}
 }
 
@@ -123,10 +160,22 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 }
 
 func TestResolveRejectsMalformedKey(t *testing.T) {
-	dir := t.TempDir()
-	writeManifest(t, dir, "repos.yml", "justaname:\n  staleness:\n    thresholdDays: 45\n")
-	if _, _, err := NewResolver(dir, nil).Resolve("justaname"); err == nil {
-		t.Error("Resolve accepted a malformed repo key, want error")
+	// Whitespace cases matter: an owner/repo carries no spaces, so a key like
+	// "acme /widgets" would otherwise normalize with the space kept and never
+	// match a lookup — a silent fallback to defaults.
+	for _, tc := range []struct{ name, key string }{
+		{"no slash", "justaname"},
+		{"space before slash", "acme /widgets"},
+		{"space after slash", "acme/ widgets"},
+		{"internal space", "ac me/widgets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.key+":\n  staleness:\n    thresholdDays: 45\n")
+			if _, _, err := NewResolver(dir, nil).Resolve(tc.key); err == nil {
+				t.Error("Resolve accepted a malformed repo key, want error")
+			}
+		})
 	}
 }
 

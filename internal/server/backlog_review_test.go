@@ -45,6 +45,22 @@ func writeManifestDir(t *testing.T, contents string) string {
 	return root
 }
 
+// writeManifestFiles writes several named manifest files into a fresh
+// manifests.d, for cases where discovery across multiple files matters.
+func writeManifestFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "manifests.d")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir manifests.d: %v", err)
+	}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write manifest %s: %v", name, err)
+		}
+	}
+	return root
+}
+
 // callBacklogReview drives the tool through the in-memory MCP session and
 // decodes the structured facts. It fails the test on transport errors but
 // returns the raw result so error-path cases can assert on IsError.
@@ -173,6 +189,33 @@ func TestBacklogReviewRepoNotFound(t *testing.T) {
 	}
 	if msg := contentText(res); !strings.Contains(msg, "ghost/missing") {
 		t.Errorf("error message %q does not name the repo ghost/missing", msg)
+	}
+}
+
+// TestBacklogReviewRejectsSplitManifestKey pins the misconfiguration path: when a
+// repo's key is defined in more than one discovered manifest file, the tool fails
+// loud rather than silently dropping an entry. The caller channel names only the
+// repo — the contributing file paths stay on the server's stderr log.
+func TestBacklogReviewRejectsSplitManifestKey(t *testing.T) {
+	root := writeManifestFiles(t, map[string]string{
+		"a-repos.yml": "acme/widgets:\n  staleness:\n    thresholdDays: 10\n",
+		"b-repos.yml": "acme/widgets:\n  staleness:\n    thresholdDays: 20\n",
+	})
+	srv := New(WithFetcher(fakeFetcher{}), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})
+
+	if !res.IsError {
+		t.Fatalf("IsError = false, want true for a key split across files")
+	}
+	msg := contentText(res)
+	if !strings.Contains(msg, "acme/widgets") {
+		t.Errorf("error message %q does not name the repo acme/widgets", msg)
+	}
+	// The contributing file paths must stay on the server's stderr log, never the
+	// caller channel — assert the leak doesn't regress.
+	if strings.Contains(msg, "a-repos.yml") || strings.Contains(msg, "b-repos.yml") {
+		t.Errorf("error message %q leaks manifest file paths to the caller", msg)
 	}
 }
 

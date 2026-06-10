@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/goccy/go-yaml"
 )
@@ -63,8 +64,9 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 	}
 
 	key := strings.ToLower(strings.TrimSpace(ownerRepo))
-	var winning *fileConfig // last file with the key wins, whole entry
-	var winningFile string  // its source path, for naming validation errors
+	var winning *fileConfig    // the single matching entry, merged over defaults
+	var winningFile string     // its source path, for naming validation errors
+	var carryingFiles []string // every file declaring the key, to catch a split entry
 	for _, p := range paths {
 		entries, lerr := loadFile(p)
 		if lerr != nil {
@@ -74,7 +76,16 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 			entry := fc
 			winning = &entry
 			winningFile = p
+			carryingFiles = append(carryingFiles, p)
 		}
+	}
+	// A repo's entry must live in exactly one file. Spread across several, the old
+	// behavior silently kept only the last; fail loud instead so the operator can
+	// consolidate rather than lose a convention invisibly.
+	if len(carryingFiles) > 1 {
+		return Config{}, false, fmt.Errorf(
+			"manifest key %q is defined in multiple files (%s); define it in exactly one",
+			ownerRepo, strings.Join(carryingFiles, ", "))
 	}
 
 	merged := Defaults()
@@ -108,7 +119,7 @@ func (r *Resolver) discover() ([]string, error) {
 		}
 		paths = append(paths, matches...)
 	}
-	sort.Strings(paths) // deterministic order so last-loaded-wins is stable
+	sort.Strings(paths) // deterministic order so a duplicate-key error names files stably
 	return paths, nil
 }
 
@@ -137,11 +148,21 @@ func loadFile(path string) (map[string]fileConfig, error) {
 	}
 	normalized := make(map[string]fileConfig, len(entries))
 	for k, v := range entries {
-		parts := strings.Split(strings.TrimSpace(k), "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		trimmed := strings.TrimSpace(k)
+		parts := strings.Split(trimmed, "/")
+		// owner/repo carries no internal whitespace; a key like "acme /widgets"
+		// would otherwise normalize with the space kept and never match a lookup,
+		// silently falling back to defaults.
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
 			return nil, fmt.Errorf("manifest %q: malformed repo key %q (want \"owner/repo\")", path, k)
 		}
-		normalized[strings.ToLower(strings.TrimSpace(k))] = v
+		// Keys are case-insensitive, so two case-variant keys collide here; the
+		// second would silently overwrite the first. Reject rather than drop one.
+		lk := strings.ToLower(trimmed)
+		if _, dup := normalized[lk]; dup {
+			return nil, fmt.Errorf("manifest %q: key %q is defined more than once (keys are case-insensitive)", path, k)
+		}
+		normalized[lk] = v
 	}
 	return normalized, nil
 }
