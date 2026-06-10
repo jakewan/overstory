@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/goccy/go-yaml"
 )
@@ -147,13 +148,17 @@ func loadFile(path string) (map[string]fileConfig, error) {
 	}
 	normalized := make(map[string]fileConfig, len(entries))
 	for k, v := range entries {
-		parts := strings.Split(strings.TrimSpace(k), "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		trimmed := strings.TrimSpace(k)
+		parts := strings.Split(trimmed, "/")
+		// owner/repo carries no internal whitespace; a key like "acme /widgets"
+		// would otherwise normalize with the space kept and never match a lookup,
+		// silently falling back to defaults.
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.IndexFunc(trimmed, unicode.IsSpace) >= 0 {
 			return nil, fmt.Errorf("manifest %q: malformed repo key %q (want \"owner/repo\")", path, k)
 		}
 		// Keys are case-insensitive, so two case-variant keys collide here; the
 		// second would silently overwrite the first. Reject rather than drop one.
-		lk := strings.ToLower(strings.TrimSpace(k))
+		lk := strings.ToLower(trimmed)
 		if _, dup := normalized[lk]; dup {
 			return nil, fmt.Errorf("manifest %q: key %q is defined more than once (keys are case-insensitive)", path, k)
 		}

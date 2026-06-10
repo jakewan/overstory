@@ -160,10 +160,22 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 }
 
 func TestResolveRejectsMalformedKey(t *testing.T) {
-	dir := t.TempDir()
-	writeManifest(t, dir, "repos.yml", "justaname:\n  staleness:\n    thresholdDays: 45\n")
-	if _, _, err := NewResolver(dir, nil).Resolve("justaname"); err == nil {
-		t.Error("Resolve accepted a malformed repo key, want error")
+	// Whitespace cases matter: an owner/repo carries no spaces, so a key like
+	// "acme /widgets" would otherwise normalize with the space kept and never
+	// match a lookup — a silent fallback to defaults.
+	for _, tc := range []struct{ name, key string }{
+		{"no slash", "justaname"},
+		{"space before slash", "acme /widgets"},
+		{"space after slash", "acme/ widgets"},
+		{"internal space", "ac me/widgets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.key+":\n  staleness:\n    thresholdDays: 45\n")
+			if _, _, err := NewResolver(dir, nil).Resolve(tc.key); err == nil {
+				t.Error("Resolve accepted a malformed repo key, want error")
+			}
+		})
 	}
 }
 
