@@ -15,15 +15,18 @@ import (
 	"time"
 )
 
-// Issue is the subset of an open issue the staleness reduction consumes.
+// Issue is the subset of an open issue the backlog reductions consume.
 // LastActivityAt is the last human-comment time (else the issue's creation),
-// derived in this layer so the reduction stays GitHub-agnostic.
+// derived in this layer so the reductions stay GitHub-agnostic. Labels are the
+// issue's label names as GitHub stores them (original casing); the deferred
+// reduction matches them case-insensitively.
 type Issue struct {
 	Number         int       `json:"number"`
 	Title          string    `json:"title"`
 	URL            string    `json:"url"`
 	CreatedAt      time.Time `json:"createdAt"`
 	LastActivityAt time.Time `json:"lastActivityAt"`
+	Labels         []string  `json:"labels"`
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open

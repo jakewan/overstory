@@ -15,12 +15,12 @@ import (
 // facts and counts only — no prose or rendering. OpenIssueCount is exact (the
 // repository's true open-issue total); the bucket and stale-issue figures are
 // computed over the fetched window, which FetchTruncated marks as a floor when
-// the backlog exceeds what was fetched.
+// the backlog exceeds what was fetched. Review-level identity (repo, generation
+// time) lives on the enclosing Facts, not here — only staleness-specific
+// provenance (ThresholdSource) stays on this block.
 type StalenessFacts struct {
-	Repo            string            `json:"repo"`
 	ThresholdDays   int               `json:"thresholdDays"`
 	ThresholdSource string            `json:"thresholdSource"`
-	GeneratedAt     time.Time         `json:"generatedAt"`
 	OpenIssueCount  int               `json:"openIssueCount"`
 	FetchedCount    int               `json:"fetchedCount"`
 	StaleCount      int               `json:"staleCount"`
@@ -62,7 +62,6 @@ type StaleIssue struct {
 func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit int, now time.Time) StalenessFacts {
 	facts := StalenessFacts{
 		ThresholdDays:  thresholdDays,
-		GeneratedAt:    now,
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
 		Limit:          listLimit,
