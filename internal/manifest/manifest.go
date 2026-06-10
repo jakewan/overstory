@@ -18,8 +18,9 @@ import (
 
 // Config is the resolved convention set for one repository.
 type Config struct {
-	Staleness StalenessConfig
-	Deferred  DeferredConfig
+	Staleness   StalenessConfig
+	Deferred    DeferredConfig
+	AreaBalance AreaBalanceConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -38,12 +39,39 @@ type DeferredConfig struct {
 	Labels []string
 }
 
+// AreaBalanceConfig holds the resolved area-balance convention: how issues are
+// classified into functional areas. An area is identified by an explicit label
+// (Labels) and/or a prefix rule (Prefixes), unioned. Unlike Deferred, this has a
+// generic default (common `area/`-style prefixes) so the reduction classifies
+// typical repos out of the box.
+type AreaBalanceConfig struct {
+	Labels   []string
+	Prefixes []PrefixRule
+}
+
+// PrefixRule identifies an area by a label prefix and delimiter (e.g. prefix
+// "area", delimiter "/"): a label matches when it starts with prefix+delimiter,
+// and the area name is the remainder. The delimiter is configurable because
+// real-world conventions are fragmented (`area/`, `area:`, `area-`).
+type PrefixRule struct {
+	Prefix    string `yaml:"prefix"`
+	Delimiter string `yaml:"delimiter"`
+}
+
 // Defaults returns the generic defaults applied when a repository has no
 // manifest entry, or for fields its entry omits. These are the one place a
 // convention value is allowed to live in Go — the fallback, not a repo's
-// declared convention.
+// declared convention. The area-balance prefixes cover the most common
+// area-label conventions so an unconfigured repo still classifies out of the box.
 func Defaults() Config {
-	return Config{Staleness: StalenessConfig{ThresholdDays: 30, FetchLimit: 200}}
+	return Config{
+		Staleness: StalenessConfig{ThresholdDays: 30, FetchLimit: 200},
+		AreaBalance: AreaBalanceConfig{Prefixes: []PrefixRule{
+			{Prefix: "area", Delimiter: "/"},
+			{Prefix: "area", Delimiter: ":"},
+			{Prefix: "area", Delimiter: "-"},
+		}},
+	}
 }
 
 // Resolver resolves merged Configs from on-disk manifests. root is the
@@ -138,8 +166,9 @@ func (r *Resolver) discover() ([]string, error) {
 // lenient by default), so a manifest also carrying config for reductions this
 // binary doesn't yet implement still resolves for staleness.
 type fileConfig struct {
-	Staleness *stalenessFile `yaml:"staleness"`
-	Deferred  *deferredFile  `yaml:"deferred"`
+	Staleness   *stalenessFile   `yaml:"staleness"`
+	Deferred    *deferredFile    `yaml:"deferred"`
+	AreaBalance *areaBalanceFile `yaml:"areaBalance"`
 }
 
 type stalenessFile struct {
@@ -152,6 +181,15 @@ type stalenessFile struct {
 // uniform — though both resolve to a not-configured reduction.
 type deferredFile struct {
 	Labels *[]string `yaml:"labels"`
+}
+
+// areaBalanceFile decodes the areaBalance block. Each list is a pointer-to-slice
+// so an omitted list inherits the default (notably the default prefixes) while an
+// explicit empty list (`prefixes: []`) disables it — the omitted-vs-empty
+// distinction the pointer idiom exists for.
+type areaBalanceFile struct {
+	Labels   *[]string     `yaml:"labels"`
+	Prefixes *[]PrefixRule `yaml:"prefixes"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -196,6 +234,16 @@ func mergeConfig(base Config, o fileConfig) Config {
 	if o.Deferred != nil && o.Deferred.Labels != nil {
 		base.Deferred.Labels = *o.Deferred.Labels
 	}
+	if o.AreaBalance != nil {
+		// Field-level: omitting prefixes inherits the default prefixes; an explicit
+		// empty list disables them.
+		if o.AreaBalance.Labels != nil {
+			base.AreaBalance.Labels = *o.AreaBalance.Labels
+		}
+		if o.AreaBalance.Prefixes != nil {
+			base.AreaBalance.Prefixes = *o.AreaBalance.Prefixes
+		}
+	}
 	return base
 }
 
@@ -205,6 +253,20 @@ func validate(c Config, ownerRepo, file string) error {
 	}
 	if c.Staleness.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: staleness.fetchLimit must be > 0, got %d", file, ownerRepo, c.Staleness.FetchLimit)
+	}
+	for _, p := range c.AreaBalance.Prefixes {
+		// An empty prefix would match every label; reject so misconfiguration fails
+		// loud rather than silently classifying everything into one area.
+		if strings.TrimSpace(p.Prefix) == "" {
+			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes has a rule with an empty prefix", file, ownerRepo)
+		}
+		// A zero-length delimiter makes the rule match any label starting with the
+		// prefix, with the real separator leaking into the area name — a broad-match
+		// footgun. The check is exact (not trim-based) because a whitespace delimiter
+		// like ": " is a legitimate separator, unlike a whitespace prefix.
+		if p.Delimiter == "" {
+			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes rule %q has an empty delimiter", file, ownerRepo, p.Prefix)
+		}
 	}
 	return nil
 }
