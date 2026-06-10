@@ -161,10 +161,10 @@ func backlogReviewTool() *mcp.Tool {
 }
 
 // backlogReviewHandler resolves the repo's conventions, fetches its open issues,
-// and reduces them to staleness facts. Errors are returned plain so the SDK
-// surfaces them as tool errors (IsError); a manifest error names a file, so it
-// is logged to stderr and replaced with a repo-named message on the caller
-// channel.
+// and reduces them to the composite backlog facts (a staleness block and a
+// deferred-issue block). Errors are returned plain so the SDK surfaces them as
+// tool errors (IsError); a manifest error names a file, so it is logged to
+// stderr and replaced with a repo-named message on the caller channel.
 func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.Facts, error) {
 		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
