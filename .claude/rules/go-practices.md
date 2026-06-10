@@ -12,7 +12,7 @@ Conventions for Go code in this repository.
 - Before relying on `errors.Is` to match a dependency's sentinel, confirm the cause is in the chain — `errors.Is` only traverses causes wrapped with `%w`, so one formatted with `%v` silently fails to match. When unsure, match a stable error code or type instead.
 - Return errors; don't `log.Fatal` outside `main`. The single acceptable fatal is the top-level server-run error in `main`.
 - Make validation errors specific and actionable — name what was wrong (which field, which repo, which manifest key) so the message stands on its own.
-- Trim whitespace before checking a required string is non-empty (`strings.TrimSpace(s) == ""`), so a blank-looking value is rejected like a missing one.
+- Trim whitespace before checking a required string is non-empty (`strings.TrimSpace(s) == ""`), so a blank-looking value is rejected like a missing one — but only when the value's whitespace is noise (names, identifiers, labels). When whitespace is *semantically meaningful* (a delimiter, separator, or format token — e.g. a `": "` colon-space delimiter), check exact emptiness (`s == ""`) instead, so a legitimate whitespace value isn't wrongly rejected.
 - `errcheck` runs with `check-blank: true`, so discarding an error to `_` is itself a lint failure — `_ = f()` does not silence an unwanted error. Capture and inspect it, or fold a secondary cleanup error into the primary one with `errors.Join(...)`. The point is to act on every error, not to suppress it.
 
 ## Context
