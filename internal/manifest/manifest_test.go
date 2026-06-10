@@ -171,6 +171,30 @@ func TestResolveRejectsEmptyAreaPrefix(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsEmptyAreaDelimiter(t *testing.T) {
+	dir := t.TempDir()
+	// A zero-length delimiter is a broad-match footgun (matches any label starting
+	// with the prefix), so reject it.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"\"\n")
+	if _, _, err := NewResolver(dir, nil).Resolve("acme/widgets"); err == nil {
+		t.Error("Resolve accepted an empty delimiter, want error")
+	}
+}
+
+func TestResolveAcceptsWhitespaceAreaDelimiter(t *testing.T) {
+	dir := t.TempDir()
+	// A whitespace-containing delimiter (e.g. colon-space, as Angular uses) is a
+	// legitimate separator and must not be rejected like the zero-length case.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \": \"\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve rejected a colon-space delimiter: %v", err)
+	}
+	if len(cfg.AreaBalance.Prefixes) != 1 || cfg.AreaBalance.Prefixes[0].Delimiter != ": " {
+		t.Errorf("AreaBalance.Prefixes = %v, want one rule with delimiter %q", cfg.AreaBalance.Prefixes, ": ")
+	}
+}
+
 func TestResolveCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "repos.yml", "Acme/Widgets:\n  staleness:\n    thresholdDays: 45\n")

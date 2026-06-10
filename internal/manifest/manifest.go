@@ -260,6 +260,13 @@ func validate(c Config, ownerRepo, file string) error {
 		if strings.TrimSpace(p.Prefix) == "" {
 			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes has a rule with an empty prefix", file, ownerRepo)
 		}
+		// A zero-length delimiter makes the rule match any label starting with the
+		// prefix, with the real separator leaking into the area name — a broad-match
+		// footgun. The check is exact (not trim-based) because a whitespace delimiter
+		// like ": " is a legitimate separator, unlike a whitespace prefix.
+		if p.Delimiter == "" {
+			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes rule %q has an empty delimiter", file, ownerRepo, p.Prefix)
+		}
 	}
 	return nil
 }
