@@ -78,8 +78,10 @@ func callBacklogReview(t *testing.T, srv *mcp.Server, args map[string]any) *mcp.
 }
 
 // decodeFacts round-trips StructuredContent (delivered to the client as untyped
-// JSON) back into the typed reduction result for assertions.
-func decodeFacts(t *testing.T, res *mcp.CallToolResult) backlog.StalenessFacts {
+// JSON) back into the typed reduction result for assertions. The tool returns
+// the composite BacklogFacts: review-level identity (repo, generatedAt) at the
+// top, each grooming signal under its own block.
+func decodeFacts(t *testing.T, res *mcp.CallToolResult) backlog.Facts {
 	t.Helper()
 	if res.IsError {
 		t.Fatalf("unexpected tool error: %s", contentText(res))
@@ -88,7 +90,7 @@ func decodeFacts(t *testing.T, res *mcp.CallToolResult) backlog.StalenessFacts {
 	if err != nil {
 		t.Fatalf("marshal structured content: %v", err)
 	}
-	var facts backlog.StalenessFacts
+	var facts backlog.Facts
 	if err := json.Unmarshal(raw, &facts); err != nil {
 		t.Fatalf("unmarshal facts: %v", err)
 	}
@@ -115,6 +117,95 @@ func issue(num int, lastActivity time.Time) github.Issue {
 	}
 }
 
+func deferredIssue(num int, lastActivity time.Time, labels ...string) github.Issue {
+	is := issue(num, lastActivity)
+	is.Labels = labels
+	return is
+}
+
+// TestBacklogReviewSurfacesDeferred pins the deferred-issue grooming signal:
+// given a repo whose manifest declares deferred labels, the tool surfaces the
+// open issues carrying any of them — alongside the staleness block, since both
+// reductions run over the same fetched window.
+func TestBacklogReviewSurfacesDeferred(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred, blocked]\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			deferredIssue(1, daysAgo(100), "blocked"),
+			deferredIssue(2, daysAgo(10)), // not deferred
+			deferredIssue(3, daysAgo(50), "deferred"),
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if !facts.Deferred.Configured {
+		t.Error("Deferred.Configured = false, want true (labels declared)")
+	}
+	if facts.Deferred.DeferredCount != 2 {
+		t.Errorf("DeferredCount = %d, want 2", facts.Deferred.DeferredCount)
+	}
+	if len(facts.Deferred.DeferredIssues) != 2 {
+		t.Fatalf("listed %d deferred issues, want 2", len(facts.Deferred.DeferredIssues))
+	}
+	// Most-inactive first: issue 1 (100d) before issue 3 (50d).
+	if facts.Deferred.DeferredIssues[0].Number != 1 || facts.Deferred.DeferredIssues[1].Number != 3 {
+		t.Errorf("order = [%d,%d], want [1,3] (most-inactive first)",
+			facts.Deferred.DeferredIssues[0].Number, facts.Deferred.DeferredIssues[1].Number)
+	}
+	if got := facts.Deferred.DeferredIssues[0].MatchedLabels; len(got) != 1 || got[0] != "blocked" {
+		t.Errorf("issue 1 MatchedLabels = %v, want [blocked]", got)
+	}
+	// The staleness block still reduces the same window.
+	if facts.Staleness.StaleCount != 2 {
+		t.Errorf("Staleness.StaleCount = %d, want 2 (deferred reduction does not disturb staleness)", facts.Staleness.StaleCount)
+	}
+}
+
+// TestBacklogReviewDeferredNotConfigured pins the no-convention path: a repo
+// whose manifest declares no deferred labels reports the block as not-configured
+// — an empty, honest no-op rather than a guess or an error.
+func TestBacklogReviewDeferredNotConfigured(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{deferredIssue(1, daysAgo(100), "blocked")},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Deferred.Configured {
+		t.Error("Deferred.Configured = true, want false (no labels declared)")
+	}
+	if facts.Deferred.DeferredCount != 0 {
+		t.Errorf("DeferredCount = %d, want 0 (not configured)", facts.Deferred.DeferredCount)
+	}
+	// Staleness still works in the absence of a deferred convention.
+	if facts.Staleness.StaleCount != 1 {
+		t.Errorf("Staleness.StaleCount = %d, want 1", facts.Staleness.StaleCount)
+	}
+}
+
+// TestBacklogReviewDeferredCaseInsensitive pins that label matching ignores
+// case: a configured "deferred" matches an issue labeled "DEFERRED".
+func TestBacklogReviewDeferredCaseInsensitive(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{deferredIssue(1, daysAgo(100), "DEFERRED")},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Deferred.DeferredCount != 1 {
+		t.Errorf("DeferredCount = %d, want 1 (case-insensitive match)", facts.Deferred.DeferredCount)
+	}
+}
+
 // TestBacklogReviewUsesManifestThreshold is the outside-in anchor: given a repo
 // with a manifest entry, the tool reduces its open issues to staleness facts
 // using that repo's configured threshold, and reports the threshold's source.
@@ -135,20 +226,20 @@ func TestBacklogReviewUsesManifestThreshold(t *testing.T) {
 	if facts.Repo != "acme/widgets" {
 		t.Errorf("Repo = %q, want acme/widgets", facts.Repo)
 	}
-	if facts.ThresholdDays != 45 {
-		t.Errorf("ThresholdDays = %d, want 45", facts.ThresholdDays)
+	if facts.Staleness.ThresholdDays != 45 {
+		t.Errorf("ThresholdDays = %d, want 45", facts.Staleness.ThresholdDays)
 	}
-	if facts.ThresholdSource != "manifest" {
-		t.Errorf("ThresholdSource = %q, want manifest", facts.ThresholdSource)
+	if facts.Staleness.ThresholdSource != "manifest" {
+		t.Errorf("ThresholdSource = %q, want manifest", facts.Staleness.ThresholdSource)
 	}
-	if facts.OpenIssueCount != 3 {
-		t.Errorf("OpenIssueCount = %d, want 3", facts.OpenIssueCount)
+	if facts.Staleness.OpenIssueCount != 3 {
+		t.Errorf("OpenIssueCount = %d, want 3", facts.Staleness.OpenIssueCount)
 	}
-	if facts.StaleCount != 2 {
-		t.Errorf("StaleCount = %d, want 2", facts.StaleCount)
+	if facts.Staleness.StaleCount != 2 {
+		t.Errorf("StaleCount = %d, want 2", facts.Staleness.StaleCount)
 	}
-	if facts.FreshCount != 1 {
-		t.Errorf("FreshCount = %d, want 1", facts.FreshCount)
+	if facts.Staleness.FreshCount != 1 {
+		t.Errorf("FreshCount = %d, want 1", facts.Staleness.FreshCount)
 	}
 }
 
@@ -164,14 +255,14 @@ func TestBacklogReviewFallsBackToDefaults(t *testing.T) {
 
 	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "other", "repo": "thing"}))
 
-	if facts.ThresholdDays != 30 {
-		t.Errorf("ThresholdDays = %d, want 30", facts.ThresholdDays)
+	if facts.Staleness.ThresholdDays != 30 {
+		t.Errorf("ThresholdDays = %d, want 30", facts.Staleness.ThresholdDays)
 	}
-	if facts.ThresholdSource != "default" {
-		t.Errorf("ThresholdSource = %q, want default", facts.ThresholdSource)
+	if facts.Staleness.ThresholdSource != "default" {
+		t.Errorf("ThresholdSource = %q, want default", facts.Staleness.ThresholdSource)
 	}
-	if facts.StaleCount != 1 {
-		t.Errorf("StaleCount = %d, want 1 (40d inactive >= 30d default)", facts.StaleCount)
+	if facts.Staleness.StaleCount != 1 {
+		t.Errorf("StaleCount = %d, want 1 (40d inactive >= 30d default)", facts.Staleness.StaleCount)
 	}
 }
 
@@ -238,17 +329,17 @@ func TestBacklogReviewSurfacesTruncation(t *testing.T) {
 		"owner": "acme", "repo": "widgets", "limit": float64(2),
 	}))
 
-	if facts.OpenIssueCount != 500 {
-		t.Errorf("OpenIssueCount = %d, want 500 (exact)", facts.OpenIssueCount)
+	if facts.Staleness.OpenIssueCount != 500 {
+		t.Errorf("OpenIssueCount = %d, want 500 (exact)", facts.Staleness.OpenIssueCount)
 	}
-	if !facts.FetchTruncated {
+	if !facts.Staleness.FetchTruncated {
 		t.Errorf("FetchTruncated = false, want true (fetched 3 of 500)")
 	}
-	if !facts.ListTruncated {
+	if !facts.Staleness.ListTruncated {
 		t.Errorf("ListTruncated = false, want true (3 stale, limit 2)")
 	}
-	if len(facts.StaleIssues) != 2 {
-		t.Errorf("listed %d stale issues, want 2 (the limit)", len(facts.StaleIssues))
+	if len(facts.Staleness.StaleIssues) != 2 {
+		t.Errorf("listed %d stale issues, want 2 (the limit)", len(facts.Staleness.StaleIssues))
 	}
 }
 
@@ -265,7 +356,7 @@ func TestBacklogReviewAppliesLimitDefault(t *testing.T) {
 
 	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
 
-	if facts.Limit != 20 {
-		t.Errorf("Limit = %d, want 20 (schema default)", facts.Limit)
+	if facts.Staleness.Limit != 20 {
+		t.Errorf("Limit = %d, want 20 (schema default)", facts.Staleness.Limit)
 	}
 }

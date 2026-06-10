@@ -2,7 +2,7 @@
 // files deep-merged over generic defaults. Manifests are discovered from an XDG
 // drop-in directory (or an explicit file list), keyed by "owner/repo", so a
 // single server serves any repository without code changes. This slice models
-// only staleness conventions.
+// staleness and deferred-issue conventions.
 package manifest
 
 import (
@@ -19,6 +19,7 @@ import (
 // Config is the resolved convention set for one repository.
 type Config struct {
 	Staleness StalenessConfig
+	Deferred  DeferredConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -27,6 +28,14 @@ type Config struct {
 type StalenessConfig struct {
 	ThresholdDays int
 	FetchLimit    int
+}
+
+// DeferredConfig holds the resolved deferred-review convention: the maintainer-
+// declared labels that mark an open issue as parked. There is no generic default
+// — "deferred" is repo-specific — so a repository that declares none leaves
+// Labels empty and the deferred reduction reports itself not-configured.
+type DeferredConfig struct {
+	Labels []string
 }
 
 // Defaults returns the generic defaults applied when a repository has no
@@ -130,11 +139,19 @@ func (r *Resolver) discover() ([]string, error) {
 // binary doesn't yet implement still resolves for staleness.
 type fileConfig struct {
 	Staleness *stalenessFile `yaml:"staleness"`
+	Deferred  *deferredFile  `yaml:"deferred"`
 }
 
 type stalenessFile struct {
 	ThresholdDays *int `yaml:"thresholdDays"`
 	FetchLimit    *int `yaml:"fetchLimit"`
+}
+
+// deferredFile decodes the deferred block. A pointer-to-slice distinguishes an
+// omitted labels list from an explicit empty one, keeping the merge idiom
+// uniform — though both resolve to a not-configured reduction.
+type deferredFile struct {
+	Labels *[]string `yaml:"labels"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -175,6 +192,9 @@ func mergeConfig(base Config, o fileConfig) Config {
 		if o.Staleness.FetchLimit != nil {
 			base.Staleness.FetchLimit = *o.Staleness.FetchLimit
 		}
+	}
+	if o.Deferred != nil && o.Deferred.Labels != nil {
+		base.Deferred.Labels = *o.Deferred.Labels
 	}
 	return base
 }

@@ -24,7 +24,9 @@ const (
 // GraphQL variables, not interpolated, so caller-supplied values can never
 // become query structure. UPDATED_AT ASC is the closest available proxy for
 // "least recently active first"; comments(last:25) bounds the window scanned to
-// derive last-human activity.
+// derive last-human activity; labels(first:25) bounds the labels read per issue
+// (an issue with >25 labels could miss a deferred label in the tail — acceptable
+// for a grooming signal).
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   repository(owner:$owner,name:$name){
     issues(states:OPEN, first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
@@ -32,6 +34,7 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
       pageInfo{ hasNextPage endCursor }
       nodes{
         number title url createdAt
+        labels(first:25){ nodes{ name } }
         comments(last:25){ nodes{ createdAt author{ __typename login } } }
       }
     }
@@ -222,7 +225,12 @@ type issueNode struct {
 	Title     string    `json:"title"`
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"createdAt"`
-	Comments  struct {
+	Labels    struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+	Comments struct {
 		Nodes []commentNode `json:"nodes"`
 	} `json:"comments"`
 }
@@ -236,12 +244,17 @@ type commentNode struct {
 }
 
 func (n issueNode) toIssue() Issue {
+	labels := make([]string, 0, len(n.Labels.Nodes))
+	for _, l := range n.Labels.Nodes {
+		labels = append(labels, l.Name)
+	}
 	return Issue{
 		Number:         n.Number,
 		Title:          n.Title,
 		URL:            n.URL,
 		CreatedAt:      n.CreatedAt,
 		LastActivityAt: n.lastHumanActivity(),
+		Labels:         labels,
 	}
 }
 

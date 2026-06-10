@@ -55,6 +55,52 @@ func TestResolveMergesEntryOverDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveMergesDeferredLabels(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n  deferred:\n    labels: [deferred, blocked]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Deferred.Labels) != 2 || cfg.Deferred.Labels[0] != "deferred" || cfg.Deferred.Labels[1] != "blocked" {
+		t.Errorf("Deferred.Labels = %v, want [deferred blocked]", cfg.Deferred.Labels)
+	}
+	// The deferred block must not disturb the sibling staleness merge.
+	if cfg.Staleness.ThresholdDays != 45 {
+		t.Errorf("ThresholdDays = %d, want 45", cfg.Staleness.ThresholdDays)
+	}
+}
+
+func TestResolveStalenessOnlyLeavesDeferredEmpty(t *testing.T) {
+	dir := t.TempDir()
+	// An entry with no deferred block resolves to no deferred labels — the
+	// reduction will report itself not-configured, which is legitimate, not an
+	// error.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	cfg, matched, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !matched {
+		t.Error("matched = false, want true")
+	}
+	if len(cfg.Deferred.Labels) != 0 {
+		t.Errorf("Deferred.Labels = %v, want empty", cfg.Deferred.Labels)
+	}
+}
+
+func TestResolveNoEntryLeavesDeferredEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  deferred:\n    labels: [deferred]\n  staleness:\n    thresholdDays: 45\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("other/thing")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Deferred.Labels) != 0 {
+		t.Errorf("Deferred.Labels = %v, want empty (no entry, no generic default)", cfg.Deferred.Labels)
+	}
+}
+
 func TestResolveCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "repos.yml", "Acme/Widgets:\n  staleness:\n    thresholdDays: 45\n")

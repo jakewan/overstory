@@ -69,6 +69,52 @@ func TestListOpenIssuesDerivesLastHumanActivity(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesParsesLabels(t *testing.T) {
+	// Two assertions in one round-trip: (a) the query actually asks GitHub for
+	// labels — the query string is otherwise untested, so a typo in the selection
+	// would silently ship and the deferred reduction would see no labels; (b) the
+	// returned label names decode onto Issue.Labels.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z",
+				 "labels":{"nodes":[{"name":"deferred"},{"name":"bug"}]},
+				 "comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	// Match the selection token, not exact spacing, to avoid brittleness.
+	if !strings.Contains(gotQuery, "labels(") {
+		t.Errorf("query does not request labels; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1", len(res.Issues))
+	}
+	got := res.Issues[0].Labels
+	if len(got) != 2 || got[0] != "deferred" || got[1] != "bug" {
+		t.Errorf("Labels = %v, want [deferred bug]", got)
+	}
+}
+
 func TestListOpenIssuesPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

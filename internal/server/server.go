@@ -141,7 +141,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog for staleness and return compact structured facts (an exact open count, inactivity-band counts, and the stalest issues) for the caller to render.",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues) and a deferred-review block (open issues carrying the repo's manifest-declared deferred labels).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -149,7 +149,7 @@ func backlogReviewTool() *mcp.Tool {
 				"repo":  {Type: "string", Description: "repository name"},
 				"limit": {
 					Type:        "integer",
-					Description: "maximum number of stale issues to list",
+					Description: "maximum number of issues to list per reduction (staleness, deferred)",
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
@@ -161,34 +161,42 @@ func backlogReviewTool() *mcp.Tool {
 }
 
 // backlogReviewHandler resolves the repo's conventions, fetches its open issues,
-// and reduces them to staleness facts. Errors are returned plain so the SDK
-// surfaces them as tool errors (IsError); a manifest error names a file, so it
-// is logged to stderr and replaced with a repo-named message on the caller
-// channel.
-func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.StalenessFacts] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.StalenessFacts, error) {
+// and reduces them to the composite backlog facts (a staleness block and a
+// deferred-issue block). Errors are returned plain so the SDK surfaces them as
+// tool errors (IsError); a manifest error names a file, so it is logged to
+// stderr and replaced with a repo-named message on the caller channel.
+func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.Facts, error) {
 		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
 		if owner == "" || repo == "" {
-			return nil, backlog.StalenessFacts{}, fmt.Errorf("owner and repo are required")
+			return nil, backlog.Facts{}, fmt.Errorf("owner and repo are required")
 		}
 		ownerRepo := owner + "/" + repo
 
 		cfg, matched, err := resolver.Resolve(ownerRepo)
 		if err != nil {
 			log.Printf("overstory: manifest resolution for %s: %v", ownerRepo, err)
-			return nil, backlog.StalenessFacts{}, fmt.Errorf("manifest configuration error for %s", ownerRepo)
+			return nil, backlog.Facts{}, fmt.Errorf("manifest configuration error for %s", ownerRepo)
 		}
 
 		result, err := fetcher.ListOpenIssues(ctx, ownerRepo, cfg.Staleness.FetchLimit)
 		if err != nil {
-			return nil, backlog.StalenessFacts{}, fmt.Errorf("fetching issues for %s: %w", ownerRepo, err)
+			return nil, backlog.Facts{}, fmt.Errorf("fetching issues for %s: %w", ownerRepo, err)
 		}
 
-		facts := backlog.ReduceStaleness(result.Issues, result.TotalOpen, cfg.Staleness.ThresholdDays, in.Limit, now())
-		facts.Repo = ownerRepo
-		facts.FetchLimit = cfg.Staleness.FetchLimit
-		facts.ThresholdSource = thresholdSource(matched)
-		return nil, facts, nil
+		// Bind the clock once so every block shares one generation time; the two
+		// reductions run over the same fetched window.
+		n := now()
+		staleness := backlog.ReduceStaleness(result.Issues, result.TotalOpen, cfg.Staleness.ThresholdDays, in.Limit, n)
+		staleness.FetchLimit = cfg.Staleness.FetchLimit
+		staleness.ThresholdSource = thresholdSource(matched)
+		deferred := backlog.ReduceDeferred(result.Issues, result.TotalOpen, cfg.Deferred.Labels, in.Limit, n)
+		return nil, backlog.Facts{
+			Repo:        ownerRepo,
+			GeneratedAt: n,
+			Staleness:   staleness,
+			Deferred:    deferred,
+		}, nil
 	}
 }
 
