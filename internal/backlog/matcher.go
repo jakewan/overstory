@@ -32,16 +32,17 @@ func newLabelMatcher(labels []string, prefixes []PrefixRule) labelMatcher {
 }
 
 // match reports whether label matches a configured area and, if so, its canonical
-// name. An explicit-list match returns the label as it appears on the issue (so
-// callers that echo matched labels keep the original casing); a prefix match
-// returns the suffix after the delimiter, trimmed. A prefix whose suffix is empty
-// (a bare "area/" label) does not match — it would otherwise manufacture a
-// blank-named area.
+// name. Both paths return the original-cased label trimmed of surrounding
+// whitespace, so the projected name is consistent with the whitespace-insensitive
+// matching: an explicit-list match returns the trimmed label (callers echoing it
+// keep the original casing); a prefix match returns the suffix after the
+// delimiter, trimmed. A prefix whose suffix is empty (a bare "area/" label) does
+// not match — it would otherwise manufacture a blank-named area.
 func (m labelMatcher) match(label string) (string, bool) {
 	trimmed := strings.TrimSpace(label)
 	norm := strings.ToLower(trimmed)
 	if _, ok := m.labels[norm]; ok {
-		return label, true
+		return trimmed, true
 	}
 	for _, p := range m.prefixes {
 		// Lowercase (but do not trim) the prefix+delimiter so a meaningful
