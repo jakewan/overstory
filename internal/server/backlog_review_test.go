@@ -208,8 +208,14 @@ func TestBacklogReviewRejectsSplitManifestKey(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("IsError = false, want true for a key split across files")
 	}
-	if msg := contentText(res); !strings.Contains(msg, "acme/widgets") {
+	msg := contentText(res)
+	if !strings.Contains(msg, "acme/widgets") {
 		t.Errorf("error message %q does not name the repo acme/widgets", msg)
+	}
+	// The contributing file paths must stay on the server's stderr log, never the
+	// caller channel — assert the leak doesn't regress.
+	if strings.Contains(msg, "a-repos.yml") || strings.Contains(msg, "b-repos.yml") {
+		t.Errorf("error message %q leaks manifest file paths to the caller", msg)
 	}
 }
 
