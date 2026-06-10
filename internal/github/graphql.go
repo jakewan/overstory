@@ -26,14 +26,17 @@ const (
 // "least recently active first"; comments(last:25) bounds the window scanned to
 // derive last-human activity; labels(first:25) bounds the labels read per issue
 // (an issue with >25 labels could miss a deferred label in the tail — acceptable
-// for a grooming signal).
+// for a grooming signal). bodyText is the rendered-plaintext body (markdown and
+// HTML-comment scaffolding stripped) for the quality reduction's length check;
+// the raw markdown body is deliberately not fetched until a later increment needs
+// it, so unread payload doesn't bloat this shared fetch.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   repository(owner:$owner,name:$name){
     issues(states:OPEN, first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
       totalCount
       pageInfo{ hasNextPage endCursor }
       nodes{
-        number title url createdAt
+        number title url createdAt bodyText
         labels(first:25){ nodes{ name } }
         comments(last:25){ nodes{ createdAt author{ __typename login } } }
       }
@@ -225,6 +228,7 @@ type issueNode struct {
 	Title     string    `json:"title"`
 	URL       string    `json:"url"`
 	CreatedAt time.Time `json:"createdAt"`
+	BodyText  string    `json:"bodyText"`
 	Labels    struct {
 		Nodes []struct {
 			Name string `json:"name"`
@@ -255,6 +259,7 @@ func (n issueNode) toIssue() Issue {
 		CreatedAt:      n.CreatedAt,
 		LastActivityAt: n.lastHumanActivity(),
 		Labels:         labels,
+		BodyText:       n.BodyText,
 	}
 }
 

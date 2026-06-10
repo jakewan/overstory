@@ -337,3 +337,113 @@ func TestResolveExplicitFilesMissing(t *testing.T) {
 		t.Error("Resolve accepted a missing explicit file, want error")
 	}
 }
+
+func TestDefaultsQuality(t *testing.T) {
+	// MinBodyLength 1 keeps the universal non-empty check on out of the box; the
+	// flag predicate is BodyLength < MinBodyLength, so 1 flags empty bodies.
+	if d := Defaults(); d.Quality.MinBodyLength != 1 {
+		t.Errorf("Quality.MinBodyLength default = %d, want 1", d.Quality.MinBodyLength)
+	}
+}
+
+func TestResolveMergesQuality(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  quality:\n    minBodyLength: 30\n    requiredCategories:\n      - name: type\n        prefixes:\n          - prefix: type\n            delimiter: \"/\"\n      - name: priority\n        labels: [p0, p1]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Quality.MinBodyLength != 30 {
+		t.Errorf("MinBodyLength = %d, want 30", cfg.Quality.MinBodyLength)
+	}
+	if len(cfg.Quality.RequiredCategories) != 2 {
+		t.Fatalf("RequiredCategories = %+v, want 2", cfg.Quality.RequiredCategories)
+	}
+	if cfg.Quality.RequiredCategories[0].Name != "type" || len(cfg.Quality.RequiredCategories[0].Prefixes) != 1 {
+		t.Errorf("category[0] = %+v, want type with one prefix", cfg.Quality.RequiredCategories[0])
+	}
+	if cfg.Quality.RequiredCategories[1].Name != "priority" || len(cfg.Quality.RequiredCategories[1].Labels) != 2 {
+		t.Errorf("category[1] = %+v, want priority with two labels", cfg.Quality.RequiredCategories[1])
+	}
+}
+
+func TestResolveNoEntryUsesQualityDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	// An unmatched repo still resolves+validates with the default MinBodyLength 1 —
+	// the guard against a <= 0 validator that would reject every unconfigured repo.
+	cfg, matched, err := NewResolver(dir, nil).Resolve("other/thing")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if matched {
+		t.Error("matched = true, want false")
+	}
+	if cfg.Quality.MinBodyLength != 1 {
+		t.Errorf("MinBodyLength = %d, want 1 (default)", cfg.Quality.MinBodyLength)
+	}
+	if len(cfg.Quality.RequiredCategories) != 0 {
+		t.Errorf("RequiredCategories = %v, want empty (no default)", cfg.Quality.RequiredCategories)
+	}
+}
+
+func TestResolveAcceptsZeroMinBodyLength(t *testing.T) {
+	dir := t.TempDir()
+	// 0 is the explicit disable value, not an invalid one.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  quality:\n    minBodyLength: 0\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve rejected minBodyLength 0 (disable value): %v", err)
+	}
+	if cfg.Quality.MinBodyLength != 0 {
+		t.Errorf("MinBodyLength = %d, want 0", cfg.Quality.MinBodyLength)
+	}
+}
+
+func TestResolveQualityEmptyCategoriesNotConfigured(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  quality:\n    requiredCategories: []\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Quality.RequiredCategories) != 0 {
+		t.Errorf("RequiredCategories = %v, want empty (explicit [] is not-configured, not an error)", cfg.Quality.RequiredCategories)
+	}
+	if cfg.Quality.MinBodyLength != 1 {
+		t.Errorf("MinBodyLength = %d, want 1 (inherited default)", cfg.Quality.MinBodyLength)
+	}
+}
+
+func TestResolveRejectsInvalidQuality(t *testing.T) {
+	for _, tc := range []struct{ name, contents string }{
+		{"negative minBodyLength", "acme/widgets:\n  quality:\n    minBodyLength: -1\n"},
+		{"empty category name", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: \"  \"\n        labels: [x]\n"},
+		{"category without matchers", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: type\n"},
+		{"duplicate category name", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: type\n        labels: [a]\n      - name: Type\n        labels: [b]\n"},
+		{"empty category prefix", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: type\n        prefixes:\n          - prefix: \"  \"\n            delimiter: \"/\"\n"},
+		{"empty category delimiter", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: type\n        prefixes:\n          - prefix: type\n            delimiter: \"\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.contents)
+			if _, _, err := NewResolver(dir, nil).Resolve("acme/widgets"); err == nil {
+				t.Error("Resolve accepted an invalid quality config, want error")
+			}
+		})
+	}
+}
+
+func TestResolveQualityCategoryErrorNamesCategory(t *testing.T) {
+	dir := t.TempDir()
+	// The shared prefix validator must carry the category name into the message so
+	// it stays actionable (the MAJOR-4 field-path requirement).
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: priority\n        prefixes:\n          - prefix: priority\n            delimiter: \"\"\n")
+	_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err == nil {
+		t.Fatal("want error for empty delimiter")
+	}
+	if !strings.Contains(err.Error(), "priority") {
+		t.Errorf("error %q does not name the offending category", err)
+	}
+}

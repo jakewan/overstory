@@ -141,7 +141,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), and an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), and a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -149,7 +149,7 @@ func backlogReviewTool() *mcp.Tool {
 				"repo":  {Type: "string", Description: "repository name"},
 				"limit": {
 					Type:        "integer",
-					Description: "maximum number of issues to list per reduction (staleness, deferred)",
+					Description: "maximum number of issues to list per reduction (staleness, deferred, quality)",
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
@@ -192,12 +192,14 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 		staleness.ThresholdSource = thresholdSource(matched)
 		deferred := backlog.ReduceDeferred(result.Issues, result.TotalOpen, cfg.Deferred.Labels, in.Limit, n)
 		area := backlog.ReduceAreaBalance(result.Issues, result.TotalOpen, cfg.AreaBalance.Labels, mapPrefixes(cfg.AreaBalance.Prefixes))
+		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
 		return nil, backlog.Facts{
 			Repo:        ownerRepo,
 			GeneratedAt: n,
 			Staleness:   staleness,
 			Deferred:    deferred,
 			AreaBalance: area,
+			Quality:     quality,
 		}, nil
 	}
 }
@@ -217,4 +219,14 @@ func mapPrefixes(in []manifest.PrefixRule) []backlog.PrefixRule {
 		out[i] = backlog.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
 	}
 	return out
+}
+
+// mapQuality adapts the manifest's quality convention to the backlog reduction's
+// params, keeping the same layer decoupling as mapPrefixes.
+func mapQuality(in manifest.QualityConfig) backlog.QualityParams {
+	cats := make([]backlog.Category, len(in.RequiredCategories))
+	for i, c := range in.RequiredCategories {
+		cats[i] = backlog.Category{Name: c.Name, Labels: c.Labels, Prefixes: mapPrefixes(c.Prefixes)}
+	}
+	return backlog.QualityParams{MinBodyLength: in.MinBodyLength, Categories: cats}
 }

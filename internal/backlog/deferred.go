@@ -18,6 +18,7 @@ type Facts struct {
 	Staleness   StalenessFacts   `json:"staleness"`
 	Deferred    DeferredFacts    `json:"deferred"`
 	AreaBalance AreaBalanceFacts `json:"areaBalance"`
+	Quality     QualityFacts     `json:"quality"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open
