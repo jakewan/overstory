@@ -123,6 +123,98 @@ func deferredIssue(num int, lastActivity time.Time, labels ...string) github.Iss
 	return is
 }
 
+// labeledIssue builds an issue with labels for the area-balance reduction, which
+// is time-independent (the lastActivity is irrelevant here).
+func labeledIssue(num int, labels ...string) github.Issue {
+	return deferredIssue(num, daysAgo(1), labels...)
+}
+
+// TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
+// given a manifest declaring area prefixes and explicit labels, the tool
+// distributes open issues across areas, counts the unclassified and multi-area
+// issues, and orders areas by count — alongside the other reduction blocks.
+func TestBacklogReviewSurfacesAreaBalance(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  areaBalance:\n    labels: [http]\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			labeledIssue(1, "area/networking"),
+			labeledIssue(2, "area/networking", "area/storage"), // multi-area
+			labeledIssue(3, "http"),                            // explicit list
+			labeledIssue(4, "bug"),                             // unclassified
+		},
+		TotalOpen: 4,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	ab := facts.AreaBalance
+
+	if ab.Unclassified != 1 {
+		t.Errorf("Unclassified = %d, want 1", ab.Unclassified)
+	}
+	if ab.MultiAreaCount != 1 {
+		t.Errorf("MultiAreaCount = %d, want 1 (issue 2 spans two areas)", ab.MultiAreaCount)
+	}
+	// networking=2, storage=1, http=1 → ordered by count desc, tie-break by name.
+	want := []backlog.AreaCount{{Area: "networking", Count: 2}, {Area: "http", Count: 1}, {Area: "storage", Count: 1}}
+	if len(ab.Areas) != len(want) {
+		t.Fatalf("Areas = %+v, want %+v", ab.Areas, want)
+	}
+	for i, w := range want {
+		if ab.Areas[i] != w {
+			t.Errorf("Areas[%d] = %+v, want %+v", i, ab.Areas[i], w)
+		}
+	}
+	// The other blocks still reduce the same window.
+	if facts.Staleness.OpenIssueCount != 4 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 4", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewAreaBalanceGenericDefault pins the out-of-box behavior: a repo
+// with no areaBalance block still classifies common `area/*` labels via the
+// generic default prefixes.
+func TestBacklogReviewAreaBalanceGenericDefault(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{labeledIssue(1, "area/api"), labeledIssue(2, "area/api")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	ab := facts.AreaBalance
+
+	if len(ab.Areas) != 1 || ab.Areas[0].Area != "api" || ab.Areas[0].Count != 2 {
+		t.Errorf("Areas = %+v, want [{api 2}] (default area/ prefix)", ab.Areas)
+	}
+	if ab.Unclassified != 0 {
+		t.Errorf("Unclassified = %d, want 0", ab.Unclassified)
+	}
+}
+
+// TestBacklogReviewAreaBalanceAllUnclassified pins that issues carrying no
+// recognized area label land in the unclassified bucket rather than being
+// dropped.
+func TestBacklogReviewAreaBalanceAllUnclassified(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{labeledIssue(1, "bug"), labeledIssue(2, "enhancement")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	ab := facts.AreaBalance
+
+	if len(ab.Areas) != 0 {
+		t.Errorf("Areas = %+v, want empty", ab.Areas)
+	}
+	if ab.Unclassified != 2 {
+		t.Errorf("Unclassified = %d, want 2", ab.Unclassified)
+	}
+}
+
 // TestBacklogReviewSurfacesDeferred pins the deferred-issue grooming signal:
 // given a repo whose manifest declares deferred labels, the tool surfaces the
 // open issues carrying any of them — alongside the staleness block, since both

@@ -141,7 +141,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues) and a deferred-review block (open issues carrying the repo's manifest-declared deferred labels).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), and an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -191,11 +191,13 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 		staleness.FetchLimit = cfg.Staleness.FetchLimit
 		staleness.ThresholdSource = thresholdSource(matched)
 		deferred := backlog.ReduceDeferred(result.Issues, result.TotalOpen, cfg.Deferred.Labels, in.Limit, n)
+		area := backlog.ReduceAreaBalance(result.Issues, result.TotalOpen, cfg.AreaBalance.Labels, mapPrefixes(cfg.AreaBalance.Prefixes))
 		return nil, backlog.Facts{
 			Repo:        ownerRepo,
 			GeneratedAt: n,
 			Staleness:   staleness,
 			Deferred:    deferred,
+			AreaBalance: area,
 		}, nil
 	}
 }
@@ -205,4 +207,14 @@ func thresholdSource(matched bool) string {
 		return "manifest"
 	}
 	return "default"
+}
+
+// mapPrefixes adapts the manifest's prefix rules to the backlog matcher's, so the
+// reduction layer stays decoupled from the convention-resolution layer.
+func mapPrefixes(in []manifest.PrefixRule) []backlog.PrefixRule {
+	out := make([]backlog.PrefixRule, len(in))
+	for i, p := range in {
+		out[i] = backlog.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
+	}
+	return out
 }

@@ -2,7 +2,6 @@ package backlog
 
 import (
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jakewan/overstory/internal/github"
@@ -14,10 +13,11 @@ import (
 // block carries its own counts and truncation seams so a caller renders them
 // independently.
 type Facts struct {
-	Repo        string         `json:"repo"`
-	GeneratedAt time.Time      `json:"generatedAt"`
-	Staleness   StalenessFacts `json:"staleness"`
-	Deferred    DeferredFacts  `json:"deferred"`
+	Repo        string           `json:"repo"`
+	GeneratedAt time.Time        `json:"generatedAt"`
+	Staleness   StalenessFacts   `json:"staleness"`
+	Deferred    DeferredFacts    `json:"deferred"`
+	AreaBalance AreaBalanceFacts `json:"areaBalance"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open
@@ -81,17 +81,19 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 		return facts
 	}
 
-	want := make(map[string]struct{}, len(labels))
-	for _, l := range labels {
-		want[normalizeLabel(l)] = struct{}{}
-	}
+	// Deferred matching is the explicit-list case of the shared matcher (no prefix
+	// rules) — "deferred" is a curated subset of status labels, where a prefix
+	// would over-match. The matcher returns the issue's original-cased label for an
+	// explicit match, so iterating is.Labels in order and sorting reproduces the
+	// prior MatchedLabels content and ordering exactly.
+	matcher := newLabelMatcher(labels, nil)
 
 	deferred := make([]DeferredIssue, 0, len(issues))
 	for _, is := range issues {
 		matched := make([]string, 0, len(is.Labels))
 		for _, name := range is.Labels {
-			if _, ok := want[normalizeLabel(name)]; ok {
-				matched = append(matched, name)
+			if m, ok := matcher.match(name); ok {
+				matched = append(matched, m)
 			}
 		}
 		if len(matched) == 0 {
@@ -125,11 +127,4 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 	}
 	facts.DeferredIssues = deferred
 	return facts
-}
-
-// normalizeLabel folds a label name for case-insensitive matching. GitHub label
-// names are case-sensitive at creation but matched case-insensitively, so a
-// manifest "deferred" must match an issue's "DEFERRED".
-func normalizeLabel(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
 }
