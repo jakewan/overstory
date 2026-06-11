@@ -14,6 +14,7 @@ Conventions for Go code in this repository.
 - Return errors; don't `log.Fatal` outside `main`. The single acceptable fatal is the top-level server-run error in `main`.
 - Make validation errors specific and actionable — name what was wrong (which field, which repo, which manifest key) so the message stands on its own.
 - Trim whitespace before checking a required string is non-empty (`strings.TrimSpace(s) == ""`), so a blank-looking value is rejected like a missing one — but only when the value's whitespace is noise (names, identifiers, labels). When whitespace is *semantically meaningful* (a delimiter, separator, or format token — e.g. a `": "` colon-space delimiter), check exact emptiness (`s == ""`) instead, so a legitimate whitespace value isn't wrongly rejected.
+- When validating a float falls within a range, reject `NaN` explicitly (`math.IsNaN`) **before** the bounds check — every comparison against NaN is false, so a NaN passes `x < lo || x > hi` and is silently accepted, then poisons downstream comparisons (e.g. a similarity threshold no score can ever clear).
 - `errcheck` runs with `check-blank: true`, so discarding an error to `_` is itself a lint failure — `_ = f()` does not silence an unwanted error. Capture and inspect it, or fold a secondary cleanup error into the primary one with `errors.Join(...)`. The point is to act on every error, not to suppress it.
 
 ## Context
