@@ -233,7 +233,9 @@ func parseRateLimited(hdr http.Header) RateLimitedError {
 	}
 	if v := strings.TrimSpace(hdr.Get("Retry-After")); v != "" {
 		if secs, err := strconv.Atoi(v); err == nil {
-			if secs >= 0 {
+			// A non-positive delay carries no recoverable signal (zero is the
+			// absent value; negative is malformed), so it stays absent.
+			if secs > 0 {
 				e.RetryAfter = time.Duration(secs) * time.Second
 			}
 		} else if t, perr := http.ParseTime(v); perr == nil && e.ResetAt.IsZero() {
