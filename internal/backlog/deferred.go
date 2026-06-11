@@ -20,6 +20,7 @@ type Facts struct {
 	AreaBalance AreaBalanceFacts `json:"areaBalance"`
 	Quality     QualityFacts     `json:"quality"`
 	Overlap     OverlapFacts     `json:"overlap"`
+	CrossRef    CrossRefFacts    `json:"crossRef"`
 	RateLimit   *RateLimitFacts  `json:"rateLimit,omitempty"`
 }
 

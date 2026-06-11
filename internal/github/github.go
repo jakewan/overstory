@@ -23,14 +23,25 @@ import (
 // to plain text (markdown formatting and HTML-comment template scaffolding
 // stripped), so the quality reduction's "is there real prose here" length check
 // isn't fooled by an empty issue-form stub.
+//
+// ReferencedBy is a filtered projection of this issue's cross-reference timeline,
+// not raw GitHub data: the numbers of same-repository issues whose
+// CrossReferencedEvent targets this one (pull-request and cross-repository
+// sources are dropped, so a same-number issue in another repo can't collide),
+// deduplicated and sorted. CrossRefsTruncated is set when the issue had more
+// cross-reference events than the fetch cap, so the cross-reference reduction can
+// flag that a graph edge may be missing rather than report incomplete data as
+// complete.
 type Issue struct {
-	Number         int       `json:"number"`
-	Title          string    `json:"title"`
-	URL            string    `json:"url"`
-	CreatedAt      time.Time `json:"createdAt"`
-	LastActivityAt time.Time `json:"lastActivityAt"`
-	Labels         []string  `json:"labels"`
-	BodyText       string    `json:"bodyText"`
+	Number             int       `json:"number"`
+	Title              string    `json:"title"`
+	URL                string    `json:"url"`
+	CreatedAt          time.Time `json:"createdAt"`
+	LastActivityAt     time.Time `json:"lastActivityAt"`
+	Labels             []string  `json:"labels"`
+	BodyText           string    `json:"bodyText"`
+	ReferencedBy       []int     `json:"referencedBy"`
+	CrossRefsTruncated bool      `json:"crossRefsTruncated"`
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,14 @@ const (
 // HTML-comment scaffolding stripped) for the quality reduction's length check;
 // the raw markdown body is deliberately not fetched until a later increment needs
 // it, so unread payload doesn't bloat this shared fetch.
+//
+// timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25) feeds the
+// cross-reference reduction. The itemTypes filter applies to the connection, so
+// totalCount counts the cross-reference events alone and last:25 bounds them per
+// issue; the cap is modest to bound query node cost, and totalCount lets the
+// decode flag a per-issue truncation rather than drop edges silently. The event
+// sits on the *referenced* issue's timeline, so source is the issue/PR that
+// referenced this one — an incoming edge.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -42,6 +51,13 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
         number title url createdAt bodyText
         labels(first:25){ nodes{ name } }
         comments(last:25){ nodes{ createdAt author{ __typename login } } }
+        timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25){
+          totalCount
+          nodes{ __typename ... on CrossReferencedEvent {
+            isCrossRepository
+            source{ __typename ... on Issue { number } }
+          } }
+        }
       }
     }
   }
@@ -300,6 +316,10 @@ type issueNode struct {
 	Comments struct {
 		Nodes []commentNode `json:"nodes"`
 	} `json:"comments"`
+	TimelineItems struct {
+		TotalCount int                 `json:"totalCount"`
+		Nodes      []crossRefEventNode `json:"nodes"`
+	} `json:"timelineItems"`
 }
 
 type commentNode struct {
@@ -310,20 +330,63 @@ type commentNode struct {
 	} `json:"author"`
 }
 
+// crossRefEventNode decodes a CrossReferencedEvent. TypeName guards the timeline
+// (the itemTypes filter should make every node a CrossReferencedEvent, but a
+// defensive check costs nothing). source is the referencing object — an Issue or
+// a PullRequest — and only the Issue Number decodes (a PR source leaves it zero).
+type crossRefEventNode struct {
+	TypeName          string `json:"__typename"`
+	IsCrossRepository bool   `json:"isCrossRepository"`
+	Source            struct {
+		TypeName string `json:"__typename"`
+		Number   int    `json:"number"`
+	} `json:"source"`
+}
+
 func (n issueNode) toIssue() Issue {
 	labels := make([]string, 0, len(n.Labels.Nodes))
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
 	}
 	return Issue{
-		Number:         n.Number,
-		Title:          n.Title,
-		URL:            n.URL,
-		CreatedAt:      n.CreatedAt,
-		LastActivityAt: n.lastHumanActivity(),
-		Labels:         labels,
-		BodyText:       n.BodyText,
+		Number:             n.Number,
+		Title:              n.Title,
+		URL:                n.URL,
+		CreatedAt:          n.CreatedAt,
+		LastActivityAt:     n.lastHumanActivity(),
+		Labels:             labels,
+		BodyText:           n.BodyText,
+		ReferencedBy:       n.referencedBy(),
+		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),
 	}
+}
+
+// referencedBy projects the cross-reference timeline to the same-repository issue
+// numbers that reference this issue: pull-request and cross-repository sources are
+// dropped (the reduction is issue-to-issue within one repo), and the result is
+// deduplicated and sorted. GitHub records one event per authored reference, so the
+// same source can appear twice (referenced in a body and a comment); the dedup
+// keeps a single edge, and the sort makes the decode deterministic.
+func (n issueNode) referencedBy() []int {
+	seen := make(map[int]struct{})
+	for _, e := range n.TimelineItems.Nodes {
+		if e.TypeName != "CrossReferencedEvent" || e.IsCrossRepository {
+			continue
+		}
+		if e.Source.TypeName != "Issue" {
+			continue
+		}
+		seen[e.Source.Number] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]int, 0, len(seen))
+	for num := range seen {
+		out = append(out, num)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // lastHumanActivity returns the newest non-bot comment time within the fetched
