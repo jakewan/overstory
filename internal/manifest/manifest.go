@@ -21,6 +21,7 @@ type Config struct {
 	Staleness   StalenessConfig
 	Deferred    DeferredConfig
 	AreaBalance AreaBalanceConfig
+	Quality     QualityConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -58,6 +59,27 @@ type PrefixRule struct {
 	Delimiter string `yaml:"delimiter"`
 }
 
+// QualityConfig holds the resolved issue-quality convention. MinBodyLength is the
+// minimum trimmed body length an open issue must have before its body reads as
+// substantive (1, the default, means "non-empty"; a higher value flags thin
+// bodies; 0 disables the body check). RequiredCategories declares label families
+// every issue is expected to carry one of — the configurable, per-category
+// label-coverage signal, repo-specific like Deferred (no generic default).
+type QualityConfig struct {
+	MinBodyLength      int
+	RequiredCategories []CategoryRule
+}
+
+// CategoryRule is one required label family: an issue satisfies it by carrying at
+// least one label that matches the family by explicit Labels and/or Prefixes
+// (the same label-or-prefix union AreaBalanceConfig uses). Name is the family's
+// display name, echoed in the reduction's per-category counts.
+type CategoryRule struct {
+	Name     string
+	Labels   []string
+	Prefixes []PrefixRule
+}
+
 // Defaults returns the generic defaults applied when a repository has no
 // manifest entry, or for fields its entry omits. These are the one place a
 // convention value is allowed to live in Go — the fallback, not a repo's
@@ -71,6 +93,10 @@ func Defaults() Config {
 			{Prefix: "area", Delimiter: ":"},
 			{Prefix: "area", Delimiter: "-"},
 		}},
+		// MinBodyLength 1 keeps the universal "body must be non-empty" check on out
+		// of the box; RequiredCategories has no default — label families are
+		// repo-specific, like Deferred.
+		Quality: QualityConfig{MinBodyLength: 1},
 	}
 }
 
@@ -169,6 +195,7 @@ type fileConfig struct {
 	Staleness   *stalenessFile   `yaml:"staleness"`
 	Deferred    *deferredFile    `yaml:"deferred"`
 	AreaBalance *areaBalanceFile `yaml:"areaBalance"`
+	Quality     *qualityFile     `yaml:"quality"`
 }
 
 type stalenessFile struct {
@@ -190,6 +217,22 @@ type deferredFile struct {
 type areaBalanceFile struct {
 	Labels   *[]string     `yaml:"labels"`
 	Prefixes *[]PrefixRule `yaml:"prefixes"`
+}
+
+// qualityFile decodes the quality block. The outer pointers give the omitted-vs-
+// present distinction; RequiredCategories merges as a whole-list replace (like
+// deferred.Labels, not areaBalance's field-by-field merge) since categories are a
+// list, not a fixed field set. Category elements are value-typed — the pointer
+// idiom doesn't extend into slice elements, and doesn't need to here.
+type qualityFile struct {
+	MinBodyLength      *int            `yaml:"minBodyLength"`
+	RequiredCategories *[]categoryFile `yaml:"requiredCategories"`
+}
+
+type categoryFile struct {
+	Name     string       `yaml:"name"`
+	Labels   []string     `yaml:"labels"`
+	Prefixes []PrefixRule `yaml:"prefixes"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -244,6 +287,24 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.AreaBalance.Prefixes = *o.AreaBalance.Prefixes
 		}
 	}
+	if o.Quality != nil {
+		if o.Quality.MinBodyLength != nil {
+			base.Quality.MinBodyLength = *o.Quality.MinBodyLength
+		}
+		// Whole-list replace: a list keyed by nothing can't be field-merged, and the
+		// universal body/no-label checks still cover a repo that declares none.
+		if o.Quality.RequiredCategories != nil {
+			cats := make([]CategoryRule, 0, len(*o.Quality.RequiredCategories))
+			for _, c := range *o.Quality.RequiredCategories {
+				// Trim the name at the resolution boundary so the cleaned value is what
+				// flows into the reduction's display name, count keys, and error paths —
+				// a name like "type " would otherwise validate but key output oddly.
+				c.Name = strings.TrimSpace(c.Name)
+				cats = append(cats, CategoryRule(c))
+			}
+			base.Quality.RequiredCategories = cats
+		}
+	}
 	return base
 }
 
@@ -254,18 +315,54 @@ func validate(c Config, ownerRepo, file string) error {
 	if c.Staleness.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: staleness.fetchLimit must be > 0, got %d", file, ownerRepo, c.Staleness.FetchLimit)
 	}
-	for _, p := range c.AreaBalance.Prefixes {
+	if err := validatePrefixes(c.AreaBalance.Prefixes, "areaBalance.prefixes", ownerRepo, file); err != nil {
+		return err
+	}
+	// 0 disables the body check; only a negative value is meaningless. Rejecting
+	// <= 0 here would reject the disable value and the unconfigured default.
+	if c.Quality.MinBodyLength < 0 {
+		return fmt.Errorf("manifest %q for %q: quality.minBodyLength must be >= 0, got %d", file, ownerRepo, c.Quality.MinBodyLength)
+	}
+	seen := make(map[string]struct{}, len(c.Quality.RequiredCategories))
+	for _, cat := range c.Quality.RequiredCategories {
+		name := strings.TrimSpace(cat.Name)
+		if name == "" {
+			return fmt.Errorf("manifest %q for %q: quality.requiredCategories has a rule with an empty name", file, ownerRepo)
+		}
+		// Names key the per-category counts case-insensitively; two that collide
+		// would miscount, so reject rather than silently merge them.
+		key := strings.ToLower(name)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("manifest %q for %q: quality.requiredCategories has a duplicate category name %q", file, ownerRepo, cat.Name)
+		}
+		seen[key] = struct{}{}
+		if len(cat.Labels) == 0 && len(cat.Prefixes) == 0 {
+			return fmt.Errorf("manifest %q for %q: quality.requiredCategories category %q has no labels or prefixes", file, ownerRepo, cat.Name)
+		}
+		if err := validatePrefixes(cat.Prefixes, fmt.Sprintf("quality.requiredCategories[%s].prefixes", name), ownerRepo, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validatePrefixes rejects the two prefix-rule footguns shared by area balance and
+// quality categories. fieldPath names the offending field in the error (e.g.
+// "areaBalance.prefixes") so the message stays specific and actionable.
+func validatePrefixes(prefixes []PrefixRule, fieldPath, ownerRepo, file string) error {
+	for _, p := range prefixes {
 		// An empty prefix would match every label; reject so misconfiguration fails
-		// loud rather than silently classifying everything into one area.
+		// loud rather than silently classifying everything into one bucket.
 		if strings.TrimSpace(p.Prefix) == "" {
-			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes has a rule with an empty prefix", file, ownerRepo)
+			return fmt.Errorf("manifest %q for %q: %s has a rule with an empty prefix", file, ownerRepo, fieldPath)
 		}
 		// A zero-length delimiter makes the rule match any label starting with the
-		// prefix, with the real separator leaking into the area name — a broad-match
-		// footgun. The check is exact (not trim-based) because a whitespace delimiter
-		// like ": " is a legitimate separator, unlike a whitespace prefix.
+		// prefix, with the real separator leaking into the projected name — a
+		// broad-match footgun. The check is exact (not trim-based) because a
+		// whitespace delimiter like ": " is a legitimate separator, unlike a
+		// whitespace prefix.
 		if p.Delimiter == "" {
-			return fmt.Errorf("manifest %q for %q: areaBalance.prefixes rule %q has an empty delimiter", file, ownerRepo, p.Prefix)
+			return fmt.Errorf("manifest %q for %q: %s rule %q has an empty delimiter", file, ownerRepo, fieldPath, p.Prefix)
 		}
 	}
 	return nil

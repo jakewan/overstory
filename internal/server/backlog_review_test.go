@@ -215,6 +215,91 @@ func TestBacklogReviewAreaBalanceAllUnclassified(t *testing.T) {
 	}
 }
 
+// qualityIssue builds an issue with a body and labels for the quality reduction.
+func qualityIssue(num int, body string, labels ...string) github.Issue {
+	is := labeledIssue(num, labels...)
+	is.BodyText = body
+	return is
+}
+
+// TestBacklogReviewSurfacesQuality pins the quality grooming signal: given a
+// manifest declaring a body-length bar and a required label category, the tool
+// flags issues with thin bodies, no labels, or a missing category — with the
+// per-check counts and granular, most-incomplete-first list a caller renders.
+func TestBacklogReviewSurfacesQuality(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  quality:\n    minBodyLength: 10\n    requiredCategories:\n      - name: type\n        prefixes:\n          - prefix: type\n            delimiter: \"/\"\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			qualityIssue(1, "a thorough description here", "type/bug"), // passes all
+			qualityIssue(2, "short", "type/bug"),                       // thin body
+			qualityIssue(3, "a thorough description here"),             // no labels + missing type
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	q := facts.Quality
+
+	if q.MinBodyLength != 10 {
+		t.Errorf("MinBodyLength = %d, want 10", q.MinBodyLength)
+	}
+	if !q.CategoriesConfigured {
+		t.Error("CategoriesConfigured = false, want true (category declared)")
+	}
+	if q.MissingBodyCount != 1 {
+		t.Errorf("MissingBodyCount = %d, want 1 (issue 2)", q.MissingBodyCount)
+	}
+	if q.NoLabelsCount != 1 {
+		t.Errorf("NoLabelsCount = %d, want 1 (issue 3)", q.NoLabelsCount)
+	}
+	if q.MissingCategoryCounts["type"] != 1 {
+		t.Errorf("MissingCategoryCounts[type] = %d, want 1 (issue 3)", q.MissingCategoryCounts["type"])
+	}
+	if q.FlaggedCount != 2 {
+		t.Errorf("FlaggedCount = %d, want 2 (issues 2, 3)", q.FlaggedCount)
+	}
+	// Most-incomplete first: issue 3 (no labels + missing type) before issue 2 (thin body).
+	if len(q.FlaggedIssues) != 2 || q.FlaggedIssues[0].Number != 3 {
+		t.Errorf("FlaggedIssues = %+v, want issue 3 first", q.FlaggedIssues)
+	}
+	// The other blocks still reduce the same window.
+	if facts.Staleness.OpenIssueCount != 3 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 3", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewQualityFallsBackToDefaults pins the out-of-box behavior: a repo
+// with no quality block still runs the universal checks (non-empty body, has
+// labels), with the per-category check reported as not-configured.
+func TestBacklogReviewQualityFallsBackToDefaults(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			qualityIssue(1, "", "bug"),        // empty body (default minBodyLength 1)
+			qualityIssue(2, "real body desc"), // no labels
+		},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	q := facts.Quality
+
+	if q.MinBodyLength != 1 {
+		t.Errorf("MinBodyLength = %d, want 1 (default)", q.MinBodyLength)
+	}
+	if q.CategoriesConfigured {
+		t.Error("CategoriesConfigured = true, want false (none declared)")
+	}
+	if q.MissingBodyCount != 1 {
+		t.Errorf("MissingBodyCount = %d, want 1 (issue 1 empty)", q.MissingBodyCount)
+	}
+	if q.NoLabelsCount != 1 {
+		t.Errorf("NoLabelsCount = %d, want 1 (issue 2)", q.NoLabelsCount)
+	}
+}
+
 // TestBacklogReviewSurfacesDeferred pins the deferred-issue grooming signal:
 // given a repo whose manifest declares deferred labels, the tool surfaces the
 // open issues carrying any of them — alongside the staleness block, since both

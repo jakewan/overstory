@@ -19,7 +19,10 @@ import (
 // LastActivityAt is the last human-comment time (else the issue's creation),
 // derived in this layer so the reductions stay GitHub-agnostic. Labels are the
 // issue's label names as GitHub stores them (original casing); the deferred
-// reduction matches them case-insensitively.
+// reduction matches them case-insensitively. BodyText is the issue body rendered
+// to plain text (markdown formatting and HTML-comment template scaffolding
+// stripped), so the quality reduction's "is there real prose here" length check
+// isn't fooled by an empty issue-form stub.
 type Issue struct {
 	Number         int       `json:"number"`
 	Title          string    `json:"title"`
@@ -27,6 +30,7 @@ type Issue struct {
 	CreatedAt      time.Time `json:"createdAt"`
 	LastActivityAt time.Time `json:"lastActivityAt"`
 	Labels         []string  `json:"labels"`
+	BodyText       string    `json:"bodyText"`
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open

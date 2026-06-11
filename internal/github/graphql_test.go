@@ -115,6 +115,49 @@ func TestListOpenIssuesParsesLabels(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesParsesBodyText(t *testing.T) {
+	// (a) the query actually asks GitHub for bodyText — a typo in the selection
+	// would silently ship and the quality reduction would see every body as empty;
+	// (b) the returned bodyText decodes onto Issue.BodyText.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z",
+				 "bodyText":"a real description",
+				 "comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "bodyText") {
+		t.Errorf("query does not request bodyText; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1", len(res.Issues))
+	}
+	if res.Issues[0].BodyText != "a real description" {
+		t.Errorf("BodyText = %q, want %q", res.Issues[0].BodyText, "a real description")
+	}
+}
+
 func TestListOpenIssuesPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
