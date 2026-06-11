@@ -177,6 +177,76 @@ func TestListOpenIssuesParsesBodyText(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesParsesCrossReferences(t *testing.T) {
+	// (a) the query asks GitHub for the cross-reference timeline — a typo in the
+	// selection would silently ship and the cross-reference reduction would see no
+	// edges; (b) the events decode onto Issue.ReferencedBy with the issue-to-issue,
+	// same-repo filtering applied. The first node's payload mirrors a real capture
+	// of jakewan/overstory#1 (an Issue source #9 alongside PullRequest sources),
+	// augmented with a cross-repository event and a duplicate to pin the filters.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		// Issue 1: totalCount 5 but only 4 nodes returned → truncated. Kept source:
+		// Issue #9. Dropped: PullRequest #2, cross-repo Issue #7, duplicate Issue #9.
+		// Issue 2: timelineItems is null. Issue 3: the field is absent entirely.
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":3,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "timelineItems":{"totalCount":5,"nodes":[
+					{"__typename":"CrossReferencedEvent","isCrossRepository":false,"source":{"__typename":"Issue","number":9}},
+					{"__typename":"CrossReferencedEvent","isCrossRepository":false,"source":{"__typename":"PullRequest","number":2}},
+					{"__typename":"CrossReferencedEvent","isCrossRepository":true,"source":{"__typename":"Issue","number":7}},
+					{"__typename":"CrossReferencedEvent","isCrossRepository":false,"source":{"__typename":"Issue","number":9}}
+				 ]}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "timelineItems":null},
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "timelineItems") || !strings.Contains(gotQuery, "CROSS_REFERENCED_EVENT") {
+		t.Errorf("query does not request the cross-reference timeline; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("got %d issues, want 3", len(res.Issues))
+	}
+
+	// Issue 1: PR source, cross-repo source, and duplicate all dropped; #9 kept.
+	if got := res.Issues[0].ReferencedBy; len(got) != 1 || got[0] != 9 {
+		t.Errorf("issue 1 ReferencedBy = %v, want [9]", got)
+	}
+	if !res.Issues[0].CrossRefsTruncated {
+		t.Error("issue 1 CrossRefsTruncated = false, want true (totalCount 5 > 4 nodes)")
+	}
+	// Issues 2 (null) and 3 (absent): no references, not truncated, no panic.
+	for _, i := range []int{1, 2} {
+		if got := res.Issues[i].ReferencedBy; len(got) != 0 {
+			t.Errorf("issue %d ReferencedBy = %v, want empty", res.Issues[i].Number, got)
+		}
+		if res.Issues[i].CrossRefsTruncated {
+			t.Errorf("issue %d CrossRefsTruncated = true, want false", res.Issues[i].Number)
+		}
+	}
+}
+
 func TestListOpenIssuesPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

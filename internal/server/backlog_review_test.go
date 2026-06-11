@@ -137,6 +137,17 @@ func titledIssue(num int, title string) github.Issue {
 	return is
 }
 
+// crossLinkedIssue builds an issue for the cross-reference reduction.
+// referencedBy is the set of issue numbers that cross-reference this one (the
+// incoming edges GitHub records on this issue's timeline), so a directed edge
+// runs from each referencer to num.
+func crossLinkedIssue(num int, title string, referencedBy ...int) github.Issue {
+	is := issue(num, daysAgo(1))
+	is.Title = title
+	is.ReferencedBy = referencedBy
+	return is
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area
@@ -244,6 +255,61 @@ func TestBacklogReviewOverlapGenericDefault(t *testing.T) {
 	}
 	if facts.Overlap.GroupCount != 1 {
 		t.Errorf("GroupCount = %d, want 1", facts.Overlap.GroupCount)
+	}
+}
+
+// TestBacklogReviewSurfacesCrossReferences pins the cross-reference grooming
+// signal: given open issues that reference one another, the tool groups them as a
+// candidate-consolidation cluster, surfaces the directed reference edges as
+// evidence, and leaves unreferenced issues out — alongside the other blocks.
+func TestBacklogReviewSurfacesCrossReferences(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			crossLinkedIssue(1, "Tracking issue", 2), // #1 is referenced by #2
+			crossLinkedIssue(2, "Sub-task A"),
+			crossLinkedIssue(3, "Unrelated"),
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	cr := facts.CrossRef
+
+	if cr.GroupCount != 1 {
+		t.Fatalf("GroupCount = %d, want 1; groups=%+v", cr.GroupCount, cr.Groups)
+	}
+	g := cr.Groups[0]
+	if len(g.Issues) != 2 || g.Issues[0].Number != 1 || g.Issues[1].Number != 2 {
+		t.Errorf("group members = %+v, want issues 1 and 2", g.Issues)
+	}
+	if len(g.References) != 1 || g.References[0].From != 2 || g.References[0].To != 1 {
+		t.Errorf("References = %+v, want one edge 2->1", g.References)
+	}
+	if cr.LargestGroupSize != 2 {
+		t.Errorf("LargestGroupSize = %d, want 2", cr.LargestGroupSize)
+	}
+	// The other blocks still reduce the same window.
+	if facts.Staleness.OpenIssueCount != 3 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 3", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewCrossRefRunsWithoutManifestEntry pins that the cross-reference
+// reduction runs unconditionally: a repo with no manifest entry at all still gets
+// the block (there is no per-repo knob to enable).
+func TestBacklogReviewCrossRefRunsWithoutManifestEntry(t *testing.T) {
+	root := writeManifestDir(t, "other/repo:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{crossLinkedIssue(1, "A", 2), crossLinkedIssue(2, "B")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.CrossRef.GroupCount != 1 {
+		t.Errorf("GroupCount = %d, want 1 (runs unconditionally)", facts.CrossRef.GroupCount)
 	}
 }
 
