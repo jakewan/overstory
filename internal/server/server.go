@@ -142,7 +142,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), and a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), and a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -162,10 +162,13 @@ func backlogReviewTool() *mcp.Tool {
 }
 
 // backlogReviewHandler resolves the repo's conventions, fetches its open issues,
-// and reduces them to the composite backlog facts (a staleness block and a
-// deferred-issue block). Errors are returned plain so the SDK surfaces them as
-// tool errors (IsError); a manifest error names a file, so it is logged to
-// stderr and replaced with a repo-named message on the caller channel.
+// and reduces them to the composite backlog facts — one block per grooming
+// signal (staleness, deferred, area balance, quality, overlap, cross-reference,
+// trajectory). Most blocks reduce the one open-issue fetch; trajectory adds a
+// second open-and-closed fetch and degrades to an unavailable block on failure.
+// Errors from the open fetch are returned plain so the SDK surfaces them as tool
+// errors (IsError); a manifest error names a file, so it is logged to stderr and
+// replaced with a repo-named message on the caller channel.
 func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.Facts, error) {
 		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
@@ -205,6 +208,12 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
 		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		crossref := backlog.ReduceCrossRef(result.Issues, result.TotalOpen, in.Limit)
+
+		// Trajectory needs a second fetch (closed issues too); a failure there
+		// degrades the block rather than failing the whole review, since the other
+		// five blocks already reduced the successful open-issue fetch.
+		trajectory, budget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, result.RateLimit, n, now)
+
 		return nil, backlog.Facts{
 			Repo:        ownerRepo,
 			GeneratedAt: n,
@@ -214,9 +223,57 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 			Quality:     quality,
 			Overlap:     overlap,
 			CrossRef:    crossref,
-			RateLimit:   mapRateLimit(result.RateLimit),
+			Trajectory:  trajectory,
+			RateLimit:   mapRateLimit(budget),
 		}, nil
 	}
+}
+
+// reduceTrajectory runs the trajectory reduction's own fetch — issues updated
+// since the widest window, open and closed — and reduces it, degrading to an
+// unavailable block on failure rather than failing the whole review. It also
+// returns the rate-limit budget to surface: the trajectory fetch's fresher budget
+// on success; on a rate-limit degrade, the throttle's recovery signal (Remaining
+// 0 plus its reset) rather than the now-stale open-fetch budget that would tell a
+// caller "you have budget" at the moment it was throttled; on any other degrade,
+// the open fetch's budget (the last successful read).
+func reduceTrajectory(ctx context.Context, fetcher github.IssueFetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
+	since := n.UTC().AddDate(0, 0, -maxInt(cfg.Windows))
+	activity, err := fetcher.ListIssuesUpdatedSince(ctx, ownerRepo, since, cfg.FetchLimit)
+	if err == nil {
+		return backlog.ReduceTrajectory(activity.Activities, cfg.Windows, activity.Truncated, n), freshestBudget(openBudget, activity.RateLimit)
+	}
+	var rle github.RateLimitedError
+	if errors.As(err, &rle) {
+		return backlog.TrajectoryFacts{Available: false, Unavailable: "rate_limited", Windows: []backlog.TrajectoryWindow{}},
+			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
+	}
+	// The cause may name internal detail; keep it on stderr, off the caller channel.
+	log.Printf("overstory: trajectory fetch for %s: %v", ownerRepo, err)
+	return backlog.TrajectoryFacts{Available: false, Unavailable: "fetch_failed", Windows: []backlog.TrajectoryWindow{}}, openBudget
+}
+
+// maxInt returns the largest of xs. Trajectory windows are validated non-empty
+// and positive (manifest.validate), so the zero default is unreachable in
+// practice; the guard keeps a future caller from computing a garbage window.
+func maxInt(xs []int) int {
+	m := 0
+	for _, x := range xs {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+// freshestBudget picks the budget to report across the two fetches: the
+// trajectory fetch is the later observation, so its budget wins when present; a
+// nil (that fetch carried no budget) falls back to the open fetch's.
+func freshestBudget(open, trajectory *github.RateLimit) *github.RateLimit {
+	if trajectory != nil {
+		return trajectory
+	}
+	return open
 }
 
 // rateLimitResetTime resolves a throttle's recovery signal to an absolute

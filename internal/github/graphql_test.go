@@ -461,3 +461,108 @@ func TestListOpenIssuesRejectsMalformedOwnerRepo(t *testing.T) {
 		t.Error("accepted malformed owner/repo, want error")
 	}
 }
+
+// TestListIssuesUpdatedSinceParsesActivity pins the activity fetch: (a) the query
+// asks GitHub for both states and closedAt — a typo would silently ship and the
+// trajectory would misread closures; (b) timestamps decode onto IssueActivity,
+// with a null closedAt reading as the zero time (open); (c) the budget threads
+// through; (d) an exhausted connection (no more pages) is complete, not truncated.
+func TestListIssuesUpdatedSinceParsesActivity(t *testing.T) {
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		body := `{"data":{"rateLimit":{"remaining":4990,"resetAt":"2026-06-09T01:00:00Z"},"repository":{"issues":{
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"createdAt":"2026-02-01T00:00:00Z","closedAt":null,"updatedAt":"2026-05-01T00:00:00Z"},
+				{"number":2,"createdAt":"2026-01-01T00:00:00Z","closedAt":"2026-04-01T00:00:00Z","updatedAt":"2026-04-01T00:00:00Z"}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListIssuesUpdatedSince(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssuesUpdatedSince: %v", err)
+	}
+	if !strings.Contains(gotQuery, "closedAt") || !strings.Contains(gotQuery, "CLOSED") {
+		t.Errorf("query does not request closed-issue activity; got:\n%s", gotQuery)
+	}
+	if len(res.Activities) != 2 {
+		t.Fatalf("got %d activities, want 2", len(res.Activities))
+	}
+	if !res.Activities[0].ClosedAt.IsZero() {
+		t.Errorf("issue 1 ClosedAt = %v, want zero (null → open)", res.Activities[0].ClosedAt)
+	}
+	wantClosed := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	if !res.Activities[1].ClosedAt.Equal(wantClosed) {
+		t.Errorf("issue 2 ClosedAt = %v, want %v", res.Activities[1].ClosedAt, wantClosed)
+	}
+	if res.Truncated {
+		t.Error("Truncated = true, want false (connection exhausted, fully covered)")
+	}
+	if res.RateLimit == nil || res.RateLimit.Remaining != 4990 {
+		t.Errorf("RateLimit = %+v, want remaining 4990", res.RateLimit)
+	}
+}
+
+// TestListIssuesUpdatedSinceStopsAtFloor pins the floor-stop: once a node updated
+// before `since` appears (DESC order), it and everything after are out of window,
+// so the scan stops and excludes it — and the result is complete (not truncated)
+// even though the page reported more pages, because the floor proves coverage.
+func TestListIssuesUpdatedSinceStopsAtFloor(t *testing.T) {
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	body := `{"data":{"repository":{"issues":{
+		"pageInfo":{"hasNextPage":true,"endCursor":"c1"},
+		"nodes":[
+			{"number":1,"createdAt":"2026-04-15T00:00:00Z","closedAt":null,"updatedAt":"2026-05-01T00:00:00Z"},
+			{"number":2,"createdAt":"2026-01-01T00:00:00Z","closedAt":null,"updatedAt":"2026-02-01T00:00:00Z"}
+		]
+	}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListIssuesUpdatedSince(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssuesUpdatedSince: %v", err)
+	}
+	if len(res.Activities) != 1 || res.Activities[0].Number != 1 {
+		t.Errorf("Activities = %+v, want only issue 1 (issue 2 is past the floor)", res.Activities)
+	}
+	if res.Truncated {
+		t.Error("Truncated = true, want false (floor crossed proves coverage despite hasNextPage)")
+	}
+}
+
+// TestListIssuesUpdatedSinceTruncatesAtFetchLimit pins the never-silently-truncate
+// contract: when the fetch cap is reached before the floor is crossed, coverage is
+// unproven, so the result is truncated and the trajectory counts are lower bounds.
+func TestListIssuesUpdatedSinceTruncatesAtFetchLimit(t *testing.T) {
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	body := `{"data":{"repository":{"issues":{
+		"pageInfo":{"hasNextPage":true,"endCursor":"c1"},
+		"nodes":[
+			{"number":1,"createdAt":"2026-04-15T00:00:00Z","closedAt":null,"updatedAt":"2026-05-02T00:00:00Z"},
+			{"number":2,"createdAt":"2026-04-10T00:00:00Z","closedAt":null,"updatedAt":"2026-05-01T00:00:00Z"}
+		]
+	}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListIssuesUpdatedSince(context.Background(), "acme/widgets", since, 2)
+	if err != nil {
+		t.Fatalf("ListIssuesUpdatedSince: %v", err)
+	}
+	if len(res.Activities) != 2 {
+		t.Fatalf("got %d activities, want 2 (the cap)", len(res.Activities))
+	}
+	if !res.Truncated {
+		t.Error("Truncated = false, want true (fetch cap hit before the floor)")
+	}
+}
