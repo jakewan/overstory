@@ -518,7 +518,9 @@ func TestResolveAcceptsOverlapThresholdBounds(t *testing.T) {
 }
 
 func TestResolveRejectsOverlapThresholdOutOfRange(t *testing.T) {
-	for _, v := range []string{"1.5", "-0.1"} {
+	// .nan is rejected explicitly: it passes a naive range check (every NaN
+	// comparison is false) but would silently degrade linking to exact-match-only.
+	for _, v := range []string{"1.5", "-0.1", ".nan"} {
 		dir := t.TempDir()
 		writeManifest(t, dir, "repos.yml", "acme/widgets:\n  overlap:\n    titleSimilarityThreshold: "+v+"\n")
 		_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")

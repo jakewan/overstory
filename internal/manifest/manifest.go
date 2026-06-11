@@ -7,6 +7,7 @@ package manifest
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -371,8 +372,10 @@ func validate(c Config, ownerRepo, file string) error {
 	// A Sørensen–Dice score is in [0,1]; 0 disables the reduction and 1 is exact-
 	// match-only, so both bounds are valid — only a value outside the range is
 	// meaningless. (Mirror quality.minBodyLength's inclusive care, not staleness's
-	// <= 0 rejection, which would wrongly reject the disable value.)
-	if c.Overlap.TitleSimilarityThreshold < 0 || c.Overlap.TitleSimilarityThreshold > 1 {
+	// <= 0 rejection, which would wrongly reject the disable value.) NaN is rejected
+	// explicitly: every comparison against NaN is false, so a YAML `.nan` would pass
+	// the range check and then silently make only exact-match titles link.
+	if math.IsNaN(c.Overlap.TitleSimilarityThreshold) || c.Overlap.TitleSimilarityThreshold < 0 || c.Overlap.TitleSimilarityThreshold > 1 {
 		return fmt.Errorf("manifest %q for %q: overlap.titleSimilarityThreshold must be in [0,1], got %g", file, ownerRepo, c.Overlap.TitleSimilarityThreshold)
 	}
 	return nil
