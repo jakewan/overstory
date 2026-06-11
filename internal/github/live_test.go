@@ -18,7 +18,11 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 		t.Skip("set OVERSTORY_LIVE_REPO=owner/repo to run the live GitHub schema check (needs gh auth)")
 	}
 	f := NewGraphQLFetcher()
-	ctx := context.Background()
+	// Bound the whole test explicitly. The HTTP client already caps each request at
+	// 30s, but a deadline on the context keeps the total — across both fetches and
+	// any pagination — from running away if the network stalls.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	if _, err := f.ListOpenIssues(ctx, repo, 5); err != nil {
 		t.Errorf("ListOpenIssues against %s: %v", repo, err)
