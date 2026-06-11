@@ -87,6 +87,10 @@ func collectJSONFields(t reflect.Type, out map[string]struct{}) {
 // decode structs read. Checking the connection structs transitively covers the
 // node structs they nest; rateLimitNode is checked separately because it decodes
 // from the query root, not from repository.issues.
+//
+// When you add a query or a decode struct, add it to the cases below — the guard
+// only inspects the structs these cases enumerate, so a new decode type is
+// otherwise silently unguarded (the drift this test exists to catch).
 func TestQueryDecodeContract(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
