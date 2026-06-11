@@ -1,8 +1,9 @@
 // Package manifest resolves a repository's conventions from per-repo manifest
 // files deep-merged over generic defaults. Manifests are discovered from an XDG
 // drop-in directory (or an explicit file list), keyed by "owner/repo", so a
-// single server serves any repository without code changes. This slice models
-// staleness and deferred-issue conventions.
+// single server serves any repository without code changes. It resolves the
+// conventions each backlog reduction consumes (thresholds, label taxonomies, and
+// similar), each as its own config block.
 package manifest
 
 import (
