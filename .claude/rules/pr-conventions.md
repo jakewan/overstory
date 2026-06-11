@@ -47,6 +47,8 @@ No entry is needed for: internal refactors with no observable effect, test-only 
 
 Add the entry under `## [Unreleased]` in the matching category — `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, or `Security`. Keep it concise, user-facing, and present-tense.
 
+Anchor each entry to its introducing PR as a trailing `(#N)` — the PR number, not the issue (the related issue is linked from the PR body instead). Because the number isn't known until the PR exists, the entry can be authored with the tracking-issue number and corrected to the PR number once it's created.
+
 ## Branch Freshness
 
 (extension point: `freshness-response-policy`)
