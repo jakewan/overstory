@@ -19,6 +19,17 @@ type Facts struct {
 	Deferred    DeferredFacts    `json:"deferred"`
 	AreaBalance AreaBalanceFacts `json:"areaBalance"`
 	Quality     QualityFacts     `json:"quality"`
+	RateLimit   *RateLimitFacts  `json:"rateLimit,omitempty"`
+}
+
+// RateLimitFacts is the GraphQL points-budget snapshot from the fetch, so a
+// caller can pace itself: the points Remaining in the current window and the
+// ResetAt instant it refills. It is absent (nil, omitted from the output) when
+// the fetch carried no budget block, so a caller never mistakes an unknown
+// budget for a present one.
+type RateLimitFacts struct {
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"resetAt"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open
