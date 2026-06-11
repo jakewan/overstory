@@ -211,7 +211,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 
 		// Trajectory needs a second fetch (closed issues too); a failure there
 		// degrades the block rather than failing the whole review, since the other
-		// five blocks already reduced the successful open-issue fetch.
+		// six blocks already reduced the successful open-issue fetch.
 		trajectory, budget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, result.RateLimit, n, now)
 
 		return nil, backlog.Facts{
