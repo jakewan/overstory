@@ -7,6 +7,7 @@ package manifest
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,7 @@ type Config struct {
 	Deferred    DeferredConfig
 	AreaBalance AreaBalanceConfig
 	Quality     QualityConfig
+	Overlap     OverlapConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -80,6 +82,16 @@ type CategoryRule struct {
 	Prefixes []PrefixRule
 }
 
+// OverlapConfig holds the resolved title-overlap convention. TitleSimilarityThreshold
+// is the char-trigram Sørensen–Dice score two open-issue titles must reach to be
+// linked as candidate duplicates: 0 disables the reduction, 1 requires an exact
+// (normalized) match, and the default (0.5) groups clearly-similar titles. Unlike
+// Deferred, it has a generic default so the reduction works on any repo out of
+// the box — title similarity needs no repo-specific vocabulary.
+type OverlapConfig struct {
+	TitleSimilarityThreshold float64
+}
+
 // Defaults returns the generic defaults applied when a repository has no
 // manifest entry, or for fields its entry omits. These are the one place a
 // convention value is allowed to live in Go — the fallback, not a repo's
@@ -97,6 +109,9 @@ func Defaults() Config {
 		// of the box; RequiredCategories has no default — label families are
 		// repo-specific, like Deferred.
 		Quality: QualityConfig{MinBodyLength: 1},
+		// 0.5 links clearly-similar titles while leaving paraphrases that share only
+		// a word or two below the bar; tunable per repo.
+		Overlap: OverlapConfig{TitleSimilarityThreshold: 0.5},
 	}
 }
 
@@ -196,6 +211,7 @@ type fileConfig struct {
 	Deferred    *deferredFile    `yaml:"deferred"`
 	AreaBalance *areaBalanceFile `yaml:"areaBalance"`
 	Quality     *qualityFile     `yaml:"quality"`
+	Overlap     *overlapFile     `yaml:"overlap"`
 }
 
 type stalenessFile struct {
@@ -233,6 +249,13 @@ type categoryFile struct {
 	Name     string       `yaml:"name"`
 	Labels   []string     `yaml:"labels"`
 	Prefixes []PrefixRule `yaml:"prefixes"`
+}
+
+// overlapFile decodes the overlap block. The pointer distinguishes an omitted
+// threshold (inherit the 0.5 default) from an explicit 0 (disable the reduction),
+// the same omitted-vs-explicit distinction the pointer idiom exists for.
+type overlapFile struct {
+	TitleSimilarityThreshold *float64 `yaml:"titleSimilarityThreshold"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -305,6 +328,9 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.Quality.RequiredCategories = cats
 		}
 	}
+	if o.Overlap != nil && o.Overlap.TitleSimilarityThreshold != nil {
+		base.Overlap.TitleSimilarityThreshold = *o.Overlap.TitleSimilarityThreshold
+	}
 	return base
 }
 
@@ -342,6 +368,15 @@ func validate(c Config, ownerRepo, file string) error {
 		if err := validatePrefixes(cat.Prefixes, fmt.Sprintf("quality.requiredCategories[%s].prefixes", name), ownerRepo, file); err != nil {
 			return err
 		}
+	}
+	// A Sørensen–Dice score is in [0,1]; 0 disables the reduction and 1 is exact-
+	// match-only, so both bounds are valid — only a value outside the range is
+	// meaningless. (Mirror quality.minBodyLength's inclusive care, not staleness's
+	// <= 0 rejection, which would wrongly reject the disable value.) NaN is rejected
+	// explicitly: every comparison against NaN is false, so a YAML `.nan` would pass
+	// the range check and then silently make only exact-match titles link.
+	if math.IsNaN(c.Overlap.TitleSimilarityThreshold) || c.Overlap.TitleSimilarityThreshold < 0 || c.Overlap.TitleSimilarityThreshold > 1 {
+		return fmt.Errorf("manifest %q for %q: overlap.titleSimilarityThreshold must be in [0,1], got %g", file, ownerRepo, c.Overlap.TitleSimilarityThreshold)
 	}
 	return nil
 }

@@ -142,7 +142,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), and a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), and an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -150,7 +150,7 @@ func backlogReviewTool() *mcp.Tool {
 				"repo":  {Type: "string", Description: "repository name"},
 				"limit": {
 					Type:        "integer",
-					Description: "maximum number of issues to list per reduction (staleness, deferred, quality)",
+					Description: "maximum number of items to list per reduction: issues for staleness, deferred, and quality; overlap groups for overlap",
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
@@ -203,6 +203,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 		deferred := backlog.ReduceDeferred(result.Issues, result.TotalOpen, cfg.Deferred.Labels, in.Limit, n)
 		area := backlog.ReduceAreaBalance(result.Issues, result.TotalOpen, cfg.AreaBalance.Labels, mapPrefixes(cfg.AreaBalance.Prefixes))
 		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
+		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		return nil, backlog.Facts{
 			Repo:        ownerRepo,
 			GeneratedAt: n,
@@ -210,6 +211,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 			Deferred:    deferred,
 			AreaBalance: area,
 			Quality:     quality,
+			Overlap:     overlap,
 			RateLimit:   mapRateLimit(result.RateLimit),
 		}, nil
 	}

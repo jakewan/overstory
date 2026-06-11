@@ -19,6 +19,7 @@ type Facts struct {
 	Deferred    DeferredFacts    `json:"deferred"`
 	AreaBalance AreaBalanceFacts `json:"areaBalance"`
 	Quality     QualityFacts     `json:"quality"`
+	Overlap     OverlapFacts     `json:"overlap"`
 	RateLimit   *RateLimitFacts  `json:"rateLimit,omitempty"`
 }
 

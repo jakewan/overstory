@@ -461,3 +461,75 @@ func TestResolveQualityCategoryErrorNamesCategory(t *testing.T) {
 		t.Errorf("error %q does not name the offending category", err)
 	}
 }
+
+func TestDefaultsIncludesOverlapThreshold(t *testing.T) {
+	if d := Defaults(); d.Overlap.TitleSimilarityThreshold != 0.5 {
+		t.Errorf("Defaults().Overlap.TitleSimilarityThreshold = %g, want 0.5", d.Overlap.TitleSimilarityThreshold)
+	}
+}
+
+func TestResolveMergesOverlapThreshold(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  overlap:\n    titleSimilarityThreshold: 0.8\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Overlap.TitleSimilarityThreshold != 0.8 {
+		t.Errorf("threshold = %g, want 0.8 (from manifest)", cfg.Overlap.TitleSimilarityThreshold)
+	}
+}
+
+func TestResolveOverlapOmittedInheritsDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Overlap.TitleSimilarityThreshold != 0.5 {
+		t.Errorf("threshold = %g, want 0.5 (inherited default)", cfg.Overlap.TitleSimilarityThreshold)
+	}
+}
+
+func TestResolveOverlapExplicitZeroDisables(t *testing.T) {
+	dir := t.TempDir()
+	// An explicit 0 (disable) must be distinguishable from an omitted field (which
+	// inherits the 0.5 default) — the omitted-vs-explicit pointer idiom.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  overlap:\n    titleSimilarityThreshold: 0\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Overlap.TitleSimilarityThreshold != 0 {
+		t.Errorf("threshold = %g, want 0 (explicit disable, not the default)", cfg.Overlap.TitleSimilarityThreshold)
+	}
+}
+
+func TestResolveAcceptsOverlapThresholdBounds(t *testing.T) {
+	// Both 0 and 1 are valid (disable and exact-match-only); only out-of-range fails.
+	for _, v := range []string{"0", "1"} {
+		dir := t.TempDir()
+		writeManifest(t, dir, "repos.yml", "acme/widgets:\n  overlap:\n    titleSimilarityThreshold: "+v+"\n")
+		if _, _, err := NewResolver(dir, nil).Resolve("acme/widgets"); err != nil {
+			t.Errorf("threshold %s: unexpected error %v", v, err)
+		}
+	}
+}
+
+func TestResolveRejectsOverlapThresholdOutOfRange(t *testing.T) {
+	// .nan is rejected explicitly: it passes a naive range check (every NaN
+	// comparison is false) but would silently degrade linking to exact-match-only.
+	for _, v := range []string{"1.5", "-0.1", ".nan"} {
+		dir := t.TempDir()
+		writeManifest(t, dir, "repos.yml", "acme/widgets:\n  overlap:\n    titleSimilarityThreshold: "+v+"\n")
+		_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+		if err == nil {
+			t.Errorf("threshold %s: want range error", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "titleSimilarityThreshold") {
+			t.Errorf("threshold %s: error %q does not name the field", v, err)
+		}
+	}
+}
