@@ -18,13 +18,24 @@ import (
 // our query names that the real API lacks) is the gated live test's job, since
 // only a real call can see GitHub's schema.
 
-var identifierPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+var (
+	identifierPattern = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
+	// argListPattern matches a parenthesized argument list or the operation
+	// signature. Neither nests parentheses in these queries (inner structure uses
+	// {} and []), so a single non-greedy-equivalent character-class match is exact.
+	argListPattern = regexp.MustCompile(`\([^)]*\)`)
+)
 
-// queryIdentifiers is the set of identifier tokens in a GraphQL query, so a field
-// is matched as a whole word — "id" must not be satisfied by "isCrossRepository".
+// queryIdentifiers is the set of identifier tokens in a GraphQL query's selection
+// sets, so a field is matched as a whole word — "id" must not be satisfied by
+// "isCrossRepository". Argument lists and the operation signature are stripped
+// first: an argument or variable identifier (e.g. the `name` in
+// `repository(owner:$owner, name:$name)`) must not masquerade as a selected field
+// and mask the drift of a same-named selection (the label node's `name`).
 func queryIdentifiers(query string) map[string]bool {
+	selections := argListPattern.ReplaceAllString(query, "")
 	out := map[string]bool{}
-	for _, tok := range identifierPattern.FindAllString(query, -1) {
+	for _, tok := range identifierPattern.FindAllString(selections, -1) {
 		out[tok] = true
 	}
 	return out
@@ -109,5 +120,37 @@ func TestMissingQueryFieldsCatchesDrift(t *testing.T) {
 	complete := `issues{ nodes{ number createdAt closedAt updatedAt } }`
 	if missing := missingQueryFields(complete, issueActivityNode{}); len(missing) != 0 {
 		t.Errorf("missing = %v, want none for a complete query", missing)
+	}
+
+	// A field whose name appears only inside an argument list (here `name:$name`),
+	// never as a selection, must still read as missing — argument identifiers are
+	// stripped before matching, so they can't mask a dropped selection.
+	argOnly := `repository(owner:$owner, name:$name){ issues{ nodes{ number } } }`
+	sample := struct {
+		Name string `json:"name"`
+	}{}
+	if missing := missingQueryFields(argOnly, sample); len(missing) != 1 || missing[0] != "name" {
+		t.Errorf("missing = %v, want [name] (an argument identifier must not mask a dropped selection)", missing)
+	}
+}
+
+// TestQueryStructuralKeys covers the wrapper keys the decode path unmarshals
+// through but the field-level contract test does not reach: the response is
+// decoded via repository -> issues and a root rateLimit, and renaming any of those
+// selections would compile and silently zero-value. These keys are a small fixed
+// set (not a growing field list), so an explicit check is the apt shape.
+func TestQueryStructuralKeys(t *testing.T) {
+	for _, q := range []struct{ name, query string }{
+		{"open issues", issuesQuery},
+		{"activity", activityQuery},
+	} {
+		t.Run(q.name, func(t *testing.T) {
+			idents := queryIdentifiers(q.query)
+			for _, key := range []string{"repository", "issues", "rateLimit"} {
+				if !idents[key] {
+					t.Errorf("query does not select structural key %q the decode path depends on", key)
+				}
+			}
+		})
 	}
 }
