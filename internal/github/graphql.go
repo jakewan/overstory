@@ -25,8 +25,9 @@ const (
 // become query structure. UPDATED_AT ASC is the closest available proxy for
 // "least recently active first"; comments(last:25) bounds the window scanned to
 // derive last-human activity; labels(first:25) bounds the labels read per issue
-// (an issue with >25 labels could miss a deferred label in the tail — acceptable
-// for a grooming signal). bodyText is the rendered-plaintext body (markdown and
+// (an issue with >25 labels could miss a label in the tail, so the deferred,
+// area-balance, and quality signals can misread such an issue — acceptable for a
+// grooming signal). bodyText is the rendered-plaintext body (markdown and
 // HTML-comment scaffolding stripped) for the quality reduction's length check;
 // the raw markdown body is deliberately not fetched until a later increment needs
 // it, so unread payload doesn't bloat this shared fetch.
