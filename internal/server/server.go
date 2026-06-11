@@ -222,16 +222,19 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 // instant — this is the one place the server's clock validates the github-parsed
 // time the clock-free fetch layer cannot.
 func rateLimitResetTime(e github.RateLimitedError, now func() time.Time) time.Time {
+	// Sample the clock once so the retry-after resolution and the past-time clamp
+	// reason about the same instant.
+	n := now()
 	var when time.Time
 	switch {
 	case !e.ResetAt.IsZero():
 		when = e.ResetAt
 	case e.RetryAfter > 0:
-		when = now().Add(e.RetryAfter)
+		when = n.Add(e.RetryAfter)
 	default:
 		return time.Time{}
 	}
-	if !when.After(now()) {
+	if !when.After(n) {
 		return time.Time{}
 	}
 	return when
