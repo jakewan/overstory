@@ -10,6 +10,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -181,6 +182,15 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 
 		result, err := fetcher.ListOpenIssues(ctx, ownerRepo, cfg.Staleness.FetchLimit)
 		if err != nil {
+			// A throttle carries a recovery signal the caller can act on: name the
+			// absolute instant it can retry at, resolving a relative retry-after
+			// against this layer's clock. Other failures surface plain.
+			var rle github.RateLimitedError
+			if errors.As(err, &rle) {
+				if when := rateLimitResetTime(rle, now); !when.IsZero() {
+					return nil, backlog.Facts{}, fmt.Errorf("fetching issues for %s: %w (retry after %s)", ownerRepo, err, when.UTC().Format(time.RFC3339))
+				}
+			}
 			return nil, backlog.Facts{}, fmt.Errorf("fetching issues for %s: %w", ownerRepo, err)
 		}
 
@@ -200,8 +210,44 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 			Deferred:    deferred,
 			AreaBalance: area,
 			Quality:     quality,
+			RateLimit:   mapRateLimit(result.RateLimit),
 		}, nil
 	}
+}
+
+// rateLimitResetTime resolves a throttle's recovery signal to an absolute
+// wall-clock instant: an absolute ResetAt verbatim, else now()+RetryAfter, else
+// zero. A resolved time at or before now is clamped to zero (clock skew, or a
+// stale signal) so the caller is never told to retry at an already-elapsed
+// instant — this is the one place the server's clock validates the github-parsed
+// time the clock-free fetch layer cannot.
+func rateLimitResetTime(e github.RateLimitedError, now func() time.Time) time.Time {
+	// Sample the clock once so the retry-after resolution and the past-time clamp
+	// reason about the same instant.
+	n := now()
+	var when time.Time
+	switch {
+	case !e.ResetAt.IsZero():
+		when = e.ResetAt
+	case e.RetryAfter > 0:
+		when = n.Add(e.RetryAfter)
+	default:
+		return time.Time{}
+	}
+	if !when.After(n) {
+		return time.Time{}
+	}
+	return when
+}
+
+// mapRateLimit adapts the fetch's budget snapshot to the backlog fact, keeping
+// the reduction layer decoupled from the github layer; nil (no budget observed)
+// passes through so the fact is omitted from the output.
+func mapRateLimit(in *github.RateLimit) *backlog.RateLimitFacts {
+	if in == nil {
+		return nil
+	}
+	return &backlog.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
 }
 
 func thresholdSource(matched bool) string {

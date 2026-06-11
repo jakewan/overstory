@@ -460,6 +460,100 @@ func TestBacklogReviewRepoNotFound(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewRateLimitedSurfacesResetTime pins the recovery-signal path: a
+// throttle still surfaces as a tool error naming the repo, but when the typed
+// rate-limit error carries a reset signal the message names the absolute instant
+// the caller can retry at. A relative RetryAfter is resolved against the server
+// clock; an absent or already-elapsed signal degrades to the plain message with
+// no fabricated time.
+func TestBacklogReviewRateLimitedSurfacesResetTime(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantTime string // RFC3339 the message must name; "" means no time named
+	}{
+		{"absolute resetAt", github.RateLimitedError{ResetAt: fixedClock.Add(15 * time.Minute)}, "2026-06-09T00:15:00Z"},
+		{"relative retryAfter resolved against clock", github.RateLimitedError{RetryAfter: 60 * time.Second}, "2026-06-09T00:01:00Z"},
+		{"no signal", github.RateLimitedError{}, ""},
+		{"elapsed resetAt clamped", github.RateLimitedError{ResetAt: fixedClock.Add(-5 * time.Minute)}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := fakeFetcher{err: tc.err}
+			srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+			res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})
+
+			if !res.IsError {
+				t.Fatalf("IsError = false, want true for a throttle")
+			}
+			msg := contentText(res)
+			if !strings.Contains(msg, "acme/widgets") {
+				t.Errorf("message %q does not name the repo", msg)
+			}
+			if tc.wantTime == "" {
+				if strings.Contains(msg, "retry after") {
+					t.Errorf("message %q names a retry time, want none", msg)
+				}
+				return
+			}
+			if !strings.Contains(msg, "retry after "+tc.wantTime) {
+				t.Errorf("message %q does not name retry time %q", msg, tc.wantTime)
+			}
+		})
+	}
+}
+
+// TestBacklogReviewSurfacesRateLimitBudget pins the success-path pacing fact: a
+// fetch's GraphQL budget threads through to the rateLimit block so a caller can
+// pace itself.
+func TestBacklogReviewSurfacesRateLimitBudget(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	reset := fixedClock.Add(30 * time.Minute)
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(1, daysAgo(10))},
+		TotalOpen: 1,
+		RateLimit: &github.RateLimit{Remaining: 4321, ResetAt: reset},
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.RateLimit == nil {
+		t.Fatal("RateLimit = nil, want budget fact")
+	}
+	if facts.RateLimit.Remaining != 4321 {
+		t.Errorf("Remaining = %d, want 4321", facts.RateLimit.Remaining)
+	}
+	if !facts.RateLimit.ResetAt.Equal(reset) {
+		t.Errorf("ResetAt = %v, want %v", facts.RateLimit.ResetAt, reset)
+	}
+}
+
+// TestBacklogReviewOmitsRateLimitWhenAbsent pins that an unknown budget is
+// omitted from the output, not rendered as a present-but-zero block. The
+// assertion is on the marshaled bytes: after decode, a null pointer and an
+// omitted field are indistinguishable, so only the raw JSON proves omitempty.
+func TestBacklogReviewOmitsRateLimitWhenAbsent(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(1, daysAgo(10))},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})
+	if res.IsError {
+		t.Fatalf("unexpected tool error: %s", contentText(res))
+	}
+	raw, err := json.Marshal(res.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	if strings.Contains(string(raw), "rateLimit") {
+		t.Errorf("output names rateLimit when budget is absent: %s", raw)
+	}
+}
+
 // TestBacklogReviewRejectsSplitManifestKey pins the misconfiguration path: when a
 // repo's key is defined in more than one discovered manifest file, the tool fails
 // loud rather than silently dropping an entry. The caller channel names only the

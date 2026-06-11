@@ -37,6 +37,25 @@ func jsonServer(t *testing.T, status int, body string) *httptest.Server {
 	return srv
 }
 
+// jsonServerWithHeaders is jsonServer plus response headers, for the rate-limit
+// recovery-signal tests. Every header is set before WriteHeader — net/http drops
+// any header set after the status is written, which would silently false-green
+// the populated cases on the no-signal assertions.
+func jsonServerWithHeaders(t *testing.T, status int, headers map[string]string, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for k, v := range headers {
+			w.Header().Set(k, v)
+		}
+		w.WriteHeader(status)
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestListOpenIssuesDerivesLastHumanActivity(t *testing.T) {
 	body := `{"data":{"repository":{"issues":{
 		"totalCount":2,
@@ -215,6 +234,134 @@ func TestListOpenIssuesErrorClassification(t *testing.T) {
 				t.Errorf("error = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestListOpenIssuesRateLimitCarriesResetSignal pins that a throttle returns the
+// typed RateLimitedError with the reset signal parsed from GitHub's response —
+// X-RateLimit-Reset (epoch) and Retry-After (seconds or HTTP-date) from headers,
+// or the GraphQL body's resetAt as a fallback on the secondary-limit path where
+// headers are often absent. With no signal at all it still classifies as a rate
+// limit, just with a zero-value reset.
+func TestListOpenIssuesRateLimitCarriesResetSignal(t *testing.T) {
+	const epoch = 1780000000
+	httpDate := time.Date(2026, 6, 10, 0, 15, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name           string
+		status         int
+		headers        map[string]string
+		body           string
+		wantResetAt    time.Time
+		wantRetryAfter time.Duration
+	}{
+		{"403 X-RateLimit-Reset epoch", http.StatusForbidden, map[string]string{"X-RateLimit-Reset": "1780000000"}, ``, time.Unix(epoch, 0).UTC(), 0},
+		{"429 Retry-After seconds", http.StatusTooManyRequests, map[string]string{"Retry-After": "60"}, ``, time.Time{}, 60 * time.Second},
+		{"429 Retry-After HTTP-date", http.StatusTooManyRequests, map[string]string{"Retry-After": "Wed, 10 Jun 2026 00:15:00 GMT"}, ``, httpDate, 0},
+		{"200 GraphQL RATE_LIMITED with headers", http.StatusOK, map[string]string{"X-RateLimit-Reset": "1780000000"}, `{"errors":[{"type":"RATE_LIMITED","message":"x"}]}`, time.Unix(epoch, 0).UTC(), 0},
+		{"200 GraphQL RATE_LIMITED body fallback", http.StatusOK, nil, `{"data":{"rateLimit":{"remaining":0,"resetAt":"2026-06-10T00:15:00Z"}},"errors":[{"type":"RATE_LIMITED","message":"x"}]}`, httpDate, 0},
+		{"403 no rate headers graceful", http.StatusForbidden, nil, ``, time.Time{}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := jsonServerWithHeaders(t, tc.status, tc.headers, tc.body)
+			_, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+			if !errors.Is(err, ErrRateLimited) {
+				t.Fatalf("error = %v, want ErrRateLimited", err)
+			}
+			var rle RateLimitedError
+			if !errors.As(err, &rle) {
+				t.Fatalf("error %v is not a RateLimitedError", err)
+			}
+			if !rle.ResetAt.Equal(tc.wantResetAt) {
+				t.Errorf("ResetAt = %v, want %v", rle.ResetAt, tc.wantResetAt)
+			}
+			if rle.RetryAfter != tc.wantRetryAfter {
+				t.Errorf("RetryAfter = %v, want %v", rle.RetryAfter, tc.wantRetryAfter)
+			}
+		})
+	}
+}
+
+// TestListOpenIssuesParsesRateLimit pins the success-path budget fact: (a) the
+// query asks GitHub for the rateLimit field — a typo in the selection would
+// silently ship and the budget would always read empty; (b) the returned budget
+// decodes onto IssueListResult.RateLimit.
+func TestListOpenIssuesParsesRateLimit(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		body := `{"data":{"rateLimit":{"remaining":4321,"resetAt":"2026-06-09T01:00:00Z"},"repository":{"issues":{
+			"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[{"number":1,"createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "rateLimit") {
+		t.Errorf("query does not request rateLimit; got:\n%s", gotQuery)
+	}
+	if res.RateLimit == nil {
+		t.Fatal("RateLimit = nil, want decoded budget")
+	}
+	if res.RateLimit.Remaining != 4321 {
+		t.Errorf("Remaining = %d, want 4321", res.RateLimit.Remaining)
+	}
+	wantReset := time.Date(2026, 6, 9, 1, 0, 0, 0, time.UTC)
+	if !res.RateLimit.ResetAt.Equal(wantReset) {
+		t.Errorf("ResetAt = %v, want %v", res.RateLimit.ResetAt, wantReset)
+	}
+}
+
+// TestListOpenIssuesRateLimitUsesLastPage pins that the budget reflects the most
+// recent page — the freshest observation of remaining points — not the first.
+func TestListOpenIssuesRateLimitUsesLastPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				After *string `json:"after"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		var body string
+		if req.Variables.After == nil {
+			body = `{"data":{"rateLimit":{"remaining":5000,"resetAt":"2026-06-09T01:00:00Z"},"repository":{"issues":{"totalCount":3,"pageInfo":{"hasNextPage":true,"endCursor":"c1"},"nodes":[
+				{"number":1,"createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}},
+				{"number":2,"createdAt":"2025-01-02T00:00:00Z","comments":{"nodes":[]}}
+			]}}}}`
+		} else {
+			body = `{"data":{"rateLimit":{"remaining":4998,"resetAt":"2026-06-09T01:00:00Z"},"repository":{"issues":{"totalCount":3,"pageInfo":{"hasNextPage":false,"endCursor":"c2"},"nodes":[
+				{"number":3,"createdAt":"2025-01-03T00:00:00Z","comments":{"nodes":[]}}
+			]}}}}`
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 250)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if res.RateLimit == nil {
+		t.Fatal("RateLimit = nil, want last page's budget")
+	}
+	if res.RateLimit.Remaining != 4998 {
+		t.Errorf("Remaining = %d, want 4998 (last page wins)", res.RateLimit.Remaining)
 	}
 }
 
