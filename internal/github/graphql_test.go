@@ -566,3 +566,25 @@ func TestListIssuesUpdatedSinceTruncatesAtFetchLimit(t *testing.T) {
 		t.Error("Truncated = false, want true (fetch cap hit before the floor)")
 	}
 }
+
+// TestListIssuesUpdatedSinceTruncatesOnUnusableCursor pins that a page reporting
+// more pages (hasNextPage) but no cursor to fetch them is treated as unproven
+// coverage — truncated — not as exhaustion. Claiming exhaustion there would
+// report lower-bound counts as complete, the silent-truncation the contract bars.
+func TestListIssuesUpdatedSinceTruncatesOnUnusableCursor(t *testing.T) {
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	body := `{"data":{"repository":{"issues":{
+		"pageInfo":{"hasNextPage":true,"endCursor":""},
+		"nodes":[
+			{"number":1,"createdAt":"2026-04-15T00:00:00Z","closedAt":null,"updatedAt":"2026-05-01T00:00:00Z"}
+		]
+	}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListIssuesUpdatedSince(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssuesUpdatedSince: %v", err)
+	}
+	if !res.Truncated {
+		t.Error("Truncated = false, want true (hasNextPage with no cursor is unproven coverage)")
+	}
+}

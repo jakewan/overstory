@@ -300,9 +300,12 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 		if crossedFloor {
 			break
 		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			exhausted = true
+		if !conn.PageInfo.HasNextPage {
+			exhausted = true // connection drained: coverage is complete
 			break
+		}
+		if conn.PageInfo.EndCursor == "" {
+			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
 		}
 		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
 			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
