@@ -434,6 +434,20 @@ func TestResolveRejectsInvalidQuality(t *testing.T) {
 	}
 }
 
+func TestResolveTrimsCategoryName(t *testing.T) {
+	dir := t.TempDir()
+	// A name with surrounding whitespace validates (the checks trim) but must also be
+	// stored trimmed, so it doesn't leak into the reduction's output keys and paths.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  quality:\n    requiredCategories:\n      - name: \"type \"\n        labels: [bug]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Quality.RequiredCategories) != 1 || cfg.Quality.RequiredCategories[0].Name != "type" {
+		t.Errorf("category name = %q, want %q (trimmed)", cfg.Quality.RequiredCategories[0].Name, "type")
+	}
+}
+
 func TestResolveQualityCategoryErrorNamesCategory(t *testing.T) {
 	dir := t.TempDir()
 	// The shared prefix validator must carry the category name into the message so

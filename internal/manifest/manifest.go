@@ -296,6 +296,10 @@ func mergeConfig(base Config, o fileConfig) Config {
 		if o.Quality.RequiredCategories != nil {
 			cats := make([]CategoryRule, 0, len(*o.Quality.RequiredCategories))
 			for _, c := range *o.Quality.RequiredCategories {
+				// Trim the name at the resolution boundary so the cleaned value is what
+				// flows into the reduction's display name, count keys, and error paths —
+				// a name like "type " would otherwise validate but key output oddly.
+				c.Name = strings.TrimSpace(c.Name)
 				cats = append(cats, CategoryRule(c))
 			}
 			base.Quality.RequiredCategories = cats
