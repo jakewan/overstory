@@ -77,6 +77,11 @@ func ReduceOverlap(issues []github.Issue, totalOpen int, params OverlapParams, l
 		FetchTruncated: len(issues) < totalOpen,
 		Groups:         make([]OverlapGroup, 0),
 	}
+	// A 0 threshold disables the reduction; return before the per-issue shingling so
+	// the disabled path costs nothing proportional to the fetched window.
+	if params.TitleThreshold <= 0 {
+		return facts
+	}
 
 	// Precompute each title once: its trigram multiset (the linking metric) and its
 	// word set (the rendered evidence). This keeps edge detection O(n^2) in
