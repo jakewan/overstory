@@ -42,6 +42,7 @@ This server speaks JSON-RPC over stdio.
 - Isolate filesystem state with `t.TempDir()`; register cleanup with `t.Cleanup`.
 - Tests describe **what** the code does from the caller's perspective, not **how**. An interface should exist because a test needs to substitute an implementation, not as speculative abstraction.
 - Exercise tool behavior through an in-memory client/server session (`mcp.NewInMemoryTransports`), asserting on the structured result — and on `IsError` for the error paths.
+- The github layer's wire-decode structs are drift-checked against their GraphQL query by `TestQueryDecodeContract`, which only inspects the structs its cases enumerate. When you add a query or a decode struct, register it there — an unregistered decode type is silently unguarded, the exact drift this test exists to catch.
 
 ## Documentation
 
