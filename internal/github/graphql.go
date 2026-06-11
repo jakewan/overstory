@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ const (
 // the raw markdown body is deliberately not fetched until a later increment needs
 // it, so unread payload doesn't bloat this shared fetch.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
     issues(states:OPEN, first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
       totalCount
@@ -83,6 +85,10 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		issues    []Issue
 		totalOpen int
 		cursor    *string
+		// budget tracks the most recent page's rateLimit (nil included), so the
+		// freshest observation wins and a final page that omits it clears a stale
+		// earlier value rather than reporting an optimistic one.
+		budget *RateLimit
 	)
 	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
 	for page := 0; page < maxPages; page++ {
@@ -93,10 +99,11 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		if first <= 0 {
 			break
 		}
-		conn, qerr := f.query(ctx, token, owner, name, first, cursor)
+		conn, pageBudget, qerr := f.query(ctx, token, owner, name, first, cursor)
 		if qerr != nil {
 			return IssueListResult{}, qerr
 		}
+		budget = pageBudget
 		totalOpen = conn.TotalCount
 		for _, n := range conn.Nodes {
 			issues = append(issues, n.toIssue())
@@ -113,21 +120,21 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 			break
 		}
 	}
-	return IssueListResult{Issues: issues, TotalOpen: totalOpen}, nil
+	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
 
-func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (conn issuesConnection, err error) {
+func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (conn issuesConnection, budget *RateLimit, err error) {
 	vars := map[string]any{"owner": owner, "name": name, "first": first}
 	if after != nil {
 		vars["after"] = *after
 	}
 	payload, merr := json.Marshal(map[string]any{"query": issuesQuery, "variables": vars})
 	if merr != nil {
-		return issuesConnection{}, fmt.Errorf("encoding GraphQL query: %w", merr)
+		return issuesConnection{}, nil, fmt.Errorf("encoding GraphQL query: %w", merr)
 	}
 	req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, f.endpoint, bytes.NewReader(payload))
 	if rerr != nil {
-		return issuesConnection{}, fmt.Errorf("building request: %w", rerr)
+		return issuesConnection{}, nil, fmt.Errorf("building request: %w", rerr)
 	}
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -135,7 +142,7 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 
 	resp, doErr := f.client.Do(req)
 	if doErr != nil {
-		return issuesConnection{}, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
+		return issuesConnection{}, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil && err == nil {
@@ -143,33 +150,44 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 		}
 	}()
 
-	if statusErr := classifyStatus(resp.StatusCode, owner, name); statusErr != nil {
-		return issuesConnection{}, statusErr
+	if statusErr := classifyStatus(resp.StatusCode, resp.Header, owner, name); statusErr != nil {
+		return issuesConnection{}, nil, statusErr
 	}
 
 	var decoded gqlResponse
 	if decErr := json.NewDecoder(resp.Body).Decode(&decoded); decErr != nil {
-		return issuesConnection{}, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, decErr)
+		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, decErr)
 	}
 	// GraphQL can return a 200 carrying an errors array (e.g. NOT_FOUND with a
-	// null repository), so this is checked regardless of HTTP status.
-	if gqlErr := classifyGraphQLErrors(decoded.Errors, owner, name); gqlErr != nil {
-		return issuesConnection{}, gqlErr
+	// null repository), so this is checked regardless of HTTP status. The decoded
+	// rateLimit node is passed so a RATE_LIMITED error can fall back to its
+	// resetAt when the response carried no rate headers.
+	if gqlErr := classifyGraphQLErrors(decoded.Errors, resp.Header, decoded.Data.RateLimit, owner, name); gqlErr != nil {
+		return issuesConnection{}, nil, gqlErr
 	}
 	if decoded.Data.Repository == nil {
-		return issuesConnection{}, fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
+		return issuesConnection{}, nil, fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 	}
-	return decoded.Data.Repository.Issues, nil
+	return decoded.Data.Repository.Issues, toRateLimit(decoded.Data.RateLimit), nil
 }
 
-func classifyStatus(code int, owner, name string) error {
+// toRateLimit adapts the decoded GraphQL node to the exported budget, or nil
+// when the response carried no rateLimit block.
+func toRateLimit(n *rateLimitNode) *RateLimit {
+	if n == nil {
+		return nil
+	}
+	return &RateLimit{Remaining: n.Remaining, ResetAt: n.ResetAt.UTC()}
+}
+
+func classifyStatus(code int, hdr http.Header, owner, name string) error {
 	switch {
 	case code >= 200 && code < 300:
 		return nil
 	case code == http.StatusUnauthorized:
 		return ErrGHNotAuthed
 	case code == http.StatusForbidden, code == http.StatusTooManyRequests:
-		return ErrRateLimited
+		return parseRateLimited(hdr)
 	case code == http.StatusNotFound:
 		return fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 	default:
@@ -177,7 +195,7 @@ func classifyStatus(code int, owner, name string) error {
 	}
 }
 
-func classifyGraphQLErrors(errs []gqlError, owner, name string) error {
+func classifyGraphQLErrors(errs []gqlError, hdr http.Header, budget *rateLimitNode, owner, name string) error {
 	if len(errs) == 0 {
 		return nil
 	}
@@ -186,10 +204,43 @@ func classifyGraphQLErrors(errs []gqlError, owner, name string) error {
 		case "NOT_FOUND":
 			return fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 		case "RATE_LIMITED":
-			return ErrRateLimited
+			rle := parseRateLimited(hdr)
+			// Secondary-limit responses often omit the HTTP rate headers; fall
+			// back to the GraphQL budget's resetAt only when the headers gave
+			// nothing, so a header signal always wins.
+			if rle.ResetAt.IsZero() && rle.RetryAfter == 0 && budget != nil && !budget.ResetAt.IsZero() {
+				rle.ResetAt = budget.ResetAt.UTC()
+			}
+			return rle
 		}
 	}
 	return fmt.Errorf("GitHub GraphQL error for %s/%s: %s", owner, name, errs[0].Message)
+}
+
+// parseRateLimited builds the typed rate-limit error from GitHub's response
+// headers: X-RateLimit-Reset is a unix epoch (absolute reset); Retry-After is
+// either delta-seconds (relative) or an HTTP-date (absolute). Malformed or
+// non-positive values are treated as absent — a throttle must never surface as a
+// parse error — yielding a zero-value error the caller degrades from. The epoch
+// reset is authoritative, so an HTTP-date Retry-After only fills ResetAt when the
+// epoch header was absent.
+func parseRateLimited(hdr http.Header) RateLimitedError {
+	var e RateLimitedError
+	if v := strings.TrimSpace(hdr.Get("X-RateLimit-Reset")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			e.ResetAt = time.Unix(n, 0).UTC()
+		}
+	}
+	if v := strings.TrimSpace(hdr.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil {
+			if secs >= 0 {
+				e.RetryAfter = time.Duration(secs) * time.Second
+			}
+		} else if t, perr := http.ParseTime(v); perr == nil && e.ResetAt.IsZero() {
+			e.ResetAt = t.UTC()
+		}
+	}
+	return e
 }
 
 func splitOwnerRepo(ownerRepo string) (owner, name string, err error) {
@@ -201,13 +252,22 @@ func splitOwnerRepo(ownerRepo string) (owner, name string, err error) {
 }
 
 // gqlResponse mirrors the GraphQL envelope: a data block and/or an errors array.
+// RateLimit is the root rateLimit field — the remaining points budget and its
+// reset, surfaced as a pacing fact on success and harvested as a reset-time
+// fallback on a RATE_LIMITED error (where HTTP rate headers are often absent).
 type gqlResponse struct {
 	Data struct {
+		RateLimit  *rateLimitNode `json:"rateLimit"`
 		Repository *struct {
 			Issues issuesConnection `json:"issues"`
 		} `json:"repository"`
 	} `json:"data"`
 	Errors []gqlError `json:"errors"`
+}
+
+type rateLimitNode struct {
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"resetAt"`
 }
 
 type gqlError struct {

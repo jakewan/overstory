@@ -34,10 +34,23 @@ type Issue struct {
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open
-// count. The window is truncated when len(Issues) < TotalOpen.
+// count. The window is truncated when len(Issues) < TotalOpen. RateLimit is the
+// most-recent budget snapshot observed across the paginated fetch, or nil when
+// the response carried none, so a caller can pace itself.
 type IssueListResult struct {
 	Issues    []Issue
 	TotalOpen int
+	RateLimit *RateLimit
+}
+
+// RateLimit is the GraphQL points-budget snapshot from a successful fetch's
+// rateLimit field: the points Remaining in the current window and the ResetAt
+// instant the window refills. It matches the GitHub GraphQL rateLimit shape the
+// issue scopes; limit/cost are intentionally not carried until a pacing consumer
+// needs them.
+type RateLimit struct {
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"resetAt"`
 }
 
 // IssueFetcher fetches a repository's open issues, newest-activity-last, up to
@@ -61,3 +74,31 @@ var (
 	// ErrRateLimited means the GitHub API rejected the request for rate limiting.
 	ErrRateLimited = errors.New("GitHub API rate limit exceeded")
 )
+
+// RateLimitedError enriches ErrRateLimited with the recovery signal GitHub
+// returned so a caller can decide when to retry rather than treat a transient
+// throttle as a permanent failure. ResetAt is an absolute instant (from the
+// X-RateLimit-Reset epoch header or a harvested GraphQL resetAt — no clock
+// needed); RetryAfter is a relative duration (from a Retry-After seconds
+// header). Either may be zero when GitHub sent no such signal, in which case the
+// caller degrades to the plain rate-limit message.
+//
+// It carries no clock itself: resolving a relative RetryAfter to a wall-clock
+// instant is the server's job, keeping this layer deterministic under test.
+type RateLimitedError struct {
+	ResetAt    time.Time
+	RetryAfter time.Duration
+}
+
+// Error returns the plain sentinel text. The recovery detail is deliberately not
+// rendered here: the server resolves it to an absolute wall-clock instant (this
+// layer has no clock) and owns that presentation, so embedding a partial,
+// clock-free rendering would only duplicate it.
+func (e RateLimitedError) Error() string { return ErrRateLimited.Error() }
+
+// Is reports RateLimitedError as a match for the ErrRateLimited sentinel, so
+// existing errors.Is(err, ErrRateLimited) checks keep working while callers
+// recover the reset detail via errors.As. The value receiver keeps the method
+// in a value's method set, which is required because this error propagates by
+// value (a pointer representation would break errors.As into a value target).
+func (e RateLimitedError) Is(target error) bool { return target == ErrRateLimited }
