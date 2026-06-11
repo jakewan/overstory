@@ -21,6 +21,7 @@ type Facts struct {
 	Quality     QualityFacts     `json:"quality"`
 	Overlap     OverlapFacts     `json:"overlap"`
 	CrossRef    CrossRefFacts    `json:"crossRef"`
+	Trajectory  TrajectoryFacts  `json:"trajectory"`
 	RateLimit   *RateLimitFacts  `json:"rateLimit,omitempty"`
 }
 

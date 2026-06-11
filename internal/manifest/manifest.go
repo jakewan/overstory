@@ -25,6 +25,7 @@ type Config struct {
 	AreaBalance AreaBalanceConfig
 	Quality     QualityConfig
 	Overlap     OverlapConfig
+	Trajectory  TrajectoryConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -93,6 +94,18 @@ type OverlapConfig struct {
 	TitleSimilarityThreshold float64
 }
 
+// TrajectoryConfig holds the resolved creation-vs-closure trajectory convention.
+// Windows are the cumulative lookback windows in days (e.g. 7, 30, 90): for each,
+// the reduction reports issues created and closed within the last that-many days
+// and the net. FetchLimit caps how many recently-updated issues (open and closed)
+// are fetched to compute the windows. Unlike Deferred, this has a generic default
+// so the reduction works on any repo out of the box — a trajectory needs no
+// repo-specific vocabulary.
+type TrajectoryConfig struct {
+	Windows    []int
+	FetchLimit int
+}
+
 // Defaults returns the generic defaults applied when a repository has no
 // manifest entry, or for fields its entry omits. These are the one place a
 // convention value is allowed to live in Go — the fallback, not a repo's
@@ -113,6 +126,10 @@ func Defaults() Config {
 		// 0.5 links clearly-similar titles while leaving paraphrases that share only
 		// a word or two below the bar; tunable per repo.
 		Overlap: OverlapConfig{TitleSimilarityThreshold: 0.5},
+		// Weekly/monthly/quarterly lookbacks read the backlog's near-term, mid-term,
+		// and long-term trend out of the box. FetchLimit is higher than staleness's
+		// (the nodes are lean and span closed issues over up to the widest window).
+		Trajectory: TrajectoryConfig{Windows: []int{7, 30, 90}, FetchLimit: 500},
 	}
 }
 
@@ -213,6 +230,7 @@ type fileConfig struct {
 	AreaBalance *areaBalanceFile `yaml:"areaBalance"`
 	Quality     *qualityFile     `yaml:"quality"`
 	Overlap     *overlapFile     `yaml:"overlap"`
+	Trajectory  *trajectoryFile  `yaml:"trajectory"`
 }
 
 type stalenessFile struct {
@@ -257,6 +275,16 @@ type categoryFile struct {
 // the same omitted-vs-explicit distinction the pointer idiom exists for.
 type overlapFile struct {
 	TitleSimilarityThreshold *float64 `yaml:"titleSimilarityThreshold"`
+}
+
+// trajectoryFile decodes the trajectory block. Windows is a pointer-to-slice for
+// the omitted-vs-explicit distinction (omitted inherits the default windows; an
+// explicit value replaces them wholesale, since a window list has no natural key
+// to field-merge). FetchLimit is a pointer so an omitted value inherits the
+// default.
+type trajectoryFile struct {
+	Windows    *[]int `yaml:"windows"`
+	FetchLimit *int   `yaml:"fetchLimit"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -332,6 +360,15 @@ func mergeConfig(base Config, o fileConfig) Config {
 	if o.Overlap != nil && o.Overlap.TitleSimilarityThreshold != nil {
 		base.Overlap.TitleSimilarityThreshold = *o.Overlap.TitleSimilarityThreshold
 	}
+	if o.Trajectory != nil {
+		// Whole-list replace: a window list has no natural key to field-merge.
+		if o.Trajectory.Windows != nil {
+			base.Trajectory.Windows = *o.Trajectory.Windows
+		}
+		if o.Trajectory.FetchLimit != nil {
+			base.Trajectory.FetchLimit = *o.Trajectory.FetchLimit
+		}
+	}
 	return base
 }
 
@@ -378,6 +415,20 @@ func validate(c Config, ownerRepo, file string) error {
 	// the range check and then silently make only exact-match titles link.
 	if math.IsNaN(c.Overlap.TitleSimilarityThreshold) || c.Overlap.TitleSimilarityThreshold < 0 || c.Overlap.TitleSimilarityThreshold > 1 {
 		return fmt.Errorf("manifest %q for %q: overlap.titleSimilarityThreshold must be in [0,1], got %g", file, ownerRepo, c.Overlap.TitleSimilarityThreshold)
+	}
+	// A trajectory needs at least one positive window. Empty is rejected (not a
+	// silent disable: trajectory always has a default, so an empty list is a
+	// mistake, not an opt-out) and each window must be a positive day count.
+	if len(c.Trajectory.Windows) == 0 {
+		return fmt.Errorf("manifest %q for %q: trajectory.windows must declare at least one positive window", file, ownerRepo)
+	}
+	for i, w := range c.Trajectory.Windows {
+		if w <= 0 {
+			return fmt.Errorf("manifest %q for %q: trajectory.windows[%d] must be > 0, got %d", file, ownerRepo, i, w)
+		}
+	}
+	if c.Trajectory.FetchLimit <= 0 {
+		return fmt.Errorf("manifest %q for %q: trajectory.fetchLimit must be > 0, got %d", file, ownerRepo, c.Trajectory.FetchLimit)
 	}
 	return nil
 }

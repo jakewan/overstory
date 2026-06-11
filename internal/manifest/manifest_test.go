@@ -533,3 +533,64 @@ func TestResolveRejectsOverlapThresholdOutOfRange(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultsIncludesTrajectoryWindows(t *testing.T) {
+	d := Defaults()
+	if len(d.Trajectory.Windows) != 3 || d.Trajectory.Windows[0] != 7 || d.Trajectory.Windows[1] != 30 || d.Trajectory.Windows[2] != 90 {
+		t.Errorf("Defaults().Trajectory.Windows = %v, want [7 30 90]", d.Trajectory.Windows)
+	}
+	if d.Trajectory.FetchLimit != 500 {
+		t.Errorf("Defaults().Trajectory.FetchLimit = %d, want 500", d.Trajectory.FetchLimit)
+	}
+}
+
+func TestResolveMergesTrajectoryWindows(t *testing.T) {
+	dir := t.TempDir()
+	// Sets windows only; fetchLimit must inherit the default.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  trajectory:\n    windows: [14, 60]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Trajectory.Windows) != 2 || cfg.Trajectory.Windows[0] != 14 || cfg.Trajectory.Windows[1] != 60 {
+		t.Errorf("Windows = %v, want [14 60] (from manifest)", cfg.Trajectory.Windows)
+	}
+	if cfg.Trajectory.FetchLimit != 500 {
+		t.Errorf("FetchLimit = %d, want 500 (inherited default)", cfg.Trajectory.FetchLimit)
+	}
+}
+
+func TestResolveTrajectoryOmittedInheritsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Trajectory.Windows) != 3 || cfg.Trajectory.FetchLimit != 500 {
+		t.Errorf("Trajectory = %+v, want default windows [7 30 90] and fetchLimit 500", cfg.Trajectory)
+	}
+}
+
+func TestResolveRejectsInvalidTrajectory(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, wantField string
+	}{
+		{"non-positive window", "acme/widgets:\n  trajectory:\n    windows: [7, 0, 90]\n", "trajectory.windows[1]"},
+		{"negative window", "acme/widgets:\n  trajectory:\n    windows: [-5]\n", "trajectory.windows[0]"},
+		{"empty windows", "acme/widgets:\n  trajectory:\n    windows: []\n", "trajectory.windows"},
+		{"non-positive fetchLimit", "acme/widgets:\n  trajectory:\n    fetchLimit: 0\n", "trajectory.fetchLimit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.manifest)
+			_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+			if err == nil {
+				t.Fatalf("%s: want validation error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("%s: error %q does not name %q", tc.name, err, tc.wantField)
+			}
+		})
+	}
+}

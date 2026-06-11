@@ -63,6 +63,25 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
   }
 }`
 
+// activityQuery fetches a page of issues — open AND closed — ordered by most
+// recent update first, for the creation-vs-closure trajectory. The DESC-by-
+// updatedAt order is what lets ListIssuesUpdatedSince stop once it reaches an
+// issue updated before the window floor: every issue created or closed in the
+// window has updatedAt >= that event >= the floor, so it sorts ahead of the stop
+// point. The node selection is deliberately lean — number, createdAt, closedAt,
+// updatedAt only — so spanning closed issues stays cheap; labels, comments,
+// body, and the timeline are not needed here. closedAt is null for an open (or
+// reopened) issue.
+const activityQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    issues(states:[OPEN,CLOSED], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:DESC}){
+      pageInfo{ hasNextPage endCursor }
+      nodes{ number createdAt closedAt updatedAt }
+    }
+  }
+}`
+
 // GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process.
 // endpoint, tokens, and client are fields so tests can drive it against an
 // httptest.Server with a static token.
@@ -139,18 +158,64 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
 
-func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (conn issuesConnection, budget *RateLimit, err error) {
+// query fetches one page of the open-issue grooming window, decoding the shared
+// spine's raw repository payload into the open-issue connection.
+func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (issuesConnection, *RateLimit, error) {
+	repo, budget, err := f.do(ctx, token, issuesQuery, queryVars(owner, name, first, after), owner, name)
+	if err != nil {
+		return issuesConnection{}, nil, err
+	}
+	var data struct {
+		Issues issuesConnection `json:"issues"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub issues for %s/%s: %w", owner, name, derr)
+	}
+	return data.Issues, budget, nil
+}
+
+// queryActivity fetches one page of the open-and-closed activity window for the
+// trajectory reduction, decoding the shared spine's payload into the lean
+// activity connection.
+func (f *GraphQLFetcher) queryActivity(ctx context.Context, token, owner, name string, first int, after *string) (activityConnection, *RateLimit, error) {
+	repo, budget, err := f.do(ctx, token, activityQuery, queryVars(owner, name, first, after), owner, name)
+	if err != nil {
+		return activityConnection{}, nil, err
+	}
+	var data struct {
+		Issues activityConnection `json:"issues"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return activityConnection{}, nil, fmt.Errorf("decoding GitHub activity for %s/%s: %w", owner, name, derr)
+	}
+	return data.Issues, budget, nil
+}
+
+// queryVars builds the GraphQL variables shared by both fetch shapes; after is
+// omitted on the first page so the query's default null applies.
+func queryVars(owner, name string, first int, after *string) map[string]any {
 	vars := map[string]any{"owner": owner, "name": name, "first": first}
 	if after != nil {
 		vars["after"] = *after
 	}
-	payload, merr := json.Marshal(map[string]any{"query": issuesQuery, "variables": vars})
+	return vars
+}
+
+// do executes one GraphQL request and returns the raw data.repository payload
+// plus the rateLimit budget, leaving connection/node decoding to each caller.
+// It is the single home for the request, status and GraphQL-error classification,
+// and the null-repository check both fetch shapes share. The decoded rateLimit
+// node is passed into classifyGraphQLErrors so a RATE_LIMITED error can fall back
+// to its resetAt when the response carried no rate headers — the source of the
+// throttle recovery signal the server surfaces.
+func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[string]any, owner, name string) (repository json.RawMessage, budget *RateLimit, err error) {
+	payload, merr := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if merr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("encoding GraphQL query: %w", merr)
+		return nil, nil, fmt.Errorf("encoding GraphQL query: %w", merr)
 	}
 	req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, f.endpoint, bytes.NewReader(payload))
 	if rerr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("building request: %w", rerr)
+		return nil, nil, fmt.Errorf("building request: %w", rerr)
 	}
 	req.Header.Set("Authorization", "bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -158,7 +223,7 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 
 	resp, doErr := f.client.Do(req)
 	if doErr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
+		return nil, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil && err == nil {
@@ -167,24 +232,97 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 	}()
 
 	if statusErr := classifyStatus(resp.StatusCode, resp.Header, owner, name); statusErr != nil {
-		return issuesConnection{}, nil, statusErr
+		return nil, nil, statusErr
 	}
 
-	var decoded gqlResponse
+	var decoded gqlEnvelope
 	if decErr := json.NewDecoder(resp.Body).Decode(&decoded); decErr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, decErr)
+		return nil, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, decErr)
 	}
 	// GraphQL can return a 200 carrying an errors array (e.g. NOT_FOUND with a
-	// null repository), so this is checked regardless of HTTP status. The decoded
-	// rateLimit node is passed so a RATE_LIMITED error can fall back to its
-	// resetAt when the response carried no rate headers.
+	// null repository), so this is checked regardless of HTTP status.
 	if gqlErr := classifyGraphQLErrors(decoded.Errors, resp.Header, decoded.Data.RateLimit, owner, name); gqlErr != nil {
-		return issuesConnection{}, nil, gqlErr
+		return nil, nil, gqlErr
 	}
 	if decoded.Data.Repository == nil {
-		return issuesConnection{}, nil, fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
+		return nil, nil, fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 	}
-	return decoded.Data.Repository.Issues, toRateLimit(decoded.Data.RateLimit), nil
+	return *decoded.Data.Repository, toRateLimit(decoded.Data.RateLimit), nil
+}
+
+// ListIssuesUpdatedSince fetches issues (open and closed) updated at or after
+// `since`, newest-update-first, up to fetchLimit, for the trajectory reduction.
+// It pages until it observes an issue updated before `since` — the window floor,
+// past which no in-window create or close can sort — or the connection is
+// exhausted. Truncated is reported floor/exhaustion-driven, not stop-reason-
+// driven: it is false only when the scan proved coverage (crossed the floor, or
+// drained the connection); every early exit (the fetch cap, the page guard, a
+// stalled cursor) leaves it true, so the trajectory counts are never reported as
+// complete when they are a lower bound.
+func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return IssueActivityResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return IssueActivityResult{}, err
+	}
+
+	var (
+		activities   []IssueActivity
+		cursor       *string
+		budget       *RateLimit
+		crossedFloor bool // saw an issue updated before the floor: everything in-window precedes it
+		exhausted    bool // drained the connection: nothing more to fetch
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for page := 0; page < maxPages; page++ {
+		first := pageSize
+		if remaining := fetchLimit - len(activities); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := f.queryActivity(ctx, token, owner, name, first, cursor)
+		if qerr != nil {
+			return IssueActivityResult{}, qerr
+		}
+		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
+		for _, nd := range conn.Nodes {
+			if nd.UpdatedAt.Before(since) {
+				crossedFloor = true
+				break
+			}
+			activities = append(activities, nd.toActivity())
+		}
+		if crossedFloor {
+			break
+		}
+		if !conn.PageInfo.HasNextPage {
+			exhausted = true // connection drained: coverage is complete
+			break
+		}
+		if conn.PageInfo.EndCursor == "" {
+			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
+		}
+		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
+		}
+		next := conn.PageInfo.EndCursor
+		cursor = &next
+		if len(activities) >= fetchLimit {
+			break
+		}
+	}
+	return IssueActivityResult{
+		Activities: activities,
+		// Truncated unless coverage was proven: either the floor was crossed or the
+		// connection was drained. Every other exit leaves the window unproven.
+		Truncated: !crossedFloor && !exhausted,
+		RateLimit: budget,
+	}, nil
 }
 
 // toRateLimit adapts the decoded GraphQL node to the exported budget, or nil
@@ -269,16 +407,17 @@ func splitOwnerRepo(ownerRepo string) (owner, name string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// gqlResponse mirrors the GraphQL envelope: a data block and/or an errors array.
+// gqlEnvelope mirrors the GraphQL envelope: a data block and/or an errors array.
 // RateLimit is the root rateLimit field — the remaining points budget and its
 // reset, surfaced as a pacing fact on success and harvested as a reset-time
 // fallback on a RATE_LIMITED error (where HTTP rate headers are often absent).
-type gqlResponse struct {
+// Repository is left as raw JSON so the shared request spine stays agnostic to
+// which connection shape (open-issue grooming vs. lean activity) the caller
+// decodes from it.
+type gqlEnvelope struct {
 	Data struct {
-		RateLimit  *rateLimitNode `json:"rateLimit"`
-		Repository *struct {
-			Issues issuesConnection `json:"issues"`
-		} `json:"repository"`
+		RateLimit  *rateLimitNode   `json:"rateLimit"`
+		Repository *json.RawMessage `json:"repository"`
 	} `json:"data"`
 	Errors []gqlError `json:"errors"`
 }
@@ -300,6 +439,31 @@ type issuesConnection struct {
 		EndCursor   string `json:"endCursor"`
 	} `json:"pageInfo"`
 	Nodes []issueNode `json:"nodes"`
+}
+
+// activityConnection is the lean issue connection the trajectory fetch decodes:
+// pagination plus the create/close/update timestamps, no per-issue payload.
+type activityConnection struct {
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []issueActivityNode `json:"nodes"`
+}
+
+// issueActivityNode decodes one lean activity node. ClosedAt is a value (not a
+// pointer) time: GitHub returns null for an open or reopened issue, and
+// time.Time's UnmarshalJSON treats null as a no-op, leaving the zero time — which
+// IssueActivity reads as "currently open".
+type issueActivityNode struct {
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"createdAt"`
+	ClosedAt  time.Time `json:"closedAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (n issueActivityNode) toActivity() IssueActivity {
+	return IssueActivity{Number: n.Number, CreatedAt: n.CreatedAt, ClosedAt: n.ClosedAt}
 }
 
 type issueNode struct {

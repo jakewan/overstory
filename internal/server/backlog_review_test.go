@@ -15,14 +15,23 @@ import (
 )
 
 // fakeFetcher is a static IssueFetcher: the seam that lets the acceptance test
-// exercise backlog_review end-to-end without invoking gh or the network.
+// exercise backlog_review end-to-end without invoking gh or the network. The
+// activity* fields drive the trajectory reduction's second fetch; their zero
+// value (empty result, nil error) makes that fetch a no-op success, so tests
+// that don't care about trajectory are unaffected.
 type fakeFetcher struct {
-	result github.IssueListResult
-	err    error
+	result         github.IssueListResult
+	err            error
+	activityResult github.IssueActivityResult
+	activityErr    error
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
 	return f.result, f.err
+}
+
+func (f fakeFetcher) ListIssuesUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.IssueActivityResult, error) {
+	return f.activityResult, f.activityErr
 }
 
 // fixedClock is the injected wall clock; staleness is deterministic under it.
@@ -771,5 +780,165 @@ func TestBacklogReviewAppliesLimitDefault(t *testing.T) {
 
 	if facts.Staleness.Limit != 20 {
 		t.Errorf("Limit = %d, want 20 (schema default)", facts.Staleness.Limit)
+	}
+}
+
+// activityIssue builds an issue-activity record for the trajectory reduction's
+// second fetch. closedDaysAgo < 0 means still open (zero ClosedAt); otherwise the
+// issue closed that many days before the fixed clock.
+func activityIssue(num, createdDaysAgo, closedDaysAgo int) github.IssueActivity {
+	a := github.IssueActivity{Number: num, CreatedAt: daysAgo(createdDaysAgo)}
+	if closedDaysAgo >= 0 {
+		a.ClosedAt = daysAgo(closedDaysAgo)
+	}
+	return a
+}
+
+// TestBacklogReviewSurfacesTrajectory pins the creation-vs-closure grooming
+// signal: given a manifest declaring lookback windows, the tool counts issues
+// created and closed within each cumulative window and reports the net — over a
+// second OPEN+CLOSED fetch, alongside the open-window blocks.
+func TestBacklogReviewSurfacesTrajectory(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  trajectory:\n    windows: [7, 30, 90]\n")
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{
+			Issues:    []github.Issue{issue(1, daysAgo(10)), issue(2, daysAgo(5))},
+			TotalOpen: 2,
+		},
+		activityResult: github.IssueActivityResult{Activities: []github.IssueActivity{
+			activityIssue(1, 2, -1),  // created 2d, open  → created in 7/30/90
+			activityIssue(2, 5, -1),  // created 5d, open  → created in 7/30/90
+			activityIssue(3, 20, -1), // created 20d, open → created in 30/90
+			activityIssue(4, 80, 3),  // created 80d, closed 3d → closed in 7/30/90; created in 90
+			activityIssue(5, 60, 40), // created 60d, closed 40d → closed in 90; created in 90
+			activityIssue(6, 1, 1),   // created 1d, closed 1d → created+closed in all
+		}},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	tr := facts.Trajectory
+
+	if !tr.Available {
+		t.Fatalf("Trajectory.Available = false, want true; %+v", tr)
+	}
+	if tr.FetchedCount != 6 {
+		t.Errorf("FetchedCount = %d, want 6", tr.FetchedCount)
+	}
+	want := []backlog.TrajectoryWindow{
+		{Days: 7, Created: 3, Closed: 2, Net: 1},
+		{Days: 30, Created: 4, Closed: 2, Net: 2},
+		{Days: 90, Created: 6, Closed: 3, Net: 3},
+	}
+	if len(tr.Windows) != len(want) {
+		t.Fatalf("Windows = %+v, want %+v", tr.Windows, want)
+	}
+	for i, w := range want {
+		if tr.Windows[i] != w {
+			t.Errorf("Windows[%d] = %+v, want %+v", i, tr.Windows[i], w)
+		}
+	}
+	// The open-window blocks still reduce the first fetch.
+	if facts.Staleness.OpenIssueCount != 2 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 2 (the two fetches coexist)", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewTrajectoryGenericDefault pins the out-of-box behavior: a repo
+// with no trajectory block still reports the default [7,30,90] windows.
+func TestBacklogReviewTrajectoryGenericDefault(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{
+		result:         github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(10))}, TotalOpen: 1},
+		activityResult: github.IssueActivityResult{Activities: []github.IssueActivity{activityIssue(1, 2, -1)}},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	days := make([]int, len(facts.Trajectory.Windows))
+	for i, w := range facts.Trajectory.Windows {
+		days[i] = w.Days
+	}
+	if len(days) != 3 || days[0] != 7 || days[1] != 30 || days[2] != 90 {
+		t.Errorf("default windows = %v, want [7 30 90]", days)
+	}
+}
+
+// TestBacklogReviewTrajectoryFetchTruncated pins the never-silently-truncate
+// contract for the aggregate block: when the activity fetch hit its cap, the
+// counts are a lower bound and FetchTruncated says so.
+func TestBacklogReviewTrajectoryFetchTruncated(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(10))}, TotalOpen: 1},
+		activityResult: github.IssueActivityResult{
+			Activities: []github.IssueActivity{activityIssue(1, 2, -1)},
+			Truncated:  true,
+		},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if !facts.Trajectory.FetchTruncated {
+		t.Error("Trajectory.FetchTruncated = false, want true")
+	}
+}
+
+// TestBacklogReviewTrajectoryDegradesOnFetchError pins the degrade design: a
+// failed second fetch never fails the whole call — the other blocks still return
+// and the trajectory block is marked unavailable with a distinguishable reason. A
+// throttle additionally surfaces its recovery signal as the rate-limit budget,
+// overriding the now-stale open-fetch budget rather than reporting "you have
+// budget" at the moment the second fetch was throttled.
+func TestBacklogReviewTrajectoryDegradesOnFetchError(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	reset := fixedClock.Add(15 * time.Minute)
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantReason string
+	}{
+		{"rate limited", github.RateLimitedError{ResetAt: reset}, "rate_limited"},
+		{"generic failure", github.ErrRepoNotFound, "fetch_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := fakeFetcher{
+				result: github.IssueListResult{
+					Issues:    []github.Issue{issue(1, daysAgo(100))},
+					TotalOpen: 1,
+					// A healthy open-fetch budget that must NOT be reported on a throttle-degrade.
+					RateLimit: &github.RateLimit{Remaining: 5000, ResetAt: fixedClock.Add(time.Hour)},
+				},
+				activityErr: tc.err,
+			}
+			srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+			res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})
+			if res.IsError {
+				t.Fatalf("IsError = true, want false (degrade, not fail): %s", contentText(res))
+			}
+			facts := decodeFacts(t, res)
+			if facts.Trajectory.Available {
+				t.Error("Trajectory.Available = true, want false (fetch failed)")
+			}
+			if facts.Trajectory.Unavailable != tc.wantReason {
+				t.Errorf("Trajectory.Unavailable = %q, want %q", facts.Trajectory.Unavailable, tc.wantReason)
+			}
+			// The other blocks still reduce the successful open fetch.
+			if facts.Staleness.StaleCount != 1 {
+				t.Errorf("Staleness.StaleCount = %d, want 1 (degrade preserves other blocks)", facts.Staleness.StaleCount)
+			}
+			if tc.wantReason == "rate_limited" {
+				if facts.RateLimit == nil {
+					t.Fatal("RateLimit = nil, want the throttle recovery signal")
+				}
+				if facts.RateLimit.Remaining != 0 {
+					t.Errorf("RateLimit.Remaining = %d, want 0 (throttle overrides stale open budget)", facts.RateLimit.Remaining)
+				}
+				if !facts.RateLimit.ResetAt.Equal(reset) {
+					t.Errorf("RateLimit.ResetAt = %v, want %v (the throttle's reset)", facts.RateLimit.ResetAt, reset)
+				}
+			}
+		})
 	}
 }

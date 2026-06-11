@@ -1,8 +1,11 @@
 // Package github is overstory's in-process GitHub data layer. It fetches a
-// repository's open issues via the GitHub GraphQL API, authenticated with the
-// operator's existing gh credentials, and reduces each issue to the fields the
-// staleness reduction needs — including a derived last-human-activity time, so
-// label, assignment, and bot churn don't read as activity.
+// repository's issues via the GitHub GraphQL API, authenticated with the
+// operator's existing gh credentials, and reduces each issue to the fields a
+// reduction needs. Two fetch shapes exist: the open-issue grooming window
+// (ListOpenIssues — open issues by least-recent activity, with a derived
+// last-human-activity time so label, assignment, and bot churn don't read as
+// activity), and a lean open-and-closed activity window keyed on recent updates
+// (ListIssuesUpdatedSince) that feeds the creation-vs-closure trajectory.
 //
 // Data is fetched in-process over net/http (no heavy client dependency); the
 // only subprocess is `gh auth token` for credential bootstrap. The IssueFetcher
@@ -64,11 +67,40 @@ type RateLimit struct {
 	ResetAt   time.Time `json:"resetAt"`
 }
 
-// IssueFetcher fetches a repository's open issues, newest-activity-last, up to
-// fetchLimit. It exists so tests can substitute a fake without invoking gh or
-// the network.
+// IssueActivity is the minimal projection of an issue the trajectory reduction
+// needs: its number and its create/close instants. ClosedAt is the zero time
+// when the issue is currently open — including a reopened issue, whose closedAt
+// GitHub clears on reopen, so a close that was later reopened reads as open (the
+// "net backlog change as of now" semantics). CreatedAt and ClosedAt are UTC, as
+// the GraphQL API returns them.
+type IssueActivity struct {
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"createdAt"`
+	ClosedAt  time.Time `json:"closedAt"`
+}
+
+// IssueActivityResult carries the issues fetched for the trajectory reduction —
+// those updated at or after the requested instant, both open and closed.
+// Truncated is true when the fetch cap was reached before the activity window was
+// fully covered, so the trajectory counts derived from it are lower bounds, not
+// exact; it is the activity fetch's only truncation seam (the window has no
+// TotalOpen analog). RateLimit is the most-recent budget snapshot, or nil when
+// the response carried none.
+type IssueActivityResult struct {
+	Activities []IssueActivity
+	Truncated  bool
+	RateLimit  *RateLimit
+}
+
+// IssueFetcher fetches a repository's issues for the backlog reductions. It
+// exists so tests can substitute a fake without invoking gh or the network.
+// ListOpenIssues returns the open-issue grooming window (newest-activity-last, up
+// to fetchLimit); ListIssuesUpdatedSince returns the lean open-and-closed
+// activity window updated at or after `since` (up to fetchLimit), feeding the
+// creation-vs-closure trajectory.
 type IssueFetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
+	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
 }
 
 // Sentinel errors classify the failure modes a caller acts on. They name the
