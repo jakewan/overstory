@@ -129,6 +129,14 @@ func labeledIssue(num int, labels ...string) github.Issue {
 	return deferredIssue(num, daysAgo(1), labels...)
 }
 
+// titledIssue builds an issue with a specific title for the overlap reduction,
+// which keys off the title; activity and labels are irrelevant here.
+func titledIssue(num int, title string) github.Issue {
+	is := issue(num, daysAgo(1))
+	is.Title = title
+	return is
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area
@@ -168,6 +176,74 @@ func TestBacklogReviewSurfacesAreaBalance(t *testing.T) {
 	// The other blocks still reduce the same window.
 	if facts.Staleness.OpenIssueCount != 4 {
 		t.Errorf("Staleness.OpenIssueCount = %d, want 4", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewSurfacesTitleOverlap pins the overlap grooming signal: given a
+// manifest threshold, the tool groups open issues with similar titles as candidate
+// duplicates, surfaces the shared words as evidence, and leaves unrelated issues
+// out — alongside the other reduction blocks. The cluster titles normalize
+// identically so the test pins wiring and grouping, not a fragile trigram score
+// (score-boundary behavior is covered in the backlog package's unit tests).
+func TestBacklogReviewSurfacesTitleOverlap(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  overlap:\n    titleSimilarityThreshold: 0.5\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			titledIssue(1, "Fix login bug"),
+			titledIssue(2, "Fix login bug!"), // normalizes identically → grouped
+			titledIssue(3, "Add dark mode"),  // unrelated
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	ov := facts.Overlap
+
+	if ov.TitleThreshold != 0.5 {
+		t.Errorf("TitleThreshold = %g, want 0.5", ov.TitleThreshold)
+	}
+	if ov.GroupCount != 1 {
+		t.Fatalf("GroupCount = %d, want 1; groups=%+v", ov.GroupCount, ov.Groups)
+	}
+	g := ov.Groups[0]
+	if len(g.Issues) != 2 || g.Issues[0].Number != 1 || g.Issues[1].Number != 2 {
+		t.Errorf("group members = %+v, want issues 1 and 2", g.Issues)
+	}
+	want := []string{"bug", "fix", "login"}
+	if len(g.SharedTokens) != len(want) {
+		t.Fatalf("SharedTokens = %v, want %v", g.SharedTokens, want)
+	}
+	for i, w := range want {
+		if g.SharedTokens[i] != w {
+			t.Errorf("SharedTokens[%d] = %q, want %q", i, g.SharedTokens[i], w)
+		}
+	}
+	if ov.LargestGroupSize != 2 {
+		t.Errorf("LargestGroupSize = %d, want 2", ov.LargestGroupSize)
+	}
+	// The other blocks still reduce the same window.
+	if facts.Staleness.OpenIssueCount != 3 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 3", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewOverlapGenericDefault pins the out-of-box behavior: a repo with
+// no overlap block still groups similar titles via the generic default threshold.
+func TestBacklogReviewOverlapGenericDefault(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{titledIssue(1, "Cache timeout error"), titledIssue(2, "Cache timeout error")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.Overlap.TitleThreshold != 0.5 {
+		t.Errorf("TitleThreshold = %g, want 0.5 (generic default)", facts.Overlap.TitleThreshold)
+	}
+	if facts.Overlap.GroupCount != 1 {
+		t.Errorf("GroupCount = %d, want 1", facts.Overlap.GroupCount)
 	}
 }
 
