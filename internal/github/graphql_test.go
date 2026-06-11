@@ -181,8 +181,8 @@ func TestListOpenIssuesParsesCrossReferences(t *testing.T) {
 	// (a) the query asks GitHub for the cross-reference timeline — a typo in the
 	// selection would silently ship and the cross-reference reduction would see no
 	// edges; (b) the events decode onto Issue.ReferencedBy with the issue-to-issue,
-	// same-repo filtering applied. The first node's payload mirrors a real capture
-	// of jakewan/overstory#1 (an Issue source #9 alongside PullRequest sources),
+	// same-repo filtering applied. The first node's payload mirrors a real
+	// CrossReferencedEvent capture (an Issue source alongside PullRequest sources),
 	// augmented with a cross-repository event and a duplicate to pin the filters.
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
