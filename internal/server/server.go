@@ -22,6 +22,7 @@ import (
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -304,11 +305,11 @@ func rateLimitResetTime(e github.RateLimitedError, now func() time.Time) time.Ti
 // mapRateLimit adapts the fetch's budget snapshot to the backlog fact, keeping
 // the reduction layer decoupled from the github layer; nil (no budget observed)
 // passes through so the fact is omitted from the output.
-func mapRateLimit(in *github.RateLimit) *backlog.RateLimitFacts {
+func mapRateLimit(in *github.RateLimit) *reduce.RateLimitFacts {
 	if in == nil {
 		return nil
 	}
-	return &backlog.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
+	return &reduce.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
 }
 
 func thresholdSource(matched bool) string {
@@ -320,10 +321,10 @@ func thresholdSource(matched bool) string {
 
 // mapPrefixes adapts the manifest's prefix rules to the backlog matcher's, so the
 // reduction layer stays decoupled from the convention-resolution layer.
-func mapPrefixes(in []manifest.PrefixRule) []backlog.PrefixRule {
-	out := make([]backlog.PrefixRule, len(in))
+func mapPrefixes(in []manifest.PrefixRule) []reduce.PrefixRule {
+	out := make([]reduce.PrefixRule, len(in))
 	for i, p := range in {
-		out[i] = backlog.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
+		out[i] = reduce.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
 	}
 	return out
 }

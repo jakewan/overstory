@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // StalenessFacts is the compact result of a staleness reduction. It carries
@@ -70,7 +71,7 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 
 	stale := make([]StaleIssue, 0, len(issues))
 	for _, is := range issues {
-		inactive := daysSince(now, is.LastActivityAt)
+		inactive := reduce.DaysSince(now, is.LastActivityAt)
 		if inactive < thresholdDays {
 			continue
 		}
@@ -79,7 +80,7 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 			Title:               is.Title,
 			URL:                 is.URL,
 			InactiveDays:        inactive,
-			AgeDays:             daysSince(now, is.CreatedAt),
+			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,
 		})
 	}
@@ -102,16 +103,6 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 	}
 	facts.StaleIssues = stale
 	return facts
-}
-
-// daysSince returns whole days between then and now, floored, clamped at 0 so
-// clock skew (a future timestamp) cannot produce a negative count.
-func daysSince(now, then time.Time) int {
-	d := now.Sub(then)
-	if d < 0 {
-		return 0
-	}
-	return int(d.Hours() / 24)
 }
 
 // bucketize counts the stale issues into threshold-relative inactivity bands —

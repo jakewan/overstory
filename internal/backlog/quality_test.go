@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // bodyIssue builds an issue with a body and labels for the quality reduction.
@@ -14,7 +15,7 @@ func bodyIssue(num int, body string, labels ...string) github.Issue {
 	return is
 }
 
-var typeCategory = []Category{{Name: "type", Prefixes: []PrefixRule{{Prefix: "type", Delimiter: "/"}}}}
+var typeCategory = []Category{{Name: "type", Prefixes: []reduce.PrefixRule{{Prefix: "type", Delimiter: "/"}}}}
 
 func TestReduceQualityFlagsEmptyBody(t *testing.T) {
 	issues := []github.Issue{
@@ -72,8 +73,8 @@ func TestReduceQualityFlagsNoLabels(t *testing.T) {
 
 func TestReduceQualityMissingRequiredCategory(t *testing.T) {
 	cats := []Category{
-		{Name: "type", Prefixes: []PrefixRule{{Prefix: "type", Delimiter: "/"}}},
-		{Name: "priority", Prefixes: []PrefixRule{{Prefix: "priority", Delimiter: "/"}}},
+		{Name: "type", Prefixes: []reduce.PrefixRule{{Prefix: "type", Delimiter: "/"}}},
+		{Name: "priority", Prefixes: []reduce.PrefixRule{{Prefix: "priority", Delimiter: "/"}}},
 	}
 	issues := []github.Issue{
 		bodyIssue(1, "desc", "type/bug", "priority/high"), // both → fine
@@ -132,7 +133,7 @@ func TestReduceQualityConfiguredCategoryWithNoMissesStillReported(t *testing.T) 
 }
 
 func TestReduceQualitySortMostIncompleteFirst(t *testing.T) {
-	cats := []Category{{Name: "type", Prefixes: []PrefixRule{{Prefix: "type", Delimiter: "/"}}}}
+	cats := []Category{{Name: "type", Prefixes: []reduce.PrefixRule{{Prefix: "type", Delimiter: "/"}}}}
 	issues := []github.Issue{
 		bodyIssue(1, "desc", "type/bug"), // missing nothing → not flagged
 		bodyIssue(2, "", "type/bug"),     // 1 fail (body)
