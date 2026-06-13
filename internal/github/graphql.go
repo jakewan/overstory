@@ -32,7 +32,9 @@ const (
 // grooming signal). bodyText is the rendered-plaintext body (markdown and
 // HTML-comment scaffolding stripped) for the quality reduction's length check;
 // the raw markdown body is deliberately not fetched until a later increment needs
-// it, so unread payload doesn't bloat this shared fetch.
+// it, so unread payload doesn't bloat this shared fetch. milestone{number title}
+// associates each issue with its milestone (null when unmilestoned) for the
+// orientation reduction's milestone grouping and unmilestoned-issue signal.
 //
 // timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25) feeds the
 // cross-reference reduction. The itemTypes filter applies to the connection, so
@@ -49,6 +51,7 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
       pageInfo{ hasNextPage endCursor }
       nodes{
         number title url createdAt bodyText
+        milestone{ number title }
         labels(first:25){ nodes{ name } }
         comments(last:25){ nodes{ createdAt author{ __typename login } } }
         timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25){
@@ -78,6 +81,29 @@ const activityQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Str
     issues(states:[OPEN,CLOSED], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:DESC}){
       pageInfo{ hasNextPage endCursor }
       nodes{ number createdAt closedAt updatedAt }
+    }
+  }
+}`
+
+// milestonesQuery fetches a page of open milestones for the orientation
+// reduction's milestone-progress view, ordered by number for a stable page
+// sequence. Each milestone's open/closed issue counts come from the milestone
+// object's own issue connections (open:/closed: aliases over issues(states:…){
+// totalCount }) rather than from the bounded issue window, so the counts stay
+// authoritative even when the issue fetch truncates. The aliases decode onto
+// distinct struct fields; the connection's own totalCount is the open-milestone
+// total for the window-truncation seam.
+const milestonesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    milestones(states:OPEN, first:$first, after:$after, orderBy:{field:NUMBER, direction:ASC}){
+      totalCount
+      pageInfo{ hasNextPage endCursor }
+      nodes{
+        number title url
+        open: issues(states:OPEN){ totalCount }
+        closed: issues(states:CLOSED){ totalCount }
+      }
     }
   }
 }`
@@ -325,6 +351,76 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 	}, nil
 }
 
+// ListOpenMilestones fetches up to fetchLimit open milestones, paginating until
+// the limit is reached or the connection is exhausted, and reports the
+// repository's exact open-milestone count via TotalOpen. Each milestone carries
+// its authoritative open/closed issue counts, read from the milestone object
+// rather than derived from any issue window.
+func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return MilestoneListResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return MilestoneListResult{}, err
+	}
+
+	var (
+		milestones []Milestone
+		totalOpen  int
+		cursor     *string
+		budget     *RateLimit
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for page := 0; page < maxPages; page++ {
+		first := pageSize
+		if remaining := fetchLimit - len(milestones); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := f.queryMilestones(ctx, token, owner, name, first, cursor)
+		if qerr != nil {
+			return MilestoneListResult{}, qerr
+		}
+		budget = pageBudget
+		totalOpen = conn.TotalCount
+		for _, n := range conn.Nodes {
+			milestones = append(milestones, n.toMilestone())
+		}
+		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
+			break
+		}
+		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever
+		}
+		next := conn.PageInfo.EndCursor
+		cursor = &next
+		if len(milestones) >= fetchLimit {
+			break
+		}
+	}
+	return MilestoneListResult{Milestones: milestones, TotalOpen: totalOpen, RateLimit: budget}, nil
+}
+
+// queryMilestones fetches one page of open milestones, decoding the shared
+// spine's raw repository payload into the milestone connection.
+func (f *GraphQLFetcher) queryMilestones(ctx context.Context, token, owner, name string, first int, after *string) (milestonesConnection, *RateLimit, error) {
+	repo, budget, err := f.do(ctx, token, milestonesQuery, queryVars(owner, name, first, after), owner, name)
+	if err != nil {
+		return milestonesConnection{}, nil, err
+	}
+	var data struct {
+		Milestones milestonesConnection `json:"milestones"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return milestonesConnection{}, nil, fmt.Errorf("decoding GitHub milestones for %s/%s: %w", owner, name, derr)
+	}
+	return data.Milestones, budget, nil
+}
+
 // toRateLimit adapts the decoded GraphQL node to the exported budget, or nil
 // when the response carried no rateLimit block.
 func toRateLimit(n *rateLimitNode) *RateLimit {
@@ -466,12 +562,57 @@ func (n issueActivityNode) toActivity() IssueActivity {
 	return IssueActivity{Number: n.Number, CreatedAt: n.CreatedAt, ClosedAt: n.ClosedAt}
 }
 
+// milestonesConnection is the open-milestone connection: pagination, the
+// open-milestone total for the truncation seam, and the per-milestone progress
+// nodes.
+type milestonesConnection struct {
+	TotalCount int `json:"totalCount"`
+	PageInfo   struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []milestoneNode `json:"nodes"`
+}
+
+// milestoneNode decodes one open milestone. Open and Closed are the milestone's
+// own issue-count connections (the open:/closed: query aliases), so each carries
+// only the totalCount that survives the decode contract as a distinct field.
+type milestoneNode struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+	Open   struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"open"`
+	Closed struct {
+		TotalCount int `json:"totalCount"`
+	} `json:"closed"`
+}
+
+func (n milestoneNode) toMilestone() Milestone {
+	return Milestone{
+		Number:       n.Number,
+		Title:        n.Title,
+		URL:          n.URL,
+		OpenIssues:   n.Open.TotalCount,
+		ClosedIssues: n.Closed.TotalCount,
+	}
+}
+
+// milestoneRefNode decodes an issue's milestone association (null when the issue
+// is unmilestoned, which leaves the pointer nil).
+type milestoneRefNode struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
+
 type issueNode struct {
-	Number    int       `json:"number"`
-	Title     string    `json:"title"`
-	URL       string    `json:"url"`
-	CreatedAt time.Time `json:"createdAt"`
-	BodyText  string    `json:"bodyText"`
+	Number    int               `json:"number"`
+	Title     string            `json:"title"`
+	URL       string            `json:"url"`
+	CreatedAt time.Time         `json:"createdAt"`
+	BodyText  string            `json:"bodyText"`
+	Milestone *milestoneRefNode `json:"milestone"`
 	Labels    struct {
 		Nodes []struct {
 			Name string `json:"name"`
@@ -512,6 +653,10 @@ func (n issueNode) toIssue() Issue {
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
 	}
+	var milestone *MilestoneRef
+	if n.Milestone != nil {
+		milestone = &MilestoneRef{Number: n.Milestone.Number, Title: n.Milestone.Title}
+	}
 	return Issue{
 		Number:             n.Number,
 		Title:              n.Title,
@@ -522,6 +667,7 @@ func (n issueNode) toIssue() Issue {
 		BodyText:           n.BodyText,
 		ReferencedBy:       n.referencedBy(),
 		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),
+		Milestone:          milestone,
 	}
 }
 

@@ -101,6 +101,8 @@ func TestQueryDecodeContract(t *testing.T) {
 		{"open-issue rate limit", issuesQuery, rateLimitNode{}},
 		{"activity connection", activityQuery, activityConnection{}},
 		{"activity rate limit", activityQuery, rateLimitNode{}},
+		{"milestones connection", milestonesQuery, milestonesConnection{}},
+		{"milestones rate limit", milestonesQuery, rateLimitNode{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if missing := missingQueryFields(tc.query, tc.sample); len(missing) > 0 {
@@ -138,19 +140,27 @@ func TestMissingQueryFieldsCatchesDrift(t *testing.T) {
 	}
 }
 
-// TestQueryStructuralKeys covers the wrapper keys the decode path unmarshals
-// through but the field-level contract test does not reach: the response is
-// decoded via repository -> issues and a root rateLimit, and renaming any of those
-// selections would compile and silently zero-value. These keys are a small fixed
-// set (not a growing field list), so an explicit check is the apt shape.
+// TestQueryStructuralKeys covers the wrapper keys each query's decode path
+// unmarshals through but the field-level contract test does not reach: a
+// connection is decoded from the raw repository payload via an intermediate
+// struct (repository -> issues / repository -> milestones) alongside a root
+// rateLimit, and renaming any of those selections would compile and silently
+// zero-value. The expected keys are per-query — the milestones fetch goes through
+// a different connection key than the issue fetches — so each case carries its
+// own small fixed set rather than a shared list a new query would silently escape.
 func TestQueryStructuralKeys(t *testing.T) {
-	for _, q := range []struct{ name, query string }{
-		{"open issues", issuesQuery},
-		{"activity", activityQuery},
+	for _, q := range []struct {
+		name  string
+		query string
+		keys  []string
+	}{
+		{"open issues", issuesQuery, []string{"repository", "issues", "rateLimit"}},
+		{"activity", activityQuery, []string{"repository", "issues", "rateLimit"}},
+		{"milestones", milestonesQuery, []string{"repository", "milestones", "rateLimit"}},
 	} {
 		t.Run(q.name, func(t *testing.T) {
 			idents := queryIdentifiers(q.query)
-			for _, key := range []string{"repository", "issues", "rateLimit"} {
+			for _, key := range q.keys {
 				if !idents[key] {
 					t.Errorf("query does not select structural key %q the decode path depends on", key)
 				}

@@ -14,16 +14,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// fakeFetcher is a static IssueFetcher: the seam that lets the acceptance test
-// exercise backlog_review end-to-end without invoking gh or the network. The
+// fakeFetcher is a static Fetcher: the seam that lets the acceptance test
+// exercise the tools end-to-end without invoking gh or the network. The
 // activity* fields drive the trajectory reduction's second fetch; their zero
 // value (empty result, nil error) makes that fetch a no-op success, so tests
-// that don't care about trajectory are unaffected.
+// that don't care about trajectory are unaffected. The milestone* fields play
+// the same role for the project_summary milestone fetch.
 type fakeFetcher struct {
 	result         github.IssueListResult
 	err            error
 	activityResult github.IssueActivityResult
 	activityErr    error
+	milestones     github.MilestoneListResult
+	milestonesErr  error
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
@@ -32,6 +35,10 @@ func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.
 
 func (f fakeFetcher) ListIssuesUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.IssueActivityResult, error) {
 	return f.activityResult, f.activityErr
+}
+
+func (f fakeFetcher) ListOpenMilestones(_ context.Context, _ string, _ int) (github.MilestoneListResult, error) {
+	return f.milestones, f.milestonesErr
 }
 
 // fixedClock is the injected wall clock; staleness is deterministic under it.

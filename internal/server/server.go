@@ -34,7 +34,7 @@ const (
 // config holds the server's resolved dependencies. Options override the
 // production defaults; tests inject fakes for hermetic coverage.
 type config struct {
-	fetcher       github.IssueFetcher
+	fetcher       github.Fetcher
 	manifestRoot  string
 	manifestFiles []string
 	now           func() time.Time
@@ -44,7 +44,7 @@ type config struct {
 type Option func(*config)
 
 // WithFetcher overrides the GitHub issue fetcher (tests inject a fake).
-func WithFetcher(f github.IssueFetcher) Option {
+func WithFetcher(f github.Fetcher) Option {
 	return func(c *config) { c.fetcher = f }
 }
 
@@ -170,7 +170,7 @@ func backlogReviewTool() *mcp.Tool {
 // Errors from the open fetch are returned plain so the SDK surfaces them as tool
 // errors (IsError); a manifest error names a file, so it is logged to stderr and
 // replaced with a repo-named message on the caller channel.
-func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
+func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.Facts, error) {
 		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
 		if owner == "" || repo == "" {
@@ -238,7 +238,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 // 0 plus its reset) rather than the now-stale open-fetch budget that would tell a
 // caller "you have budget" at the moment it was throttled; on any other degrade,
 // the open fetch's budget (the last successful read).
-func reduceTrajectory(ctx context.Context, fetcher github.IssueFetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
+func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
 	since := n.UTC().AddDate(0, 0, -maxInt(cfg.Windows))
 	activity, err := fetcher.ListIssuesUpdatedSince(ctx, ownerRepo, since, cfg.FetchLimit)
 	if err == nil {

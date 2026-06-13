@@ -8,7 +8,7 @@
 // (ListIssuesUpdatedSince) that feeds the creation-vs-closure trajectory.
 //
 // Data is fetched in-process over net/http (no heavy client dependency); the
-// only subprocess is `gh auth token` for credential bootstrap. The IssueFetcher
+// only subprocess is `gh auth token` for credential bootstrap. The Fetcher
 // interface is the seam that lets callers and tests substitute a fake.
 package github
 
@@ -35,16 +35,52 @@ import (
 // cross-reference events than the fetch cap, so the cross-reference reduction can
 // flag that a graph edge may be missing rather than report incomplete data as
 // complete.
+//
+// Milestone is the issue's milestone association (number and title), or nil when
+// the issue is unmilestoned — the orientation reduction reads it both to group
+// issues under their milestone and to flag the unmilestoned ones.
 type Issue struct {
-	Number             int       `json:"number"`
-	Title              string    `json:"title"`
-	URL                string    `json:"url"`
-	CreatedAt          time.Time `json:"createdAt"`
-	LastActivityAt     time.Time `json:"lastActivityAt"`
-	Labels             []string  `json:"labels"`
-	BodyText           string    `json:"bodyText"`
-	ReferencedBy       []int     `json:"referencedBy"`
-	CrossRefsTruncated bool      `json:"crossRefsTruncated"`
+	Number             int           `json:"number"`
+	Title              string        `json:"title"`
+	URL                string        `json:"url"`
+	CreatedAt          time.Time     `json:"createdAt"`
+	LastActivityAt     time.Time     `json:"lastActivityAt"`
+	Labels             []string      `json:"labels"`
+	BodyText           string        `json:"bodyText"`
+	ReferencedBy       []int         `json:"referencedBy"`
+	CrossRefsTruncated bool          `json:"crossRefsTruncated"`
+	Milestone          *MilestoneRef `json:"milestone,omitempty"`
+}
+
+// MilestoneRef is an issue's milestone association: enough to group the issue and
+// to name its milestone, without the open/closed progress counts a milestone fetch
+// carries (those come from ListOpenMilestones, which reads them authoritatively
+// from the milestone object rather than from the bounded issue window).
+type MilestoneRef struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+}
+
+// Milestone is one open milestone with its authoritative progress: OpenIssues and
+// ClosedIssues are the milestone object's own totals (not derived from the fetched
+// issue window, so they stay exact even when the issue fetch truncates). URL lets a
+// caller link the milestone, mirroring Issue.URL.
+type Milestone struct {
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	URL          string `json:"url"`
+	OpenIssues   int    `json:"openIssues"`
+	ClosedIssues int    `json:"closedIssues"`
+}
+
+// MilestoneListResult carries the fetched open milestones plus the repository's
+// exact open-milestone count; the window is truncated when len(Milestones) <
+// TotalOpen. RateLimit is the most-recent budget snapshot observed across the
+// paginated fetch, or nil when the response carried none.
+type MilestoneListResult struct {
+	Milestones []Milestone
+	TotalOpen  int
+	RateLimit  *RateLimit
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open
@@ -92,15 +128,18 @@ type IssueActivityResult struct {
 	RateLimit  *RateLimit
 }
 
-// IssueFetcher fetches a repository's issues for the backlog reductions. It
-// exists so tests can substitute a fake without invoking gh or the network.
-// ListOpenIssues returns the open-issue grooming window (newest-activity-last, up
-// to fetchLimit); ListIssuesUpdatedSince returns the lean open-and-closed
-// activity window updated at or after `since` (up to fetchLimit), feeding the
-// creation-vs-closure trajectory.
-type IssueFetcher interface {
+// Fetcher fetches a repository's issues, milestones, and pull requests for the
+// reductions. It exists so tests can substitute a fake without invoking gh or the
+// network. ListOpenIssues returns the open-issue grooming window
+// (newest-activity-last, up to fetchLimit); ListIssuesUpdatedSince returns the
+// lean open-and-closed activity window updated at or after `since` (up to
+// fetchLimit), feeding the creation-vs-closure trajectory; ListOpenMilestones
+// returns the open milestones with their authoritative open/closed counts, for
+// the orientation reduction's milestone-progress view.
+type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
+	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)
 }
 
 // Sentinel errors classify the failure modes a caller acts on. They name the
