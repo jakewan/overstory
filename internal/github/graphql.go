@@ -108,6 +108,27 @@ const milestonesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:S
   }
 }`
 
+// pullRequestsQuery fetches a page of open pull requests for the orientation
+// reduction's in-flight-work view, ordered like the issue grooming window
+// (UPDATED_AT ASC). headRefName is the PR's source branch; isDraft separates
+// draft from ready. commits(last:1) reads the head commit's statusCheckRollup —
+// the single aggregate CI verdict across all checks — bounding the fetch to one
+// commit's rollup rather than walking every check. statusCheckRollup is null when
+// the PR has no checks reported, which decodes to an empty CIStatus.
+const pullRequestsQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    pullRequests(states:OPEN, first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
+      totalCount
+      pageInfo{ hasNextPage endCursor }
+      nodes{
+        number title url isDraft createdAt updatedAt headRefName
+        commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
+      }
+    }
+  }
+}`
+
 // GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process.
 // endpoint, tokens, and client are fields so tests can drive it against an
 // httptest.Server with a static token.
@@ -421,6 +442,74 @@ func (f *GraphQLFetcher) queryMilestones(ctx context.Context, token, owner, name
 	return data.Milestones, budget, nil
 }
 
+// ListOpenPullRequests fetches up to fetchLimit open pull requests, paginating
+// until the limit is reached or the connection is exhausted, and reports the
+// repository's exact open-PR count via TotalOpen.
+func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo string, fetchLimit int) (PullRequestListResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return PullRequestListResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return PullRequestListResult{}, err
+	}
+
+	var (
+		prs       []PullRequest
+		totalOpen int
+		cursor    *string
+		budget    *RateLimit
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for page := 0; page < maxPages; page++ {
+		first := pageSize
+		if remaining := fetchLimit - len(prs); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := f.queryPullRequests(ctx, token, owner, name, first, cursor)
+		if qerr != nil {
+			return PullRequestListResult{}, qerr
+		}
+		budget = pageBudget
+		totalOpen = conn.TotalCount
+		for _, n := range conn.Nodes {
+			prs = append(prs, n.toPullRequest())
+		}
+		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
+			break
+		}
+		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever
+		}
+		next := conn.PageInfo.EndCursor
+		cursor = &next
+		if len(prs) >= fetchLimit {
+			break
+		}
+	}
+	return PullRequestListResult{PullRequests: prs, TotalOpen: totalOpen, RateLimit: budget}, nil
+}
+
+// queryPullRequests fetches one page of open pull requests, decoding the shared
+// spine's raw repository payload into the pull-request connection.
+func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, name string, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
+	repo, budget, err := f.do(ctx, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name)
+	if err != nil {
+		return pullRequestsConnection{}, nil, err
+	}
+	var data struct {
+		PullRequests pullRequestsConnection `json:"pullRequests"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return pullRequestsConnection{}, nil, fmt.Errorf("decoding GitHub pull requests for %s/%s: %w", owner, name, derr)
+	}
+	return data.PullRequests, budget, nil
+}
+
 // toRateLimit adapts the decoded GraphQL node to the exported budget, or nil
 // when the response carried no rateLimit block.
 func toRateLimit(n *rateLimitNode) *RateLimit {
@@ -604,6 +693,61 @@ func (n milestoneNode) toMilestone() Milestone {
 type milestoneRefNode struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
+}
+
+// pullRequestsConnection is the open-pull-request connection: pagination, the
+// open-PR total for the truncation seam, and the per-PR nodes.
+type pullRequestsConnection struct {
+	TotalCount int `json:"totalCount"`
+	PageInfo   struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []pullRequestNode `json:"nodes"`
+}
+
+// pullRequestNode decodes one open pull request. statusCheckRollup is a pointer
+// because GitHub returns null when the head commit has no checks reported;
+// toPullRequest reads its State only when present, leaving CIStatus empty
+// otherwise.
+type pullRequestNode struct {
+	Number      int       `json:"number"`
+	Title       string    `json:"title"`
+	URL         string    `json:"url"`
+	IsDraft     bool      `json:"isDraft"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	HeadRefName string    `json:"headRefName"`
+	Commits     struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					State string `json:"state"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+}
+
+func (n pullRequestNode) toPullRequest() PullRequest {
+	ci := ""
+	// commits(last:1) returns the head commit; its rollup is the single aggregate
+	// CI verdict, or null (left empty) when no checks are reported.
+	if len(n.Commits.Nodes) > 0 {
+		if r := n.Commits.Nodes[0].Commit.StatusCheckRollup; r != nil {
+			ci = r.State
+		}
+	}
+	return PullRequest{
+		Number:         n.Number,
+		Title:          n.Title,
+		URL:            n.URL,
+		IsDraft:        n.IsDraft,
+		CreatedAt:      n.CreatedAt,
+		LastActivityAt: n.UpdatedAt,
+		HeadRefName:    n.HeadRefName,
+		CIStatus:       ci,
+	}
 }
 
 type issueNode struct {

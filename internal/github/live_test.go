@@ -34,4 +34,7 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	if _, err := f.ListOpenMilestones(ctx, repo, 5); err != nil {
 		t.Errorf("ListOpenMilestones against %s: %v", repo, err)
 	}
+	if _, err := f.ListOpenPullRequests(ctx, repo, 5); err != nil {
+		t.Errorf("ListOpenPullRequests against %s: %v", repo, err)
+	}
 }

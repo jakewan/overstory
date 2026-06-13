@@ -83,6 +83,34 @@ type MilestoneListResult struct {
 	RateLimit  *RateLimit
 }
 
+// PullRequest is the subset of an open pull request the orientation reduction
+// consumes: identity, draft/ready state, its head branch, and the rolled-up CI
+// status. LastActivityAt is the PR's updatedAt (the stale-PR signal measures from
+// it). CIStatus is the head commit's status-check rollup state (e.g. SUCCESS,
+// FAILURE, PENDING, ERROR, EXPECTED); it is empty when the rollup is null — the PR
+// has no checks reported — which a caller reads as "no rollup", distinct from the
+// reported pending/expected states.
+type PullRequest struct {
+	Number         int       `json:"number"`
+	Title          string    `json:"title"`
+	URL            string    `json:"url"`
+	IsDraft        bool      `json:"isDraft"`
+	CreatedAt      time.Time `json:"createdAt"`
+	LastActivityAt time.Time `json:"lastActivityAt"`
+	HeadRefName    string    `json:"headRefName"`
+	CIStatus       string    `json:"ciStatus"`
+}
+
+// PullRequestListResult carries the fetched open pull requests plus the
+// repository's exact open-PR count; the window is truncated when
+// len(PullRequests) < TotalOpen. RateLimit is the most-recent budget snapshot
+// observed across the paginated fetch, or nil when the response carried none.
+type PullRequestListResult struct {
+	PullRequests []PullRequest
+	TotalOpen    int
+	RateLimit    *RateLimit
+}
+
 // IssueListResult carries the fetched issues plus the repository's exact open
 // count. The window is truncated when len(Issues) < TotalOpen. RateLimit is the
 // most-recent budget snapshot observed across the paginated fetch, or nil when
@@ -135,11 +163,14 @@ type IssueActivityResult struct {
 // lean open-and-closed activity window updated at or after `since` (up to
 // fetchLimit), feeding the creation-vs-closure trajectory; ListOpenMilestones
 // returns the open milestones with their authoritative open/closed counts, for
-// the orientation reduction's milestone-progress view.
+// the orientation reduction's milestone-progress view; ListOpenPullRequests
+// returns the open pull requests with draft state, head branch, and CI rollup,
+// for the orientation reduction's in-flight-work view.
 type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
 	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)
+	ListOpenPullRequests(ctx context.Context, ownerRepo string, fetchLimit int) (PullRequestListResult, error)
 }
 
 // Sentinel errors classify the failure modes a caller acts on. They name the
