@@ -26,6 +26,7 @@ type Config struct {
 	Quality     QualityConfig
 	Overlap     OverlapConfig
 	Trajectory  TrajectoryConfig
+	Summary     SummaryConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -94,6 +95,22 @@ type OverlapConfig struct {
 	TitleSimilarityThreshold float64
 }
 
+// SummaryConfig holds the resolved session-orientation convention the
+// project_summary reduction consumes. PRStalenessDays is the inactivity
+// threshold past which an open PR reads as stale; UnmilestonedAgeDays is the age
+// past which an unmilestoned open issue is flagged as a hygiene signal;
+// PRFetchLimit and MilestoneFetchLimit cap the orientation fetches. BugLabels is
+// the label family that marks an issue as a bug for the recommendation-inputs
+// block — a convention (no Go const), with a generic "bug" default; an explicit
+// empty list opts a repo out of bug flagging, like Deferred's no-op.
+type SummaryConfig struct {
+	PRStalenessDays     int
+	UnmilestonedAgeDays int
+	PRFetchLimit        int
+	MilestoneFetchLimit int
+	BugLabels           []string
+}
+
 // TrajectoryConfig holds the resolved creation-vs-closure trajectory convention.
 // Windows are the cumulative lookback windows in days (e.g. 7, 30, 90): for each,
 // the reduction reports issues created and closed within the last that-many days
@@ -130,6 +147,17 @@ func Defaults() Config {
 		// and long-term trend out of the box. FetchLimit is higher than staleness's
 		// (the nodes are lean and span closed issues over up to the widest window).
 		Trajectory: TrajectoryConfig{Windows: []int{7, 30, 90}, FetchLimit: 500},
+		// Orientation defaults: a PR idle two weeks reads as stale, an unmilestoned
+		// issue older than a month is a hygiene signal, and "bug" is the generic bug
+		// label. The fetch caps mirror the issue window (PRs) and a generous
+		// open-milestone ceiling.
+		Summary: SummaryConfig{
+			PRStalenessDays:     14,
+			UnmilestonedAgeDays: 30,
+			PRFetchLimit:        200,
+			MilestoneFetchLimit: 100,
+			BugLabels:           []string{"bug"},
+		},
 	}
 }
 
@@ -231,6 +259,7 @@ type fileConfig struct {
 	Quality     *qualityFile     `yaml:"quality"`
 	Overlap     *overlapFile     `yaml:"overlap"`
 	Trajectory  *trajectoryFile  `yaml:"trajectory"`
+	Summary     *summaryFile     `yaml:"summary"`
 }
 
 type stalenessFile struct {
@@ -285,6 +314,18 @@ type overlapFile struct {
 type trajectoryFile struct {
 	Windows    *[]int `yaml:"windows"`
 	FetchLimit *int   `yaml:"fetchLimit"`
+}
+
+// summaryFile decodes the summary block. The int fields are pointers for the
+// omitted-vs-explicit distinction (omitted inherits the default); BugLabels is a
+// pointer-to-slice so an omitted list inherits the "bug" default while an explicit
+// empty list opts out, the same idiom as deferred.Labels.
+type summaryFile struct {
+	PRStalenessDays     *int      `yaml:"prStalenessDays"`
+	UnmilestonedAgeDays *int      `yaml:"unmilestonedAgeDays"`
+	PRFetchLimit        *int      `yaml:"prFetchLimit"`
+	MilestoneFetchLimit *int      `yaml:"milestoneFetchLimit"`
+	BugLabels           *[]string `yaml:"bugLabels"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -369,6 +410,25 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.Trajectory.FetchLimit = *o.Trajectory.FetchLimit
 		}
 	}
+	if o.Summary != nil {
+		if o.Summary.PRStalenessDays != nil {
+			base.Summary.PRStalenessDays = *o.Summary.PRStalenessDays
+		}
+		if o.Summary.UnmilestonedAgeDays != nil {
+			base.Summary.UnmilestonedAgeDays = *o.Summary.UnmilestonedAgeDays
+		}
+		if o.Summary.PRFetchLimit != nil {
+			base.Summary.PRFetchLimit = *o.Summary.PRFetchLimit
+		}
+		if o.Summary.MilestoneFetchLimit != nil {
+			base.Summary.MilestoneFetchLimit = *o.Summary.MilestoneFetchLimit
+		}
+		// Whole-list replace, like deferred.Labels: an explicit empty list opts out
+		// of bug flagging.
+		if o.Summary.BugLabels != nil {
+			base.Summary.BugLabels = *o.Summary.BugLabels
+		}
+	}
 	return base
 }
 
@@ -429,6 +489,23 @@ func validate(c Config, ownerRepo, file string) error {
 	}
 	if c.Trajectory.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: trajectory.fetchLimit must be > 0, got %d", file, ownerRepo, c.Trajectory.FetchLimit)
+	}
+	// The four orientation knobs are all must-be-positive — a zero-day threshold is
+	// degenerate and a zero fetch limit fetches nothing — following staleness's <= 0
+	// rule, not minBodyLength's 0-disables. BugLabels needs no check: an empty list
+	// is a valid bug-flagging opt-out, like deferred.Labels.
+	for _, f := range []struct {
+		name string
+		val  int
+	}{
+		{"summary.prStalenessDays", c.Summary.PRStalenessDays},
+		{"summary.unmilestonedAgeDays", c.Summary.UnmilestonedAgeDays},
+		{"summary.prFetchLimit", c.Summary.PRFetchLimit},
+		{"summary.milestoneFetchLimit", c.Summary.MilestoneFetchLimit},
+	} {
+		if f.val <= 0 {
+			return fmt.Errorf("manifest %q for %q: %s must be > 0, got %d", file, ownerRepo, f.name, f.val)
+		}
 	}
 	return nil
 }

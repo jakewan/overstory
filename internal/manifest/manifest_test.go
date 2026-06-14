@@ -594,3 +594,87 @@ func TestResolveRejectsInvalidTrajectory(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultsIncludesSummary(t *testing.T) {
+	d := Defaults().Summary
+	if d.PRStalenessDays != 14 || d.UnmilestonedAgeDays != 30 {
+		t.Errorf("Summary thresholds = %d/%d, want 14/30", d.PRStalenessDays, d.UnmilestonedAgeDays)
+	}
+	if d.PRFetchLimit != 200 || d.MilestoneFetchLimit != 100 {
+		t.Errorf("Summary fetch limits = %d/%d, want 200/100", d.PRFetchLimit, d.MilestoneFetchLimit)
+	}
+	if len(d.BugLabels) != 1 || d.BugLabels[0] != "bug" {
+		t.Errorf("Summary.BugLabels = %v, want [bug]", d.BugLabels)
+	}
+}
+
+func TestResolveMergesSummary(t *testing.T) {
+	dir := t.TempDir()
+	// Sets two fields; the rest must inherit their defaults.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  summary:\n    prStalenessDays: 7\n    bugLabels: [defect, regression]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Summary.PRStalenessDays != 7 {
+		t.Errorf("PRStalenessDays = %d, want 7 (from manifest)", cfg.Summary.PRStalenessDays)
+	}
+	if len(cfg.Summary.BugLabels) != 2 || cfg.Summary.BugLabels[0] != "defect" {
+		t.Errorf("BugLabels = %v, want [defect regression]", cfg.Summary.BugLabels)
+	}
+	if cfg.Summary.UnmilestonedAgeDays != 30 || cfg.Summary.PRFetchLimit != 200 || cfg.Summary.MilestoneFetchLimit != 100 {
+		t.Errorf("inherited fields = %+v, want 30/200/100", cfg.Summary)
+	}
+}
+
+func TestResolveSummaryOmittedInheritsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	d := Defaults().Summary
+	if cfg.Summary.PRStalenessDays != d.PRStalenessDays || cfg.Summary.UnmilestonedAgeDays != d.UnmilestonedAgeDays ||
+		cfg.Summary.PRFetchLimit != d.PRFetchLimit || cfg.Summary.MilestoneFetchLimit != d.MilestoneFetchLimit ||
+		len(cfg.Summary.BugLabels) != 1 {
+		t.Errorf("Summary = %+v, want defaults %+v", cfg.Summary, d)
+	}
+}
+
+func TestResolveSummaryExplicitEmptyBugLabelsOptsOut(t *testing.T) {
+	dir := t.TempDir()
+	// An explicit empty list opts the repo out of bug flagging (distinct from omitted,
+	// which inherits the "bug" default).
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  summary:\n    bugLabels: []\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.Summary.BugLabels) != 0 {
+		t.Errorf("BugLabels = %v, want empty (explicit opt-out)", cfg.Summary.BugLabels)
+	}
+}
+
+func TestResolveRejectsInvalidSummary(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, wantField string
+	}{
+		{"zero prStalenessDays", "acme/widgets:\n  summary:\n    prStalenessDays: 0\n", "summary.prStalenessDays"},
+		{"negative unmilestonedAgeDays", "acme/widgets:\n  summary:\n    unmilestonedAgeDays: -1\n", "summary.unmilestonedAgeDays"},
+		{"zero prFetchLimit", "acme/widgets:\n  summary:\n    prFetchLimit: 0\n", "summary.prFetchLimit"},
+		{"zero milestoneFetchLimit", "acme/widgets:\n  summary:\n    milestoneFetchLimit: 0\n", "summary.milestoneFetchLimit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.manifest)
+			_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+			if err == nil {
+				t.Fatalf("%s: want validation error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("%s: error %q does not name %q", tc.name, err, tc.wantField)
+			}
+		})
+	}
+}
