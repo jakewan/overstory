@@ -38,6 +38,9 @@ func projectSummaryTool() *mcp.Tool {
 			Properties: map[string]*jsonschema.Schema{
 				"owner": {Type: "string", Description: "repository owner (user or org)"},
 				"repo":  {Type: "string", Description: "repository name"},
+				// The minimum and default are load-bearing, not just ergonomics: each
+				// reduction treats a listLimit of 0 as "empty every list", so this bound
+				// is what keeps in.Limit — and every reduction's cap — at 1 or more.
 				"limit": {
 					Type:        "integer",
 					Description: "maximum number of items to list per reduction: members per milestone and the milestone list, issues per hygiene signal, open PRs, and recommendation candidates",
