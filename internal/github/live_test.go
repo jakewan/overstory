@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// TestLiveSchemaAcceptance exercises both fetch shapes against the real GitHub
+// TestLiveSchemaAcceptance exercises every fetch shape against the real GitHub
 // GraphQL API, so a query field GitHub's schema rejects (the one drift class the
-// struct↔query contract test cannot see) fails here instead of only in
-// production. It is opt-in: set OVERSTORY_LIVE_REPO=owner/repo to run it — it
-// needs real gh credentials and the network, so it stays skipped in ordinary CI.
+// struct↔query contract test cannot see — it is nesting- and schema-blind) fails
+// here instead of only in production. It is opt-in: set OVERSTORY_LIVE_REPO=
+// owner/repo to run it — it needs real gh credentials and the network, so it
+// stays skipped in ordinary CI.
 func TestLiveSchemaAcceptance(t *testing.T) {
 	repo := os.Getenv("OVERSTORY_LIVE_REPO")
 	if repo == "" {
@@ -29,5 +30,11 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	}
 	if _, err := f.ListIssuesUpdatedSince(ctx, repo, time.Now().AddDate(0, 0, -90), 5); err != nil {
 		t.Errorf("ListIssuesUpdatedSince against %s: %v", repo, err)
+	}
+	if _, err := f.ListOpenMilestones(ctx, repo, 5); err != nil {
+		t.Errorf("ListOpenMilestones against %s: %v", repo, err)
+	}
+	if _, err := f.ListOpenPullRequests(ctx, repo, 5); err != nil {
+		t.Errorf("ListOpenPullRequests against %s: %v", repo, err)
 	}
 }

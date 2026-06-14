@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // QualityParams is the resolved quality convention a reduction runs against, the
@@ -24,7 +25,7 @@ type QualityParams struct {
 type Category struct {
 	Name     string
 	Labels   []string
-	Prefixes []PrefixRule
+	Prefixes []reduce.PrefixRule
 }
 
 // QualityFacts is the compact result of the quality reduction: open issues that
@@ -96,11 +97,11 @@ func ReduceQuality(issues []github.Issue, totalOpen int, params QualityParams, l
 	// 0 so a configured category with no misses still appears in the output.
 	type catMatcher struct {
 		name    string
-		matcher labelMatcher
+		matcher reduce.LabelMatcher
 	}
 	cats := make([]catMatcher, 0, len(params.Categories))
 	for _, c := range params.Categories {
-		cats = append(cats, catMatcher{name: c.Name, matcher: newLabelMatcher(c.Labels, c.Prefixes)})
+		cats = append(cats, catMatcher{name: c.Name, matcher: reduce.NewLabelMatcher(c.Labels, c.Prefixes)})
 		facts.ConfiguredCategories = append(facts.ConfiguredCategories, c.Name)
 		facts.MissingCategoryCounts[c.Name] = 0
 	}
@@ -139,7 +140,7 @@ func ReduceQuality(issues []github.Issue, totalOpen int, params QualityParams, l
 			Number:            is.Number,
 			Title:             is.Title,
 			URL:               is.URL,
-			AgeDays:           daysSince(now, is.CreatedAt),
+			AgeDays:           reduce.DaysSince(now, is.CreatedAt),
 			BodyLength:        bodyLen,
 			MissingBody:       missingBody,
 			LabelCount:        labelCount,
@@ -168,9 +169,9 @@ func ReduceQuality(issues []github.Issue, totalOpen int, params QualityParams, l
 }
 
 // matchesAny reports whether any of the issue's labels matches the category.
-func matchesAny(m labelMatcher, labels []string) bool {
+func matchesAny(m reduce.LabelMatcher, labels []string) bool {
 	for _, l := range labels {
-		if _, ok := m.match(l); ok {
+		if _, ok := m.Match(l); ok {
 			return true
 		}
 	}

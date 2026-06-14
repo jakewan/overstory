@@ -39,11 +39,11 @@ func connect(t *testing.T, srv *mcp.Server) *mcp.ClientSession {
 	return clientSession
 }
 
-// TestServerExposesBacklogReview pins the tool contract: the server constructs,
+// TestServerExposesTools pins the tool contract: the server constructs,
 // completes the MCP initialize handshake over a real client/server session, and
-// registers exactly the backlog_review tool. It is the end-to-end wiring proof;
-// the tool's behavior is covered in backlog_review_test.go.
-func TestServerExposesBacklogReview(t *testing.T) {
+// registers exactly the backlog_review and project_summary tools. It is the
+// end-to-end wiring proof; each tool's behavior is covered in its own _test.go.
+func TestServerExposesTools(t *testing.T) {
 	ctx := context.Background()
 	cs := connect(t, New())
 
@@ -51,10 +51,16 @@ func TestServerExposesBacklogReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(res.Tools) != 1 {
-		t.Fatalf("ListTools returned %d tools, want 1", len(res.Tools))
+	got := make(map[string]bool, len(res.Tools))
+	for _, tool := range res.Tools {
+		got[tool.Name] = true
 	}
-	if got := res.Tools[0].Name; got != "backlog_review" {
-		t.Errorf("tool name = %q, want backlog_review", got)
+	for _, want := range []string{"backlog_review", "project_summary"} {
+		if !got[want] {
+			t.Errorf("tool %q not registered; got %v", want, got)
+		}
+	}
+	if len(res.Tools) != 2 {
+		t.Errorf("ListTools returned %d tools, want 2", len(res.Tools))
 	}
 }

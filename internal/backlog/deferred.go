@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // Facts is the full backlog-review reduction: review-level identity plus
@@ -13,26 +14,16 @@ import (
 // block carries its own counts and truncation seams so a caller renders them
 // independently.
 type Facts struct {
-	Repo        string           `json:"repo"`
-	GeneratedAt time.Time        `json:"generatedAt"`
-	Staleness   StalenessFacts   `json:"staleness"`
-	Deferred    DeferredFacts    `json:"deferred"`
-	AreaBalance AreaBalanceFacts `json:"areaBalance"`
-	Quality     QualityFacts     `json:"quality"`
-	Overlap     OverlapFacts     `json:"overlap"`
-	CrossRef    CrossRefFacts    `json:"crossRef"`
-	Trajectory  TrajectoryFacts  `json:"trajectory"`
-	RateLimit   *RateLimitFacts  `json:"rateLimit,omitempty"`
-}
-
-// RateLimitFacts is the GraphQL points-budget snapshot from the fetch, so a
-// caller can pace itself: the points Remaining in the current window and the
-// ResetAt instant it refills. It is absent (nil, omitted from the output) when
-// the fetch carried no budget block, so a caller never mistakes an unknown
-// budget for a present one.
-type RateLimitFacts struct {
-	Remaining int       `json:"remaining"`
-	ResetAt   time.Time `json:"resetAt"`
+	Repo        string                 `json:"repo"`
+	GeneratedAt time.Time              `json:"generatedAt"`
+	Staleness   StalenessFacts         `json:"staleness"`
+	Deferred    DeferredFacts          `json:"deferred"`
+	AreaBalance AreaBalanceFacts       `json:"areaBalance"`
+	Quality     QualityFacts           `json:"quality"`
+	Overlap     OverlapFacts           `json:"overlap"`
+	CrossRef    CrossRefFacts          `json:"crossRef"`
+	Trajectory  TrajectoryFacts        `json:"trajectory"`
+	RateLimit   *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open
@@ -101,13 +92,13 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 	// would over-match. The matcher returns the issue's original-cased label for an
 	// explicit match, so iterating is.Labels in order and sorting reproduces the
 	// prior MatchedLabels content and ordering exactly.
-	matcher := newLabelMatcher(labels, nil)
+	matcher := reduce.NewLabelMatcher(labels, nil)
 
 	deferred := make([]DeferredIssue, 0, len(issues))
 	for _, is := range issues {
 		matched := make([]string, 0, len(is.Labels))
 		for _, name := range is.Labels {
-			if m, ok := matcher.match(name); ok {
+			if m, ok := matcher.Match(name); ok {
 				matched = append(matched, m)
 			}
 		}
@@ -120,8 +111,8 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
-			InactiveDays:        daysSince(now, is.LastActivityAt),
-			AgeDays:             daysSince(now, is.CreatedAt),
+			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
+			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,
 		})
 	}

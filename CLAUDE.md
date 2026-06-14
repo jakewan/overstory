@@ -17,14 +17,16 @@ See `README.md` for the full design.
 
 ## Status and layout
 
-The server exposes the `backlog_review` tool: given an explicit `owner/repo`, it resolves that repo's manifest conventions, fetches open issues from the GitHub GraphQL API, and returns compact staleness facts. The remaining issue-centric reductions, the mirrored Claude/Cursor render skills, and milestone-track parsing arrive in their own changes.
+The server exposes two tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, and trajectory blocks. `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, and recommendation-input blocks. The mirrored Claude/Cursor render skills and milestone-*track* parsing (within-milestone priority tiers from the milestone description) arrive in their own changes.
 
 ```
 cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
-internal/server/      # MCP server construction, the tool contract, and backlog_review
+internal/server/      # MCP server construction, the tool contract, and both tools
 internal/manifest/    # per-repo convention resolution (deep-merged over generic defaults)
-internal/github/      # in-process GitHub GraphQL data layer (gh-sourced credentials)
-internal/backlog/     # the staleness reduction (pure functions, structured facts)
+internal/github/      # in-process GitHub GraphQL data layer (issues, milestones, PRs)
+internal/reduce/      # reduction primitives shared by backlog and summary (label matcher, day math)
+internal/backlog/     # the grooming reduction (pure functions, structured facts)
+internal/summary/     # the orientation reduction (pure functions, structured facts)
 ```
 
 Further reductions and the packages they need arrive in their own changes — do not create packages speculatively; add them when a change needs them.

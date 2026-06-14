@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // AreaBalanceFacts is the compact result of the area-balance reduction: how the
@@ -37,14 +38,14 @@ type AreaCount struct {
 // lexicographically-smallest original form seen for the key (deterministic, and
 // in the common case there is only one form per key). totalOpen keeps
 // OpenIssueCount exact when the window is truncated.
-func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, prefixes []PrefixRule) AreaBalanceFacts {
+func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, prefixes []reduce.PrefixRule) AreaBalanceFacts {
 	facts := AreaBalanceFacts{
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
 		FetchTruncated: len(issues) < totalOpen,
 		Areas:          make([]AreaCount, 0),
 	}
-	matcher := newLabelMatcher(labels, prefixes)
+	matcher := reduce.NewLabelMatcher(labels, prefixes)
 
 	type bucket struct {
 		display string
@@ -57,11 +58,11 @@ func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, pr
 		// area and MultiAreaCount reflects distinct areas, not labels.
 		keys := make(map[string]struct{})
 		for _, label := range is.Labels {
-			name, ok := matcher.match(label)
+			name, ok := matcher.Match(label)
 			if !ok {
 				continue
 			}
-			key := normalizeLabel(name)
+			key := reduce.NormalizeLabel(name)
 			keys[key] = struct{}{}
 			b, exists := areas[key]
 			if !exists {

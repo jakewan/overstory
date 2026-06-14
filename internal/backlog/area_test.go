@@ -4,9 +4,10 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
-var areaPrefix = []PrefixRule{{Prefix: "area", Delimiter: "/"}}
+var areaPrefix = []reduce.PrefixRule{{Prefix: "area", Delimiter: "/"}}
 
 func TestReduceAreaBalanceCountsAndOrder(t *testing.T) {
 	issues := []github.Issue{

@@ -1,4 +1,10 @@
-package backlog
+// Package reduce holds the primitives shared across overstory's reduction
+// packages (backlog grooming and project-summary orientation): label
+// classification, day arithmetic, and the rate-limit fact shape. They live here
+// rather than in any one reduction package so a second consumer reuses them
+// without depending on the first — the dependency arrow points from each
+// reduction into reduce, never between reductions.
+package reduce
 
 import "strings"
 
@@ -12,33 +18,33 @@ type PrefixRule struct {
 	Delimiter string
 }
 
-// labelMatcher classifies an issue label against an explicit allow-list and a set
+// LabelMatcher classifies an issue label against an explicit allow-list and a set
 // of prefix rules, projecting each match to a canonical name. The explicit list
 // takes precedence over prefixes for naming. It is the shared matching primitive
-// behind the deferred and area-balance reductions.
-type labelMatcher struct {
+// behind the deferred, area-balance, quality, and orientation reductions.
+type LabelMatcher struct {
 	labels   map[string]struct{} // normalized explicit labels
 	prefixes []PrefixRule
 }
 
-// newLabelMatcher builds a matcher from an explicit label list and prefix rules;
+// NewLabelMatcher builds a matcher from an explicit label list and prefix rules;
 // either may be empty (an empty matcher matches nothing).
-func newLabelMatcher(labels []string, prefixes []PrefixRule) labelMatcher {
+func NewLabelMatcher(labels []string, prefixes []PrefixRule) LabelMatcher {
 	set := make(map[string]struct{}, len(labels))
 	for _, l := range labels {
-		set[normalizeLabel(l)] = struct{}{}
+		set[NormalizeLabel(l)] = struct{}{}
 	}
-	return labelMatcher{labels: set, prefixes: prefixes}
+	return LabelMatcher{labels: set, prefixes: prefixes}
 }
 
-// match reports whether label matches a configured area and, if so, its canonical
+// Match reports whether label matches a configured area and, if so, its canonical
 // name. Both paths return the original-cased label trimmed of surrounding
 // whitespace, so the projected name is consistent with the whitespace-insensitive
 // matching: an explicit-list match returns the trimmed label (callers echoing it
 // keep the original casing); a prefix match returns the suffix after the
 // delimiter, trimmed. A prefix whose suffix is empty (a bare "area/" label) does
 // not match — it would otherwise manufacture a blank-named area.
-func (m labelMatcher) match(label string) (string, bool) {
+func (m LabelMatcher) Match(label string) (string, bool) {
 	trimmed := strings.TrimSpace(label)
 	norm := strings.ToLower(trimmed)
 	if _, ok := m.labels[norm]; ok {
@@ -59,9 +65,9 @@ func (m labelMatcher) match(label string) (string, bool) {
 	return "", false
 }
 
-// normalizeLabel folds a label name for case-insensitive matching. GitHub label
+// NormalizeLabel folds a label name for case-insensitive matching. GitHub label
 // names are case-sensitive at creation but matched case-insensitively, so a
 // manifest "deferred" must match an issue's "DEFERRED".
-func normalizeLabel(name string) string {
+func NormalizeLabel(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }

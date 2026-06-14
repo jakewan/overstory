@@ -22,6 +22,7 @@ import (
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -33,7 +34,7 @@ const (
 // config holds the server's resolved dependencies. Options override the
 // production defaults; tests inject fakes for hermetic coverage.
 type config struct {
-	fetcher       github.IssueFetcher
+	fetcher       github.Fetcher
 	manifestRoot  string
 	manifestFiles []string
 	now           func() time.Time
@@ -42,8 +43,9 @@ type config struct {
 // Option configures the server's dependencies.
 type Option func(*config)
 
-// WithFetcher overrides the GitHub issue fetcher (tests inject a fake).
-func WithFetcher(f github.IssueFetcher) Option {
+// WithFetcher overrides the GitHub fetcher — issues, milestones, and pull
+// requests (tests inject a fake).
+func WithFetcher(f github.Fetcher) Option {
 	return func(c *config) { c.fetcher = f }
 }
 
@@ -64,7 +66,8 @@ func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
 }
 
-// New builds the overstory MCP server and registers the backlog_review tool.
+// New builds the overstory MCP server and registers the backlog_review and
+// project_summary tools.
 // With no options it uses production defaults: issues fetched via the GitHub
 // GraphQL API (credentials from gh), manifests discovered from
 // $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
@@ -91,6 +94,7 @@ func New(opts ...Option) *mcp.Server {
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
 	mcp.AddTool(srv, backlogReviewTool(), backlogReviewHandler(resolver, cfg.fetcher, cfg.now))
+	mcp.AddTool(srv, projectSummaryTool(), projectSummaryHandler(resolver, cfg.fetcher, cfg.now))
 	return srv
 }
 
@@ -169,7 +173,7 @@ func backlogReviewTool() *mcp.Tool {
 // Errors from the open fetch are returned plain so the SDK surfaces them as tool
 // errors (IsError); a manifest error names a file, so it is logged to stderr and
 // replaced with a repo-named message on the caller channel.
-func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
+func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[backlogReviewInput, backlog.Facts] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in backlogReviewInput) (*mcp.CallToolResult, backlog.Facts, error) {
 		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
 		if owner == "" || repo == "" {
@@ -237,7 +241,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.IssueFetch
 // 0 plus its reset) rather than the now-stale open-fetch budget that would tell a
 // caller "you have budget" at the moment it was throttled; on any other degrade,
 // the open fetch's budget (the last successful read).
-func reduceTrajectory(ctx context.Context, fetcher github.IssueFetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
+func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
 	since := n.UTC().AddDate(0, 0, -maxInt(cfg.Windows))
 	activity, err := fetcher.ListIssuesUpdatedSince(ctx, ownerRepo, since, cfg.FetchLimit)
 	if err == nil {
@@ -301,14 +305,15 @@ func rateLimitResetTime(e github.RateLimitedError, now func() time.Time) time.Ti
 	return when
 }
 
-// mapRateLimit adapts the fetch's budget snapshot to the backlog fact, keeping
-// the reduction layer decoupled from the github layer; nil (no budget observed)
-// passes through so the fact is omitted from the output.
-func mapRateLimit(in *github.RateLimit) *backlog.RateLimitFacts {
+// mapRateLimit adapts the fetch's budget snapshot to the shared rate-limit fact
+// both tools' outputs embed, keeping the reduction layer decoupled from the github
+// layer; nil (no budget observed) passes through so the fact is omitted from the
+// output.
+func mapRateLimit(in *github.RateLimit) *reduce.RateLimitFacts {
 	if in == nil {
 		return nil
 	}
-	return &backlog.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
+	return &reduce.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
 }
 
 func thresholdSource(matched bool) string {
@@ -320,10 +325,10 @@ func thresholdSource(matched bool) string {
 
 // mapPrefixes adapts the manifest's prefix rules to the backlog matcher's, so the
 // reduction layer stays decoupled from the convention-resolution layer.
-func mapPrefixes(in []manifest.PrefixRule) []backlog.PrefixRule {
-	out := make([]backlog.PrefixRule, len(in))
+func mapPrefixes(in []manifest.PrefixRule) []reduce.PrefixRule {
+	out := make([]reduce.PrefixRule, len(in))
 	for i, p := range in {
-		out[i] = backlog.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
+		out[i] = reduce.PrefixRule{Prefix: p.Prefix, Delimiter: p.Delimiter}
 	}
 	return out
 }
