@@ -12,9 +12,10 @@ import (
 // authoritative open/closed counts plus the open issues belonging to it from the
 // fetched window. Available is false only when the milestone fetch failed; the
 // block then degrades rather than failing the whole summary, and Unavailable
-// names the reason. OpenMilestones is the repository's exact open-milestone count
-// (from the milestone connection), so it stays accurate when the milestone fetch
-// truncates (FetchTruncated) or the list caps (ListTruncated).
+// names the reason — when false, the counts are zero-valued and carry no meaning.
+// When Available is true, OpenMilestones is the repository's exact open-milestone
+// count (from the milestone connection), so it stays accurate when the milestone
+// fetch truncates (FetchTruncated) or the list caps (ListTruncated).
 type MilestoneFacts struct {
 	Available      bool                `json:"available"`
 	Unavailable    string              `json:"unavailable,omitempty"`

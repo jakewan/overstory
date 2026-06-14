@@ -12,9 +12,10 @@ import (
 // before picking up something new — each open PR's branch, draft/ready state, CI
 // rollup, and inactivity, plus a stale-PR count. Available is false only when the
 // PR fetch failed; the block then degrades rather than failing the whole summary,
-// and Unavailable names the reason. OpenPRCount is the repository's exact open-PR
-// total, so it stays accurate when the fetch truncates (FetchTruncated) or the
-// list caps (ListTruncated).
+// and Unavailable names the reason — when false, the counts are zero-valued and
+// carry no meaning. When Available is true, OpenPRCount is the repository's exact
+// open-PR total, so it stays accurate when the fetch truncates (FetchTruncated) or
+// the list caps (ListTruncated).
 type PullRequestFacts struct {
 	Available      bool               `json:"available"`
 	Unavailable    string             `json:"unavailable,omitempty"`

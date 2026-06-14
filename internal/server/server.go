@@ -43,7 +43,8 @@ type config struct {
 // Option configures the server's dependencies.
 type Option func(*config)
 
-// WithFetcher overrides the GitHub issue fetcher (tests inject a fake).
+// WithFetcher overrides the GitHub fetcher — issues, milestones, and pull
+// requests (tests inject a fake).
 func WithFetcher(f github.Fetcher) Option {
 	return func(c *config) { c.fetcher = f }
 }
@@ -304,9 +305,10 @@ func rateLimitResetTime(e github.RateLimitedError, now func() time.Time) time.Ti
 	return when
 }
 
-// mapRateLimit adapts the fetch's budget snapshot to the backlog fact, keeping
-// the reduction layer decoupled from the github layer; nil (no budget observed)
-// passes through so the fact is omitted from the output.
+// mapRateLimit adapts the fetch's budget snapshot to the shared rate-limit fact
+// both tools' outputs embed, keeping the reduction layer decoupled from the github
+// layer; nil (no budget observed) passes through so the fact is omitted from the
+// output.
 func mapRateLimit(in *github.RateLimit) *reduce.RateLimitFacts {
 	if in == nil {
 		return nil
