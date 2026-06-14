@@ -65,7 +65,8 @@ func WithClock(now func() time.Time) Option {
 	return func(c *config) { c.now = now }
 }
 
-// New builds the overstory MCP server and registers the backlog_review tool.
+// New builds the overstory MCP server and registers the backlog_review and
+// project_summary tools.
 // With no options it uses production defaults: issues fetched via the GitHub
 // GraphQL API (credentials from gh), manifests discovered from
 // $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
@@ -92,6 +93,7 @@ func New(opts ...Option) *mcp.Server {
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
 	mcp.AddTool(srv, backlogReviewTool(), backlogReviewHandler(resolver, cfg.fetcher, cfg.now))
+	mcp.AddTool(srv, projectSummaryTool(), projectSummaryHandler(resolver, cfg.fetcher, cfg.now))
 	return srv
 }
 
