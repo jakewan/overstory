@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.filter.outputs.go }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
@@ -37,6 +38,10 @@ jobs:
               - 'go.mod'
               - 'go.sum'
               - '.golangci.yml'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - 'mise.toml'
               - '.github/workflows/ci.yml'
 
   test:
@@ -72,3 +77,18 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
+
+  docs:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # mise installs the pinned mdbook + mdbook-linkcheck2 backend from
+      # mise.toml, so CI builds the docs with the same toolchain as local
+      # development. `just docs-build` runs mdbook, which invokes the linkcheck2
+      # renderer; a broken link or structure fails the build.
+      - uses: jdx/mise-action@v2
+
+      - run: just docs-build

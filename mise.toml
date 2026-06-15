@@ -7,3 +7,7 @@ golangci-lint = "2.12.2"
 just = "1.52.0"
 lefthook = "2.1.9"
 mdbook = "0.5.3"
+# mdbook-linkcheck2 is an mdbook renderer backend; it links against mdbook's
+# crate version (mdbook-driver/mdbook-renderer), so bump it together with
+# `mdbook` above — see .claude/rules/toolchain-ci-parity.md.
+"github:marxin/mdbook-linkcheck2" = "0.12.2"

@@ -11,3 +11,11 @@ edit-url-template = "https://github.com/jakewan/overstory/edit/main/docs/{path}"
 default-theme = "light"
 preferred-dark-theme = "ayu"
 additional-css = ["theme/custom.css"]
+
+# mdbook-linkcheck2 renderer backend: validate intra-book links and anchors on
+# every build. warning-policy = "error" fails the build on a broken link;
+# follow-web-links defaults to false, so no network is touched (CI-safe). This
+# backend is required, not optional — a missing/failing backend fails the build
+# rather than being silently skipped.
+[output.linkcheck2]
+warning-policy = "error"
