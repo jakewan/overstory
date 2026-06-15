@@ -4,11 +4,11 @@
 // for the caller to render, applying each repository's conventions from a
 // declarative manifest rather than from hardcoded constants.
 //
-// This is the bootstrap entrypoint: it constructs the server and speaks MCP
-// over stdio. The server exposes no tools yet — the backlog_review tool and
-// the manifest resolution behind it land in their own changes. What ships here
-// is the runnable shell: construct, serve, and classify shutdown so a client
-// disconnect ends the process cleanly rather than as a failure.
+// This is the bootstrap entrypoint: it constructs the server — which registers
+// the tools and resolves each repository's manifest conventions — and speaks
+// MCP over stdio. What ships here is the runnable shell: construct, serve, and
+// classify shutdown so a client disconnect ends the process cleanly rather than
+// as a failure.
 package main
 
 import (
