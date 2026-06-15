@@ -17,11 +17,11 @@ See `README.md` for the full design.
 
 ## Status and layout
 
-The server exposes two tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, and trajectory blocks. `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, and recommendation-input blocks. The mirrored Claude/Cursor render skills and milestone-*track* parsing (within-milestone priority tiers from the milestone description) arrive in their own changes.
+The server exposes three tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, and trajectory blocks. `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, and recommendation-input blocks. `milestone_tracks` is the within-milestone *priority-structure* read — the ordered tracks (and their member issues) operators encode in a milestone's description — parsed declaratively per the repo's marker conventions. The mirrored Claude/Cursor render skills arrive in their own changes.
 
 ```
 cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
-internal/server/      # MCP server construction, the tool contract, and both tools
+internal/server/      # MCP server construction, the tool contract, and the tools
 internal/manifest/    # per-repo convention resolution (deep-merged over generic defaults)
 internal/github/      # in-process GitHub GraphQL data layer (issues, milestones, PRs)
 internal/reduce/      # reduction primitives shared by backlog and summary (label matcher, day math)

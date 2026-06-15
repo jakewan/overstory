@@ -33,9 +33,9 @@ A repository with no matching entry resolves to the generic defaults.
 Defaults are the base; your entry overrides field by field. The distinction between *omitting* a field and setting it *explicitly empty* is meaningful:
 
 - **Omitted** — inherits the default.
-- **Explicit value** (including an explicit empty list `[]`) — replaces the default. An empty list is how you *opt out* of a default-on reduction (e.g. `summary.bugLabels: []` turns off bug flagging; `areaBalance.prefixes: []` disables the default area prefixes).
+- **Explicit value** (including an explicit empty list `[]`) — replaces the default. An empty list is how you *opt out* of a default-on reduction (e.g. `summary.bugLabels: []` turns off bug flagging; `areaBalance.prefixes: []` disables the default area prefixes; `milestoneTracks.headingLevels: []` disables heading markers, leaving bold run-in markers).
 
-`areaBalance` merges its two fields independently (omit `prefixes` to keep the defaults while setting `labels`). List-valued conventions — `deferred.labels`, `quality.requiredCategories`, `trajectory.windows`, `summary.bugLabels` — are whole-list replaces, not element merges.
+`areaBalance` merges its two fields independently (omit `prefixes` to keep the defaults while setting `labels`). List-valued conventions — `deferred.labels`, `quality.requiredCategories`, `trajectory.windows`, `summary.bugLabels`, `milestoneTracks.headingLevels`, `milestoneTracks.labelStoplist` — are whole-list replaces, not element merges.
 
 ## Minimal example
 
@@ -133,6 +133,19 @@ Conventions the `project_summary` reduction consumes.
 | `prFetchLimit`        | int        | `200`     | Cap on PRs fetched. > 0.                                         |
 | `milestoneFetchLimit` | int        | `100`     | Cap on milestones fetched. > 0.                                  |
 | `bugLabels`           | `[]string` | `["bug"]` | Labels marking an issue as a bug for recommendation inputs. Set `[]` to opt out. |
+
+### `milestoneTracks`
+
+Conventions the `milestone_tracks` reduction consumes: how the track structure operators encode in a milestone's *description* is recognized. A track is a labeled section carrying issue references; markers degrade to zero tracks on prose/empty descriptions, so the defaults are safe on any repository.
+
+| Field           | Type       | Default                                                        | Notes                                                                                              |
+| --------------- | ---------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `headingLevels` | `[]int`    | `[2, 3]`                                                       | Markdown heading depths that start a track. Each in `[1,6]`. An explicit `[]` disables heading markers (valid — `boldRunIn` is independent). |
+| `boldRunIn`     | bool       | `true`                                                        | Treat a bold run-in label (`**Label** (status):`) as a track start. Set `false` to disable; distinct from omission. |
+| `fetchLimit`    | int        | `100`                                                         | Cap on open milestones fetched. > 0.                                                               |
+| `labelStoplist` | `[]string` | common prose-section labels (`Why`, `Ikigai`, `History`, …) | Marker labels that are prose sections, not tracks (matched case-insensitively). Extend it for your repo's own section headings. |
+
+Setting both `headingLevels: []` and `boldRunIn: false` disables all markers — a valid no-op that yields zero tracks for every milestone, not a configuration error.
 
 ## Validation
 
