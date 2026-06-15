@@ -21,3 +21,11 @@ pre-push:
       priority: 2
       run: just test
       skip: merge
+    docs-build:
+      priority: 3
+      # Only runs when the push includes docs changes; builds the book and runs
+      # the linkcheck2 backend, so a broken link or structure is caught before
+      # push rather than only in CI.
+      glob: "docs/**"
+      run: just docs-build
+      skip: merge

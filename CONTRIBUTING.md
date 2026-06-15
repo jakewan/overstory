@@ -50,7 +50,7 @@ The project uses BDD-style/outside-in TDD:
 
 ### Documentation
 
-User/integrator documentation lives in the [`docs/`](docs/) book (mdbook). Build it with `just docs-build` (or `just docs-serve` for live preview) before pushing documentation changes — a broken `SUMMARY.md` link fails the build.
+User/integrator documentation lives in the [`docs/`](docs/) book (mdbook). Build it with `just docs-build` (or `just docs-serve` for live preview) before pushing documentation changes. `docs-build` also runs the linkcheck backend, so a broken `SUMMARY.md` entry, cross-page link, or anchor fails the build. CI enforces the same build on any change under `docs/`, and a pre-push hook runs it locally when a push includes docs changes.
 
 Keep the docs pinned to the code:
 

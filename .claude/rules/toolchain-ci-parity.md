@@ -4,7 +4,7 @@ paths: mise.toml, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml
 
 # Toolchain / CI Parity
 
-Local development and CI must run the same tool versions and the same formatters. When they drift, a change passes locally and fails in CI (or the reverse), or CI silently tests a different Go than developers run. These three invariants are coupled across the files this rule conditions on — editing one file without its partner reintroduces the drift.
+Local development and CI must run the same tool versions and the same formatters. When they drift, a change passes locally and fails in CI (or the reverse), or CI silently tests a different Go than developers run. These invariants are coupled across the files this rule conditions on — editing one file without its partner reintroduces the drift.
 
 ## golangci-lint version is one atomic value
 
@@ -19,6 +19,10 @@ CI installs Go via `actions/setup-go` with `go-version-file: go.mod`, so the `go
 - The exact patch (`go 1.26.4`) makes CI install the same Go developers run. This is also what `go mod init`/`go mod tidy` write by default.
 
 Bump `go.mod` and `mise.toml` together on a Go upgrade.
+
+## mdbook and mdbook-linkcheck2 versions move together
+
+`mdbook-linkcheck2` is an mdbook renderer backend pinned in `mise.toml` alongside `mdbook`. It links against mdbook's library crates (`mdbook-driver`/`mdbook-renderer`), so a backend built against a different mdbook minor can fail to parse the book mdbook produces — `mdbook build` (and with it the CI docs job and the pre-push docs hook) would error. Both pins live in `mise.toml`, not split across files; bump them in the same commit, and confirm the chosen `mdbook-linkcheck2` release supports the target mdbook version before upgrading.
 
 ## pre-commit formats with CI's formatter set
 
