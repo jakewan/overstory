@@ -3,6 +3,9 @@
 /overstory
 coverage.out
 
+# mdbook generated output (source lives in docs/src/)
+docs/book/
+
 # IDE
 .idea/
 .vscode/

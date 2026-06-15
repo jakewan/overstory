@@ -43,3 +43,11 @@ clean:
 # Install git hooks via lefthook
 hooks:
     lefthook install
+
+# Build the documentation book to docs/book/
+docs-build:
+    mdbook build docs
+
+# Serve the documentation book locally with live reload
+docs-serve:
+    mdbook serve docs

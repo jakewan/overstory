@@ -36,7 +36,7 @@ Further reductions and the packages they need arrive in their own changes — do
 Tool versions are managed by [mise](https://mise.jdx.dev/) (`mise.toml`); tasks run through [just](https://github.com/casey/just) (`justfile`). One-time setup:
 
 ```sh
-mise install     # install pinned Go, golangci-lint, just, lefthook
+mise install     # install pinned Go, golangci-lint, just, lefthook, mdbook
 just hooks       # install git hooks (lefthook)
 ```
 
@@ -50,7 +50,11 @@ just fmt         # gofmt -w .
 just tidy        # go mod tidy
 just verify      # go mod verify
 just install     # build and install to ~/.local/bin
+just docs-build  # build the documentation book to docs/book/
+just docs-serve  # serve the documentation book locally with live reload
 ```
+
+User/integrator documentation lives in the `docs/` mdbook (`docs/src/`); the generated `docs/book/` is gitignored. See `CONTRIBUTING.md` for the docs maintenance contract.
 
 Formatting is enforced by golangci-lint's configured formatters (`gofmt`, `goimports`) — there is no separate format-check step. The `lefthook` hooks run formatting on commit and lint/test on push.
 

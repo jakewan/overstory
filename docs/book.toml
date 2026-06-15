@@ -1,0 +1,14 @@
+[book]
+authors = ["Jacob Wan"]
+language = "en"
+title = "Overstory"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/jakewan/overstory"
+edit-url-template = "https://github.com/jakewan/overstory/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "ayu"
+additional-css = ["theme/custom.css"]

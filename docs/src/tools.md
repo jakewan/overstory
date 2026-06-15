@@ -1,0 +1,64 @@
+# Tools & Facts
+
+Overstory exposes two read-only tools. Each returns a composite of **structured facts** — no prose, no markdown, no pre-rendered output. Turning facts into a report is the caller's job; this separation is what lets one server serve many render styles.
+
+This page documents the *shape and semantics* of what the tools return — the top-level composite, what each block is for, and the cross-cutting conventions. For the exhaustive field-by-field listing, read the Go structs named below: their `json:"..."` tags **are** the wire contract, so pointing at them keeps this reference from drifting as fields are added.
+
+## Common parameters
+
+Both tools take the same inputs:
+
+| Parameter | Type    | Required | Default | Bounds  | Meaning                          |
+| --------- | ------- | -------- | ------- | ------- | -------------------------------- |
+| `owner`   | string  | yes      | —       | —       | Repository owner (user or org).  |
+| `repo`    | string  | yes      | —       | —       | Repository name.                 |
+| `limit`   | integer | no       | `20`    | `1`–`100` | Max items listed per reduction.  |
+
+Repo targeting is explicit — there is no ambient default repository. The conventions applied come from the manifest entry for `owner/repo` (see [Manifests](./manifest.md)).
+
+`limit` caps how many items each block *lists*; it does **not** govern how many issues are *examined* — that's the manifest's per-reduction fetch limits, independent of `limit`. A list capped by `limit` sets its `listTruncated` flag (below).
+
+## Cross-cutting conventions
+
+These hold across every block of both composites:
+
+- **Hoisted identity.** Each composite carries `repo` and `generatedAt` at the top level.
+- **Truncation is explicit, never silent.** A caller must be able to tell incomplete data from complete data. Blocks carry:
+  - `fetchTruncated` — the scan window didn't cover every open issue (counts are a lower bound).
+  - `listTruncated` — more matches exist than were listed under `limit`.
+  - `membershipTruncated` (milestones) — a milestone's listed members are a floor relative to its open count.
+  - `refsTruncated` (cross-reference) — not all references were retrieved.
+- **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure surfaces as a tool-call error, not a block.
+- **`omitempty` fields.** `rateLimit` (top level) appears only when the GraphQL points budget ran low; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
+
+## `backlog_review`
+
+The **grooming** read: what in the backlog needs maintenance attention. Composite struct: `backlog.Facts` in `internal/backlog/`.
+
+| Block         | Answers                                                                 | Struct (in `internal/backlog/`) |
+| ------------- | ---------------------------------------------------------------------- | ------------------------------- |
+| `staleness`   | How much of the backlog is inactive, in bands, with the stalest issues. `thresholdSource` reports whether the threshold came from the manifest (`"manifest"`) or the generic default (`"default"`). | `staleness.go` |
+| `deferred`    | Open issues carrying the manifest's deferred labels (reports not-configured when none declared). | `deferred.go` |
+| `areaBalance` | Issue distribution across functional areas, plus unclassified and multi-area counts. | `area.go` |
+| `quality`     | Open issues with a too-thin body, no labels, or a missing required category. | `quality.go` |
+| `overlap`     | Groups of open issues with similar titles — candidate duplicates.       | `overlap.go` |
+| `crossRef`    | Groups of open issues that reference one another — candidate consolidation. | `crossref.go` |
+| `trajectory`  | Per lookback window, issues created, closed, and net — the growing/shrinking signal. Aggregate (unaffected by `limit`); degradable. | `trajectory.go` |
+
+Plus the optional top-level `rateLimit`.
+
+## `project_summary`
+
+The **orientation** read: given what's open now, what to pick up. Composite struct: `summary.Facts` in `internal/summary/`.
+
+| Block             | Answers                                                                       | Struct (in `internal/summary/`) |
+| ----------------- | ---------------------------------------------------------------------------- | ------------------------------- |
+| `milestones`      | Each open milestone's authoritative open/closed counts and its fetched open members. Degradable; per-milestone `membershipTruncated`. | `milestones.go` |
+| `areaInventory`   | Per area, the active-vs-deferred split of open issues (counts only, no issue numbers), plus unclassified. | `area.go` |
+| `hygiene`         | Four signals over open issues: missing-area, unmilestoned-and-aged, stale, deferred-without-context. | `hygiene.go` |
+| `openPRs`         | Each open PR's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count. Degradable. | `pullrequests.go` |
+| `recommendations` | Per-issue inputs (bug-labeled, milestone, age, inactivity) a caller ranks "what next" from. The ranking judgment stays caller-side. | `recommendations.go` |
+
+Plus the optional top-level `rateLimit`.
+
+> **The server reduces; the caller ranks and renders.** `recommendations` supplies neutral per-issue inputs, not a verdict — ordering them into "what to do next" is the caller's judgment. Likewise every block returns facts, never narrative.
