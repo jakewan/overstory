@@ -37,7 +37,7 @@ The **grooming** read: what in the backlog needs maintenance attention. Composit
 
 | Block         | Answers                                                                 | Struct (in `internal/backlog/`) |
 | ------------- | ---------------------------------------------------------------------- | ------------------------------- |
-| `staleness`   | How much of the backlog is inactive, in bands, with the stalest issues. `thresholdSource` reports whether the threshold came from the manifest (`"manifest"`) or the generic default (`"default"`). | `staleness.go` |
+| `staleness`   | How much of the backlog is *neglected* — inactive and not deliberately parked — in bands, with the stalest issues. Issues carrying a deferred label are excluded (quiet by design, not neglected) and reported separately as a count. `thresholdSource` reports whether the threshold came from the manifest (`"manifest"`) or the generic default (`"default"`). | `staleness.go` |
 | `deferred`    | Open issues carrying the manifest's deferred labels (reports not-configured when none declared). | `deferred.go` |
 | `areaBalance` | Issue distribution across functional areas, plus unclassified and multi-area counts. | `area.go` |
 | `quality`     | Open issues with a too-thin body, no labels, or a missing required category. | `quality.go` |
@@ -55,7 +55,7 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 | ----------------- | ---------------------------------------------------------------------------- | ------------------------------- |
 | `milestones`      | Each open milestone's authoritative open/closed counts and its fetched open members. Degradable; per-milestone `membershipTruncated`. | `milestones.go` |
 | `areaInventory`   | Per area, the active-vs-deferred split of open issues (counts only, no issue numbers), plus unclassified. | `area.go` |
-| `hygiene`         | Four signals over open issues: missing-area, unmilestoned-and-aged, stale, deferred-without-context. | `hygiene.go` |
+| `hygiene`         | Four signals over open issues: missing-area, unmilestoned-and-aged, stale (neglected — deferred issues excluded), deferred-without-context. | `hygiene.go` |
 | `openPRs`         | Each open PR's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count. Degradable. | `pullrequests.go` |
 | `recommendations` | Per-issue inputs (bug-labeled, milestone, age, inactivity) a caller ranks "what next" from. The ranking judgment stays caller-side. | `recommendations.go` |
 

@@ -87,25 +87,14 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 		return facts
 	}
 
-	// Deferred matching is the explicit-list case of the shared matcher (no prefix
-	// rules) — "deferred" is a curated subset of status labels, where a prefix
-	// would over-match. The matcher returns the issue's original-cased label for an
-	// explicit match, so iterating is.Labels in order and sorting reproduces the
-	// prior MatchedLabels content and ordering exactly.
-	matcher := reduce.NewLabelMatcher(labels, nil)
+	matches := deferredMatches(issues, labels)
 
-	deferred := make([]DeferredIssue, 0, len(issues))
+	deferred := make([]DeferredIssue, 0, len(matches))
 	for _, is := range issues {
-		matched := make([]string, 0, len(is.Labels))
-		for _, name := range is.Labels {
-			if m, ok := matcher.Match(name); ok {
-				matched = append(matched, m)
-			}
-		}
-		if len(matched) == 0 {
+		matched, ok := matches[is.Number]
+		if !ok {
 			continue
 		}
-		sort.Strings(matched) // deterministic order regardless of GitHub's label ordering
 		deferred = append(deferred, DeferredIssue{
 			Number:              is.Number,
 			Title:               is.Title,
@@ -133,4 +122,47 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 	}
 	facts.DeferredIssues = deferred
 	return facts
+}
+
+// deferredMatches is the single deferred-classification source for the backlog
+// staleness/deferred pair: it maps each fetched issue carrying at least one
+// configured deferred label to those matched labels (sorted). Deferred matching
+// is the explicit-list case of the shared matcher (no prefix rules) — "deferred"
+// is a curated subset of status labels, where a prefix would over-match. With no
+// configured labels it returns an empty map, so callers treat "unconfigured" as
+// "nothing deferred" uniformly. It ranges the full window, never a capped list.
+func deferredMatches(issues []github.Issue, labels []string) map[int][]string {
+	if len(labels) == 0 {
+		return map[int][]string{}
+	}
+	matcher := reduce.NewLabelMatcher(labels, nil)
+	out := make(map[int][]string, len(issues))
+	for _, is := range issues {
+		matched := make([]string, 0, len(is.Labels))
+		for _, name := range is.Labels {
+			if m, ok := matcher.Match(name); ok {
+				matched = append(matched, m)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		sort.Strings(matched) // deterministic order regardless of GitHub's label ordering
+		out[is.Number] = matched
+	}
+	return out
+}
+
+// DeferredNumbers returns the set of fetched issue numbers carrying at least one
+// configured deferred label — the staleness reduction's exclusion set. It draws
+// on the same classification ReduceDeferred uses, over the full fetched window
+// (not the capped list), so staleness and deferred never disagree about which
+// issues are parked.
+func DeferredNumbers(issues []github.Issue, labels []string) map[int]bool {
+	matches := deferredMatches(issues, labels)
+	nums := make(map[int]bool, len(matches))
+	for n := range matches {
+		nums[n] = true
+	}
+	return nums
 }

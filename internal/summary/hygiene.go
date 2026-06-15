@@ -98,7 +98,10 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 		if is.Milestone == nil && hi.AgeDays >= params.UnmilestonedAgeDays {
 			unmilestonedAged = append(unmilestonedAged, hi)
 		}
-		if hi.InactiveDays >= params.StaleThresholdDays {
+		// Staleness means neglected, not merely inactive: a deferred issue is quiet
+		// by design, so it is excluded here and surfaced under the deferred signals
+		// instead — keeping this orientation read consistent with the grooming read.
+		if hi.InactiveDays >= params.StaleThresholdDays && !anyMatch(deferredMatcher, is.Labels) {
 			stale = append(stale, hi)
 		}
 		if anyMatch(deferredMatcher, is.Labels) && len(strings.TrimSpace(is.BodyText)) < params.ContextBodyLength {
