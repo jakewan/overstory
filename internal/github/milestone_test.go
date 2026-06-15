@@ -112,6 +112,39 @@ func TestListOpenMilestonesParsesDescription(t *testing.T) {
 	}
 }
 
+// TestListOpenMilestonesNullDescriptionDecodesEmpty pins the common case: a
+// milestone with no description (GitHub returns JSON null) decodes to an empty
+// Description without failing the fetch. encoding/json treats a null into a string
+// field as a no-op, so the milestone — and the milestone_tracks reduction over it —
+// is unaffected; most milestones carry no description at all.
+func TestListOpenMilestonesNullDescriptionDecodesEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := `{"data":{"repository":{"milestones":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":7,"title":"M","url":"u7","description":null,
+				 "open":{"totalCount":0},"closed":{"totalCount":0}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenMilestones(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenMilestones with null description: %v", err)
+	}
+	if len(res.Milestones) != 1 {
+		t.Fatalf("got %d milestones, want 1", len(res.Milestones))
+	}
+	if res.Milestones[0].Description != "" {
+		t.Errorf("Description = %q, want empty for a null description", res.Milestones[0].Description)
+	}
+}
+
 // TestListOpenIssuesParsesMilestone pins that the open-issue query requests each
 // issue's milestone and decodes it onto Issue.Milestone — present for a
 // milestoned issue, nil for an unmilestoned one (GitHub returns null, leaving the
