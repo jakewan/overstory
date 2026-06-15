@@ -48,6 +48,28 @@ func TestReduceHygieneSignalPredicates(t *testing.T) {
 	}
 }
 
+// TestReduceHygieneStaleExcludesDeferred pins that the stale signal means
+// neglected, not merely inactive: a deferred-and-inactive issue is parked by
+// design, so it stays out of stale while still surfacing under its deferred
+// signal. This keeps the orientation read consistent with the grooming read.
+func TestReduceHygieneStaleExcludesDeferred(t *testing.T) {
+	deferredStale := mkIssue(2, 1, 40, []string{"area/net", "deferred"}, msRef(1, "m"))
+	deferredStale.BodyText = "" // empty body → also a deferred-without-context signal
+	issues := []github.Issue{
+		mkIssue(1, 1, 40, []string{"area/net"}, msRef(1, "m")), // plain stale
+		deferredStale, // deferred + inactive → excluded from stale
+	}
+	facts := ReduceHygiene(issues, 2, hygieneParams(), 20, now)
+
+	if facts.Stale.Count != 1 || facts.Stale.Issues[0].Number != 1 {
+		t.Errorf("stale = %+v, want only [issue 1] (deferred issue 2 excluded)", facts.Stale)
+	}
+	// The parked-but-cold cue is preserved on its own signal.
+	if facts.DeferredWithoutContext.Count != 1 || facts.DeferredWithoutContext.Issues[0].Number != 2 {
+		t.Errorf("deferredWithoutContext = %+v, want [issue 2]", facts.DeferredWithoutContext)
+	}
+}
+
 // TestReduceHygieneFreshUnmilestonedNotFlagged pins the age boundary: a young
 // unmilestoned issue is normal in-flight work, not a hygiene signal.
 func TestReduceHygieneFreshUnmilestonedNotFlagged(t *testing.T) {

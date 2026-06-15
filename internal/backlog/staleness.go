@@ -20,18 +20,24 @@ import (
 // time) lives on the enclosing Facts, not here — only staleness-specific
 // provenance (ThresholdSource) stays on this block.
 type StalenessFacts struct {
-	ThresholdDays   int               `json:"thresholdDays"`
-	ThresholdSource string            `json:"thresholdSource"`
-	OpenIssueCount  int               `json:"openIssueCount"`
-	FetchedCount    int               `json:"fetchedCount"`
-	StaleCount      int               `json:"staleCount"`
-	FreshCount      int               `json:"freshCount"`
-	Buckets         []StalenessBucket `json:"buckets"`
-	StaleIssues     []StaleIssue      `json:"staleIssues"`
-	Limit           int               `json:"limit"`
-	ListTruncated   bool              `json:"listTruncated"`
-	FetchLimit      int               `json:"fetchLimit"`
-	FetchTruncated  bool              `json:"fetchTruncated"`
+	ThresholdDays   int    `json:"thresholdDays"`
+	ThresholdSource string `json:"thresholdSource"`
+	OpenIssueCount  int    `json:"openIssueCount"`
+	FetchedCount    int    `json:"fetchedCount"`
+	StaleCount      int    `json:"staleCount"`
+	FreshCount      int    `json:"freshCount"`
+	// DeferredExcludedCount is the number of fetched issues removed from the
+	// staleness universe because they carry a deferred label — quiet by design,
+	// not neglected. With it, StaleCount + FreshCount + DeferredExcludedCount ==
+	// FetchedCount. Like StaleCount it is window-relative and a floor under
+	// FetchTruncated. Zero when the repo declares no deferred labels.
+	DeferredExcludedCount int               `json:"deferredExcludedCount"`
+	Buckets               []StalenessBucket `json:"buckets"`
+	StaleIssues           []StaleIssue      `json:"staleIssues"`
+	Limit                 int               `json:"limit"`
+	ListTruncated         bool              `json:"listTruncated"`
+	FetchLimit            int               `json:"fetchLimit"`
+	FetchTruncated        bool              `json:"fetchTruncated"`
 }
 
 // StalenessBucket counts stale issues in an inactivity band, in days. MaxDays 0
@@ -56,11 +62,17 @@ type StaleIssue struct {
 
 // ReduceStaleness reduces the fetched open issues to staleness facts as of now.
 // An issue is stale when its inactivity (days since last human activity) is at
-// least thresholdDays. totalOpen is the repository's exact open count, so
+// least thresholdDays. Staleness means *neglected* — gone quiet unintentionally
+// — so issues in the deferred set (parked by design) are excluded entirely:
+// they count as neither stale nor fresh, only toward DeferredExcludedCount. A
+// nil or empty deferred set excludes nothing, so a repo with no deferred
+// convention sees unchanged behavior. The set must be derived from the full
+// fetched window (not a capped list) so no deferred issue past the list limit
+// leaks back in. totalOpen is the repository's exact open count, so
 // OpenIssueCount stays accurate even when fewer issues were fetched; the listed
 // stale issues are capped at listLimit (most-stale first). now is injected so
 // the reduction is deterministic.
-func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit int, now time.Time) StalenessFacts {
+func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit int, deferred map[int]bool, now time.Time) StalenessFacts {
 	facts := StalenessFacts{
 		ThresholdDays:  thresholdDays,
 		OpenIssueCount: totalOpen,
@@ -69,8 +81,13 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 		FetchTruncated: len(issues) < totalOpen,
 	}
 
+	excluded := 0
 	stale := make([]StaleIssue, 0, len(issues))
 	for _, is := range issues {
+		if deferred[is.Number] {
+			excluded++
+			continue
+		}
 		inactive := reduce.DaysSince(now, is.LastActivityAt)
 		if inactive < thresholdDays {
 			continue
@@ -86,7 +103,8 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 	}
 
 	facts.StaleCount = len(stale)
-	facts.FreshCount = len(issues) - len(stale)
+	facts.DeferredExcludedCount = excluded
+	facts.FreshCount = len(issues) - len(stale) - excluded
 	facts.Buckets = bucketize(stale, thresholdDays)
 
 	// Most-stale first; ties broken by issue number for deterministic output.

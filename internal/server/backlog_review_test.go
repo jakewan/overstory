@@ -499,9 +499,15 @@ func TestBacklogReviewSurfacesDeferred(t *testing.T) {
 	if got := facts.Deferred.DeferredIssues[0].MatchedLabels; len(got) != 1 || got[0] != "blocked" {
 		t.Errorf("issue 1 MatchedLabels = %v, want [blocked]", got)
 	}
-	// The staleness block still reduces the same window.
-	if facts.Staleness.StaleCount != 2 {
-		t.Errorf("Staleness.StaleCount = %d, want 2 (deferred reduction does not disturb staleness)", facts.Staleness.StaleCount)
+	// Both inactive issues (1 and 3) carry a deferred label, so staleness — which
+	// now means "neglected" — excludes them rather than double-counting parked
+	// work as stale. Only the active, non-deferred issue 2 remains, and it is
+	// fresh, so nothing is stale.
+	if facts.Staleness.StaleCount != 0 {
+		t.Errorf("Staleness.StaleCount = %d, want 0 (both stale issues are deferred)", facts.Staleness.StaleCount)
+	}
+	if facts.Staleness.DeferredExcludedCount != 2 {
+		t.Errorf("Staleness.DeferredExcludedCount = %d, want 2", facts.Staleness.DeferredExcludedCount)
 	}
 }
 
@@ -524,9 +530,92 @@ func TestBacklogReviewDeferredNotConfigured(t *testing.T) {
 	if facts.Deferred.DeferredCount != 0 {
 		t.Errorf("DeferredCount = %d, want 0 (not configured)", facts.Deferred.DeferredCount)
 	}
-	// Staleness still works in the absence of a deferred convention.
+	// Staleness still works in the absence of a deferred convention, and with no
+	// deferred labels nothing is excluded — behavior is identical to before.
 	if facts.Staleness.StaleCount != 1 {
 		t.Errorf("Staleness.StaleCount = %d, want 1", facts.Staleness.StaleCount)
+	}
+	if facts.Staleness.DeferredExcludedCount != 0 {
+		t.Errorf("Staleness.DeferredExcludedCount = %d, want 0 (no deferred convention)", facts.Staleness.DeferredExcludedCount)
+	}
+}
+
+// TestBacklogReviewStalenessExcludesDeferred pins the core of #28: a deferred
+// issue is a third state, neither stale nor fresh. The fixture populates all
+// four partition cells — deferred-and-stale, deferred-and-fresh, plain-stale,
+// plain-fresh — and the three counts must partition the fetched window exactly.
+func TestBacklogReviewStalenessExcludesDeferred(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			deferredIssue(1, daysAgo(100), "deferred"), // deferred + inactive → excluded
+			deferredIssue(2, daysAgo(50)),              // plain stale
+			deferredIssue(3, daysAgo(5), "deferred"),   // deferred + active → excluded
+			deferredIssue(4, daysAgo(5)),               // plain fresh
+		},
+		TotalOpen: 4,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	s := facts.Staleness
+
+	if s.StaleCount != 1 {
+		t.Errorf("StaleCount = %d, want 1 (only the non-deferred inactive issue)", s.StaleCount)
+	}
+	if s.FreshCount != 1 {
+		t.Errorf("FreshCount = %d, want 1 (only the non-deferred active issue)", s.FreshCount)
+	}
+	if s.DeferredExcludedCount != 2 {
+		t.Errorf("DeferredExcludedCount = %d, want 2", s.DeferredExcludedCount)
+	}
+	if got := s.StaleCount + s.FreshCount + s.DeferredExcludedCount; got != s.FetchedCount {
+		t.Errorf("partition broken: stale+fresh+excluded = %d, want fetchedCount %d", got, s.FetchedCount)
+	}
+	// The excluded deferred issue must not leak into the listed stale issues.
+	for _, si := range s.StaleIssues {
+		if si.Number == 1 || si.Number == 3 {
+			t.Errorf("deferred issue #%d leaked into staleIssues", si.Number)
+		}
+	}
+	if len(s.StaleIssues) != 1 {
+		t.Fatalf("len(StaleIssues) = %d, want 1", len(s.StaleIssues))
+	}
+	if s.StaleIssues[0].Number != 2 {
+		t.Errorf("staleIssues[0] = #%d, want #2", s.StaleIssues[0].Number)
+	}
+}
+
+// TestBacklogReviewStalenessExclusionUncappedByListLimit guards the capping
+// trap: the exclusion set is derived from the full fetched window, never from the
+// deferred block's list (which is capped at the limit). With a limit below the
+// deferred count, every deferred issue must still leave the staleness universe.
+func TestBacklogReviewStalenessExclusionUncappedByListLimit(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			deferredIssue(1, daysAgo(100), "deferred"),
+			deferredIssue(2, daysAgo(100), "deferred"),
+			deferredIssue(3, daysAgo(100), "deferred"),
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 2}))
+	s := facts.Staleness
+
+	if s.StaleCount != 0 {
+		t.Errorf("StaleCount = %d, want 0 (all three are deferred)", s.StaleCount)
+	}
+	if s.DeferredExcludedCount != 3 {
+		t.Errorf("DeferredExcludedCount = %d, want 3 (uncapped by the list limit)", s.DeferredExcludedCount)
+	}
+	// The deferred block's list is capped at the limit, proving the exclusion set
+	// is not derived from it.
+	if !facts.Deferred.ListTruncated || len(facts.Deferred.DeferredIssues) != 2 {
+		t.Errorf("expected the deferred list capped at 2; got %d (truncated=%v)",
+			len(facts.Deferred.DeferredIssues), facts.Deferred.ListTruncated)
 	}
 }
 
