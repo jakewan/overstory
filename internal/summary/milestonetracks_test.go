@@ -88,6 +88,24 @@ func TestParseTracks(t *testing.T) {
 			desc: "**T** (x): #1, PR #2 (#3)",
 			want: "T|x|1:,3:",
 		},
+		// Refactor guards (#32): the strikethrough/PR-exclusion logic reads the text
+		// before each ref via the byte index the shared reduce.IssueRefMatches helper
+		// returns. These pin the multi-ref-per-line cases the original suite omitted.
+		{
+			name: "two struck members on one line",
+			desc: "**T** (x): ~~#1~~ ~~#2~~",
+			want: "T|x|1:~~,2:~~",
+		},
+		{
+			name: "struck member followed by a live member on the same line",
+			desc: "**T** (x): ~~#1~~ #2",
+			want: "T|x|1:~~,2:",
+		},
+		{
+			name: "PR reference immediately preceding a real reference",
+			desc: "**T** (x): PR #1 #2",
+			want: "T|x|2:",
+		},
 		{
 			name: "prose without markers yields no tracks",
 			desc: "Issues to resolve for v1.0. Tracking epic: #5.",
@@ -129,6 +147,20 @@ func TestParseTracksTruncatesMembersAndTracks(t *testing.T) {
 	}
 	if len(tracks[0].Members) != 2 || !tracks[0].ListTruncated {
 		t.Errorf("track A members=%d truncated=%v, want 2/true", len(tracks[0].Members), tracks[0].ListTruncated)
+	}
+}
+
+// TestReduceMilestoneTracksCarriesDescription pins the theme passthrough (#32):
+// the verbatim milestone description is surfaced alongside the parsed tracks so a
+// client can render the milestone's stated theme/purpose.
+func TestReduceMilestoneTracksCarriesDescription(t *testing.T) {
+	desc := "## Ikigai\n\nShip the picker.\n\n**Foundation** (anchor): #1"
+	facts := ReduceMilestoneTracks([]github.Milestone{{Number: 1, Description: desc}}, 1, false, defaultTrackParams(), 20)
+	if len(facts.Milestones) != 1 {
+		t.Fatalf("got %d milestones, want 1", len(facts.Milestones))
+	}
+	if facts.Milestones[0].Description != desc {
+		t.Errorf("Description = %q, want the verbatim milestone description %q", facts.Milestones[0].Description, desc)
 	}
 }
 
