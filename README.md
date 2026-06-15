@@ -13,7 +13,7 @@ GitHub GraphQL API — authenticated with the operator's existing `gh` credentia
 repository's manifest-declared conventions, and returns compact structured facts — leaving
 narrative and presentation to the agent or tool driving it.
 
-> Status: early development. Design and scope are still taking shape. The server speaks MCP over stdio and exposes two tools — `backlog_review` (a grooming read of what in the backlog needs attention) and `project_summary` (an orientation read of what's open and what to pick up) — each over an explicit `owner/repo` resolved against that repo's manifest conventions.
+> Status: early development. Design and scope are still taking shape. The server speaks MCP over stdio and exposes three tools — `backlog_review` (a grooming read of what in the backlog needs attention), `project_summary` (an orientation read of what's open and what to pick up), and `milestone_tracks` (the within-milestone priority structure operators encode in a milestone's description) — each over an explicit `owner/repo` resolved against that repo's manifest conventions.
 
 ## Usage
 

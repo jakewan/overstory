@@ -1,12 +1,12 @@
 # Tools & Facts
 
-Overstory exposes two read-only tools. Each returns a composite of **structured facts** — no prose, no markdown, no pre-rendered output. Turning facts into a report is the caller's job; this separation is what lets one server serve many render styles.
+Overstory exposes three read-only tools. Each returns a composite of **structured facts** — no prose, no markdown, no pre-rendered output. Turning facts into a report is the caller's job; this separation is what lets one server serve many render styles.
 
 This page documents the *shape and semantics* of what the tools return — the top-level composite, what each block is for, and the cross-cutting conventions. For the exhaustive field-by-field listing, read the Go structs named below: their `json:"..."` tags **are** the wire contract, so pointing at them keeps this reference from drifting as fields are added.
 
 ## Common parameters
 
-Both tools take the same inputs:
+All three tools take the same inputs:
 
 | Parameter | Type    | Required | Default | Bounds  | Meaning                          |
 | --------- | ------- | -------- | ------- | ------- | -------------------------------- |
@@ -28,7 +28,7 @@ These hold across every block of both composites:
   - `listTruncated` — more matches exist than were listed under `limit`.
   - `membershipTruncated` (milestones) — a milestone's listed members are a floor relative to its open count.
   - `refsTruncated` (cross-reference) — not all references were retrieved.
-- **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure surfaces as a tool-call error, not a block.
+- **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`; the whole of `milestone_tracks`, which is a single milestone-fetch reduction) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure on a tool's **primary** fetch — the open-issue fetch `backlog_review` and `project_summary` lead with — surfaces as a tool-call error rather than a degraded block. `milestone_tracks` has no primary fetch: its single milestone fetch degrades like the blocks above, so it never fails the call on a rate limit.
 - **`omitempty` fields.** `rateLimit` (top level) appears only when the GraphQL points budget ran low; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
 
 ## `backlog_review`
@@ -62,3 +62,11 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 Plus the optional top-level `rateLimit`.
 
 > **The server reduces; the caller ranks and renders.** `recommendations` supplies neutral per-issue inputs, not a verdict — ordering them into "what to do next" is the caller's judgment. Likewise every block returns facts, never narrative.
+
+## `milestone_tracks`
+
+The within-milestone **priority-structure** read: the ordered tracks operators encode in a milestone's *description* — distinct from `project_summary`'s milestone *progress* (counts and members). Composite struct: `summary.MilestoneTracksFacts` in `internal/summary/milestonetracks.go`.
+
+For each open milestone, the parsed `tracks` in description order, each carrying a `label`, an optional raw `status` (a bold run-in's parenthetical, uninterpreted), and ordered `members` — each an issue `number` with a raw `statusToken` (`~~` for a struck/abandoned member, a checkbox marker char, or absent). Tracks are recognized by manifest-declared markers (heading levels and/or bold run-in labels) with a prose-section label stoplist; see [`milestoneTracks`](./manifest.md#milestonetracks). A description with no track structure yields a milestone with no tracks — the common case — not an error. The block is a single milestone fetch (which also retrieves each milestone's raw-markdown description), degradable as above; the milestone-list, per-milestone track-list, and per-track member-list truncation seams are each surfaced.
+
+> **Structural extraction, caller-side judgment.** The server emits the structure it parses; deciding which track is "on top" or where a cut line falls is the caller's judgment. **Member precision:** list-structured tracks (checkbox/numbered) extract cleanly, but references in inline-prose tracks, markdown link text, or HTML blocks are captured verbatim and may be dependency *mentions* rather than members (pull-request references are excluded; a bare `#N` that is actually a PR cannot be distinguished from an issue without a live lookup). This is an accepted imprecision of structural extraction — the caller filters, and a future live-issue-state join is the real resolver.

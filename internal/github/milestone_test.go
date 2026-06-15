@@ -64,6 +64,87 @@ func TestListOpenMilestonesParsesCounts(t *testing.T) {
 	}
 }
 
+// TestListOpenMilestonesParsesDescription pins the within-milestone track
+// reduction's prerequisite: the query requests the milestone description, and the
+// raw markdown round-trips onto Milestone.Description with its markers intact. The
+// struct↔query contract guard catches a renamed tag, but only a wire round-trip
+// like this catches a tag that is wrong on both sides — and only this asserts the
+// markdown is fetched raw (not plain-texted), which the parser depends on.
+func TestListOpenMilestonesParsesDescription(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		body := `{"data":{"repository":{"milestones":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":7,"title":"M","url":"u7",
+				 "description":"## Active tracks\n\n**Foundation** (critical-path): #10",
+				 "open":{"totalCount":1},
+				 "closed":{"totalCount":0}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenMilestones(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenMilestones: %v", err)
+	}
+	if !strings.Contains(gotQuery, "description") {
+		t.Errorf("query does not request description; got:\n%s", gotQuery)
+	}
+	if len(res.Milestones) != 1 {
+		t.Fatalf("got %d milestones, want 1", len(res.Milestones))
+	}
+	want := "## Active tracks\n\n**Foundation** (critical-path): #10"
+	if res.Milestones[0].Description != want {
+		t.Errorf("Description = %q, want raw markdown %q", res.Milestones[0].Description, want)
+	}
+}
+
+// TestListOpenMilestonesNullDescriptionDecodesEmpty pins the common case: a
+// milestone with no description (GitHub returns JSON null) decodes to an empty
+// Description without failing the fetch. encoding/json treats a null into a string
+// field as a no-op, so the milestone — and the milestone_tracks reduction over it —
+// is unaffected; most milestones carry no description at all.
+func TestListOpenMilestonesNullDescriptionDecodesEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := `{"data":{"repository":{"milestones":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":7,"title":"M","url":"u7","description":null,
+				 "open":{"totalCount":0},"closed":{"totalCount":0}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenMilestones(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenMilestones with null description: %v", err)
+	}
+	if len(res.Milestones) != 1 {
+		t.Fatalf("got %d milestones, want 1", len(res.Milestones))
+	}
+	if res.Milestones[0].Description != "" {
+		t.Errorf("Description = %q, want empty for a null description", res.Milestones[0].Description)
+	}
+}
+
 // TestListOpenIssuesParsesMilestone pins that the open-issue query requests each
 // issue's milestone and decodes it onto Issue.Milestone — present for a
 // milestoned issue, nil for an unmilestoned one (GitHub returns null, leaving the

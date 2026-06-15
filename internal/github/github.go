@@ -64,13 +64,16 @@ type MilestoneRef struct {
 // Milestone is one open milestone with its authoritative progress: OpenIssues and
 // ClosedIssues are the milestone object's own totals (not derived from the fetched
 // issue window, so they stay exact even when the issue fetch truncates). URL lets a
-// caller link the milestone, mirroring Issue.URL.
+// caller link the milestone, mirroring Issue.URL. Description is the milestone's
+// *raw markdown* body (not plain text, unlike Issue.BodyText): the within-milestone
+// track reduction parses its structure, so the markdown markers must survive.
 type Milestone struct {
 	Number       int    `json:"number"`
 	Title        string `json:"title"`
 	URL          string `json:"url"`
 	OpenIssues   int    `json:"openIssues"`
 	ClosedIssues int    `json:"closedIssues"`
+	Description  string `json:"description"`
 }
 
 // MilestoneListResult carries the fetched open milestones plus the repository's
