@@ -10,7 +10,7 @@ func TestIssueRefs(t *testing.T) {
 	}{
 		{"multiple deduped and sorted", "blocks #5 and #3, also #5 again", []int{3, 5}},
 		{"pull-request reference excluded", "needs PR #5 before #6 lands", []int{6}},
-		{"pull path excluded", "superseded by pull/7 — see #8", []int{8}},
+		{"pull/ path segment before a ref is excluded", "superseded by pull/#7 — see #8", []int{8}},
 		// The `\bpr` word boundary means the "pr" inside "expr" is not a PR prefix,
 		// so the trailing reference survives.
 		{"pr inside a word is not a prefix", "expr#5", []int{5}},

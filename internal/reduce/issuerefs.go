@@ -26,8 +26,8 @@ type IssueRef struct {
 }
 
 // IssueRefMatches returns the #N references in text in appearance order, with
-// pull-request references (`PR #5`, `pull/5`) excluded and any number too large
-// for int skipped. It does not dedup: callers that need appearance order and
+// pull-request references (a `#N` preceded by a PR marker, e.g. `PR #5` or a
+// `pull/#5` path segment) excluded and any number too large for int skipped. It does not dedup: callers that need appearance order and
 // per-reference context (e.g. milestone tracks, which decorate each member) read
 // the raw sequence. IssueRefs is the deduped, sorted convenience over it.
 func IssueRefMatches(text string) []IssueRef {
