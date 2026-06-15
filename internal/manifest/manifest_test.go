@@ -678,3 +678,86 @@ func TestResolveRejectsInvalidSummary(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveMilestoneTracksDefaults(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets: {}\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	mt := cfg.MilestoneTracks
+	if len(mt.HeadingLevels) != 2 || mt.HeadingLevels[0] != 2 || mt.HeadingLevels[1] != 3 {
+		t.Errorf("HeadingLevels = %v, want [2 3]", mt.HeadingLevels)
+	}
+	if !mt.BoldRunIn {
+		t.Error("BoldRunIn = false, want true (default)")
+	}
+	if mt.FetchLimit != 100 {
+		t.Errorf("FetchLimit = %d, want 100 (default)", mt.FetchLimit)
+	}
+	if len(mt.LabelStoplist) == 0 {
+		t.Error("LabelStoplist is empty, want the default prose-section labels")
+	}
+}
+
+func TestResolveMilestoneTracksOverrides(t *testing.T) {
+	dir := t.TempDir()
+	// headingLevels and labelStoplist replace wholesale; boldRunIn:false disables;
+	// fetchLimit overrides; an omitted field would inherit (not exercised here).
+	writeManifest(t, dir, "repos.yml",
+		"acme/widgets:\n  milestoneTracks:\n    headingLevels: [2]\n    boldRunIn: false\n    fetchLimit: 25\n    labelStoplist: [Notes]\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	mt := cfg.MilestoneTracks
+	if len(mt.HeadingLevels) != 1 || mt.HeadingLevels[0] != 2 {
+		t.Errorf("HeadingLevels = %v, want [2]", mt.HeadingLevels)
+	}
+	if mt.BoldRunIn {
+		t.Error("BoldRunIn = true, want false (explicit disable, distinct from omission)")
+	}
+	if mt.FetchLimit != 25 {
+		t.Errorf("FetchLimit = %d, want 25", mt.FetchLimit)
+	}
+	if len(mt.LabelStoplist) != 1 || mt.LabelStoplist[0] != "Notes" {
+		t.Errorf("LabelStoplist = %v, want [Notes] (whole-list replace)", mt.LabelStoplist)
+	}
+}
+
+func TestResolveMilestoneTracksEmptyHeadingLevelsDisables(t *testing.T) {
+	dir := t.TempDir()
+	// An explicit empty headingLevels is a valid disable (not a mistake), since
+	// boldRunIn is an independent marker source — unlike trajectory.windows.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  milestoneTracks:\n    headingLevels: []\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.MilestoneTracks.HeadingLevels) != 0 {
+		t.Errorf("HeadingLevels = %v, want empty (explicit disable)", cfg.MilestoneTracks.HeadingLevels)
+	}
+}
+
+func TestResolveRejectsInvalidMilestoneTracks(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, wantField string
+	}{
+		{"heading level zero", "acme/widgets:\n  milestoneTracks:\n    headingLevels: [0]\n", "milestoneTracks.headingLevels"},
+		{"heading level above six", "acme/widgets:\n  milestoneTracks:\n    headingLevels: [7]\n", "milestoneTracks.headingLevels"},
+		{"zero fetchLimit", "acme/widgets:\n  milestoneTracks:\n    fetchLimit: 0\n", "milestoneTracks.fetchLimit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.manifest)
+			_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+			if err == nil {
+				t.Fatalf("%s: want validation error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("%s: error %q does not name %q", tc.name, err, tc.wantField)
+			}
+		})
+	}
+}

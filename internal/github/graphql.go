@@ -92,7 +92,10 @@ const activityQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Str
 // totalCount }) rather than from the bounded issue window, so the counts stay
 // authoritative even when the issue fetch truncates. The aliases decode onto
 // distinct struct fields; the connection's own totalCount is the open-milestone
-// total for the window-truncation seam.
+// total for the window-truncation seam. description is the raw markdown body the
+// within-milestone track reduction parses — fetched raw, not as plain text
+// (GitHub's Milestone type exposes no plain-text variant), so its structure
+// survives.
 const milestonesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -100,7 +103,7 @@ const milestonesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:S
       totalCount
       pageInfo{ hasNextPage endCursor }
       nodes{
-        number title url
+        number title url description
         open: issues(states:OPEN){ totalCount }
         closed: issues(states:CLOSED){ totalCount }
       }
@@ -667,10 +670,11 @@ type milestonesConnection struct {
 // own issue-count connections (the open:/closed: query aliases), so each carries
 // only the totalCount that survives the decode contract as a distinct field.
 type milestoneNode struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	URL    string `json:"url"`
-	Open   struct {
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	URL         string `json:"url"`
+	Description string `json:"description"`
+	Open        struct {
 		TotalCount int `json:"totalCount"`
 	} `json:"open"`
 	Closed struct {
@@ -685,6 +689,7 @@ func (n milestoneNode) toMilestone() Milestone {
 		URL:          n.URL,
 		OpenIssues:   n.Open.TotalCount,
 		ClosedIssues: n.Closed.TotalCount,
+		Description:  n.Description,
 	}
 }
 

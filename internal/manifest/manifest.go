@@ -20,13 +20,14 @@ import (
 
 // Config is the resolved convention set for one repository.
 type Config struct {
-	Staleness   StalenessConfig
-	Deferred    DeferredConfig
-	AreaBalance AreaBalanceConfig
-	Quality     QualityConfig
-	Overlap     OverlapConfig
-	Trajectory  TrajectoryConfig
-	Summary     SummaryConfig
+	Staleness       StalenessConfig
+	Deferred        DeferredConfig
+	AreaBalance     AreaBalanceConfig
+	Quality         QualityConfig
+	Overlap         OverlapConfig
+	Trajectory      TrajectoryConfig
+	Summary         SummaryConfig
+	MilestoneTracks MilestoneTracksConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -123,6 +124,23 @@ type TrajectoryConfig struct {
 	FetchLimit int
 }
 
+// MilestoneTracksConfig holds the resolved within-milestone track convention: how
+// the track structure operators encode in a milestone's description is recognized.
+// A track is a labeled section — a markdown heading at one of HeadingLevels, or a
+// bold run-in label (`**Label** (status):`) when BoldRunIn is set — carrying issue
+// references. LabelStoplist names labels that are prose sections, not tracks
+// (matched case-insensitively), so a `## Ikigai` or `**Why**:` heading doesn't
+// capture its prose mentions as members. FetchLimit caps how many open milestones
+// are fetched. Unlike Deferred, this has generic defaults — the marker shapes are
+// common enough to recognize out of the box, and degrade cleanly to zero tracks on
+// the prose/empty descriptions most repos have.
+type MilestoneTracksConfig struct {
+	HeadingLevels []int
+	BoldRunIn     bool
+	FetchLimit    int
+	LabelStoplist []string
+}
+
 // Defaults returns the generic defaults applied when a repository has no
 // manifest entry, or for fields its entry omits. These are the one place a
 // convention value is allowed to live in Go — the fallback, not a repo's
@@ -157,6 +175,20 @@ func Defaults() Config {
 			PRFetchLimit:        200,
 			MilestoneFetchLimit: 100,
 			BugLabels:           []string{"bug"},
+		},
+		// Recognize `##`/`###` headings and bold run-in labels out of the box; both
+		// degrade to zero tracks on prose/empty descriptions, so default-on is safe.
+		// The stoplist covers common prose-section labels so they aren't read as
+		// tracks; a repo extends it for its own multi-word section headings. The fetch
+		// cap mirrors the summary milestone ceiling.
+		MilestoneTracks: MilestoneTracksConfig{
+			HeadingLevels: []int{2, 3},
+			BoldRunIn:     true,
+			FetchLimit:    100,
+			LabelStoplist: []string{
+				"Why", "Note", "Goal", "Context", "Background",
+				"Overview", "Summary", "Ikigai", "History", "Completion", "Out of scope",
+			},
 		},
 	}
 }
@@ -253,13 +285,14 @@ func (r *Resolver) discover() ([]string, error) {
 // lenient by default), so a manifest also carrying config for reductions this
 // binary doesn't yet implement still resolves for staleness.
 type fileConfig struct {
-	Staleness   *stalenessFile   `yaml:"staleness"`
-	Deferred    *deferredFile    `yaml:"deferred"`
-	AreaBalance *areaBalanceFile `yaml:"areaBalance"`
-	Quality     *qualityFile     `yaml:"quality"`
-	Overlap     *overlapFile     `yaml:"overlap"`
-	Trajectory  *trajectoryFile  `yaml:"trajectory"`
-	Summary     *summaryFile     `yaml:"summary"`
+	Staleness       *stalenessFile       `yaml:"staleness"`
+	Deferred        *deferredFile        `yaml:"deferred"`
+	AreaBalance     *areaBalanceFile     `yaml:"areaBalance"`
+	Quality         *qualityFile         `yaml:"quality"`
+	Overlap         *overlapFile         `yaml:"overlap"`
+	Trajectory      *trajectoryFile      `yaml:"trajectory"`
+	Summary         *summaryFile         `yaml:"summary"`
+	MilestoneTracks *milestoneTracksFile `yaml:"milestoneTracks"`
 }
 
 type stalenessFile struct {
@@ -326,6 +359,19 @@ type summaryFile struct {
 	PRFetchLimit        *int      `yaml:"prFetchLimit"`
 	MilestoneFetchLimit *int      `yaml:"milestoneFetchLimit"`
 	BugLabels           *[]string `yaml:"bugLabels"`
+}
+
+// milestoneTracksFile decodes the milestoneTracks block. HeadingLevels and
+// LabelStoplist are pointer-to-slice for the omitted-vs-explicit distinction
+// (omitted inherits the defaults; an explicit value — including empty — replaces
+// them wholesale, so `headingLevels: []` disables heading markers). BoldRunIn is a
+// pointer-to-bool so an explicit `false` (disable bold-run-in markers) is
+// distinguishable from omission, which inherits the true default.
+type milestoneTracksFile struct {
+	HeadingLevels *[]int    `yaml:"headingLevels"`
+	BoldRunIn     *bool     `yaml:"boldRunIn"`
+	FetchLimit    *int      `yaml:"fetchLimit"`
+	LabelStoplist *[]string `yaml:"labelStoplist"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -429,6 +475,22 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.Summary.BugLabels = *o.Summary.BugLabels
 		}
 	}
+	if o.MilestoneTracks != nil {
+		// Whole-list replace for both slices: an explicit empty headingLevels disables
+		// heading markers, an explicit empty labelStoplist clears the defaults.
+		if o.MilestoneTracks.HeadingLevels != nil {
+			base.MilestoneTracks.HeadingLevels = *o.MilestoneTracks.HeadingLevels
+		}
+		if o.MilestoneTracks.BoldRunIn != nil {
+			base.MilestoneTracks.BoldRunIn = *o.MilestoneTracks.BoldRunIn
+		}
+		if o.MilestoneTracks.FetchLimit != nil {
+			base.MilestoneTracks.FetchLimit = *o.MilestoneTracks.FetchLimit
+		}
+		if o.MilestoneTracks.LabelStoplist != nil {
+			base.MilestoneTracks.LabelStoplist = *o.MilestoneTracks.LabelStoplist
+		}
+	}
 	return base
 }
 
@@ -506,6 +568,19 @@ func validate(c Config, ownerRepo, file string) error {
 		if f.val <= 0 {
 			return fmt.Errorf("manifest %q for %q: %s must be > 0, got %d", file, ownerRepo, f.name, f.val)
 		}
+	}
+	// Heading levels must be valid markdown depths (1..6). Empty is allowed, not a
+	// mistake: it disables heading markers, and bold-run-in is an independent marker
+	// source — unlike trajectory.windows, which always has a default and rejects
+	// empty. (All markers off — empty levels plus boldRunIn:false — is a valid
+	// no-op that yields zero tracks, so it isn't rejected here either.)
+	for i, lvl := range c.MilestoneTracks.HeadingLevels {
+		if lvl < 1 || lvl > 6 {
+			return fmt.Errorf("manifest %q for %q: milestoneTracks.headingLevels[%d] must be in [1,6], got %d", file, ownerRepo, i, lvl)
+		}
+	}
+	if c.MilestoneTracks.FetchLimit <= 0 {
+		return fmt.Errorf("manifest %q for %q: milestoneTracks.fetchLimit must be > 0, got %d", file, ownerRepo, c.MilestoneTracks.FetchLimit)
 	}
 	return nil
 }
