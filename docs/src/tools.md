@@ -28,7 +28,7 @@ These hold across every block of both composites:
   - `listTruncated` — more matches exist than were listed under `limit`.
   - `membershipTruncated` (milestones) — a milestone's listed members are a floor relative to its open count.
   - `refsTruncated` (cross-reference) — not all references were retrieved.
-- **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`; the whole of `milestone_tracks`, which is a single milestone-fetch reduction) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure surfaces as a tool-call error, not a block.
+- **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`; the whole of `milestone_tracks`, which is a single milestone-fetch reduction) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure on a tool's **primary** fetch — the open-issue fetch `backlog_review` and `project_summary` lead with — surfaces as a tool-call error rather than a degraded block. `milestone_tracks` has no primary fetch: its single milestone fetch degrades like the blocks above, so it never fails the call on a rate limit.
 - **`omitempty` fields.** `rateLimit` (top level) appears only when the GraphQL points budget ran low; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
 
 ## `backlog_review`
