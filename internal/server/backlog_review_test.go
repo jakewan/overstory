@@ -578,6 +578,9 @@ func TestBacklogReviewStalenessExcludesDeferred(t *testing.T) {
 			t.Errorf("deferred issue #%d leaked into staleIssues", si.Number)
 		}
 	}
+	if len(s.StaleIssues) != 1 {
+		t.Fatalf("len(StaleIssues) = %d, want 1", len(s.StaleIssues))
+	}
 	if s.StaleIssues[0].Number != 2 {
 		t.Errorf("staleIssues[0] = #%d, want #2", s.StaleIssues[0].Number)
 	}

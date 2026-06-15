@@ -205,8 +205,9 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		// Bind the clock once so every block shares one generation time; the two
 		// reductions run over the same fetched window.
 		n := now()
-		// Classify deferred issues once over the full window and share the set:
-		// staleness excludes them (parked, not neglected), deferred surfaces them.
+		// Build the staleness exclusion set over the full fetched window using the
+		// same deferred-label matching ReduceDeferred applies, so staleness counts
+		// only neglected work while deferred still surfaces the parked issues.
 		deferredNums := backlog.DeferredNumbers(result.Issues, cfg.Deferred.Labels)
 		staleness := backlog.ReduceStaleness(result.Issues, result.TotalOpen, cfg.Staleness.ThresholdDays, in.Limit, deferredNums, n)
 		staleness.FetchLimit = cfg.Staleness.FetchLimit
