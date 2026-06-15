@@ -24,7 +24,7 @@ Contributions should stay within this focused scope. If you're unsure whether so
 Tool versions are managed by [mise](https://mise.jdx.dev/). After cloning:
 
 ```bash
-mise install        # Install Go, golangci-lint, just, lefthook
+mise install        # Install Go, golangci-lint, just, lefthook, mdbook
 just hooks          # Install git hooks (lefthook)
 ```
 
@@ -47,6 +47,16 @@ The project uses BDD-style/outside-in TDD:
 - Drive the MCP tool surface from acceptance tests that exercise the server over an in-memory client/server session, then build inward.
 - Tests use the standard `testing` package — no external test frameworks.
 - Use table-driven tests for multiple scenarios; isolate filesystem state with `t.TempDir()`.
+
+### Documentation
+
+User/integrator documentation lives in the [`docs/`](docs/) book (mdbook). Build it with `just docs-build` (or `just docs-serve` for live preview) before pushing documentation changes — a broken `SUMMARY.md` link fails the build.
+
+Keep the docs pinned to the code:
+
+- When a tool is added, renamed, or changes its parameters, update its mention in `README.md` and `docs/src/tools.md`.
+- When the install or registration path changes, update `docs/src/guide/installation.md` — its single home; the README only links to it.
+- The tool/fact reference documents the stable shape and points at the Go source (`internal/backlog/`, `internal/summary/`) for field-by-field detail, so adding a field to a `Facts` struct doesn't require a doc edit. Update the reference only when a block is added, removed, or changes meaning.
 
 ## Pull Requests
 
