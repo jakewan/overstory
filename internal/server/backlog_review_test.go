@@ -511,6 +511,55 @@ func TestBacklogReviewSurfacesDeferred(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewDeferredSurfacesBodyRefs pins the dependency-readiness signal
+// end-to-end (#32): each deferred issue carries the distinct #N references parsed
+// from its (plaintext) body, with PR references and the issue's own number
+// excluded, so a client can tell whether a parked issue's blocker has closed.
+func TestBacklogReviewDeferredSurfacesBodyRefs(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	withRefs := deferredIssue(1, daysAgo(100), "deferred")
+	withRefs.BodyText = "Blocked by #10 and #11. Also #10. Self #1. Needs PR #99 first."
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{withRefs},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	got := facts.Deferred.DeferredIssues[0].BodyRefs
+	if len(got) != 2 || got[0] != 10 || got[1] != 11 {
+		t.Errorf("BodyRefs = %v, want [10 11] (deduped, sorted, PR + self excluded)", got)
+	}
+}
+
+// TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray pins the non-nil
+// convention through the JSON round-trip: a deferred issue with no body
+// references must serialize bodyRefs as [], not null, so a client never sees a
+// null it has to special-case.
+func TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	noRefs := deferredIssue(1, daysAgo(100), "deferred")
+	noRefs.BodyText = "Parked for now; no dependencies."
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noRefs},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	// After a JSON round-trip, `[]` decodes to a non-nil empty slice and `null` to
+	// nil — so a non-nil slice here proves the encoder emitted [].
+	if facts.Deferred.DeferredIssues[0].BodyRefs == nil {
+		t.Error("BodyRefs = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestBacklogReviewDeferredNotConfigured pins the no-convention path: a repo
 // whose manifest declares no deferred labels reports the block as not-configured
 // — an empty, honest no-op rather than a guess or an error.

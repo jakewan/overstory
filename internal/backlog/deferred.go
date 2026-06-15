@@ -48,11 +48,19 @@ type DeferredFacts struct {
 // DeferredIssue is one parked open issue reduced to its identifying facts plus
 // the deferred labels it matched. InactiveDays is measured from the last human
 // activity; AgeDays from creation.
+//
+// BodyRefs are the distinct #N references parsed from the issue body, ascending,
+// with pull-request references and the issue's own number excluded — the parked
+// issue's stated dependencies, so a client can tell whether a blocker has since
+// closed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
+// markdown, so only references surviving plaintext rendering appear. Non-nil even
+// when empty, so it serializes as [] rather than null.
 type DeferredIssue struct {
 	Number              int       `json:"number"`
 	Title               string    `json:"title"`
 	URL                 string    `json:"url"`
 	MatchedLabels       []string  `json:"matchedLabels"`
+	BodyRefs            []int     `json:"bodyRefs"`
 	InactiveDays        int       `json:"inactiveDays"`
 	AgeDays             int       `json:"ageDays"`
 	LastHumanActivityAt time.Time `json:"lastHumanActivityAt"`
@@ -100,6 +108,7 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
+			BodyRefs:            bodyDependencies(is),
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,
@@ -122,6 +131,21 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 	}
 	facts.DeferredIssues = deferred
 	return facts
+}
+
+// bodyDependencies returns the issue's body references with its own number
+// dropped — an issue citing itself is never a dependency. The result stays
+// non-nil even when self-exclusion empties it, so BodyRefs serializes as [].
+func bodyDependencies(is github.Issue) []int {
+	refs := reduce.IssueRefs(is.BodyText)
+	out := make([]int, 0, len(refs))
+	for _, n := range refs {
+		if n == is.Number {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // deferredMatches is the single deferred-classification source for the backlog

@@ -142,6 +142,29 @@ func TestMilestoneTracksProseDescriptionYieldsNoTracks(t *testing.T) {
 	}
 }
 
+// TestMilestoneTracksSurfacesDescription pins the theme passthrough end-to-end
+// (#32): the verbatim milestone description reaches the client alongside the
+// parsed tracks, so a render can show the milestone's stated purpose.
+func TestMilestoneTracksSurfacesDescription(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets: {}\n")
+	desc := "## Ikigai\n\nMake the picker delightful.\n\n**Foundation** (anchor): #1"
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: []github.Milestone{
+			{Number: 7, Title: "M12", URL: "u7", OpenIssues: 2, Description: desc},
+		},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Milestones) != 1 {
+		t.Fatalf("got %d milestone sets, want 1", len(facts.Milestones))
+	}
+	if facts.Milestones[0].Description != desc {
+		t.Errorf("Description = %q, want the verbatim description %q", facts.Milestones[0].Description, desc)
+	}
+}
+
 // TestMilestoneTracksDegradesOnFetchFailure pins the degradation seam: a milestone
 // fetch failure marks the block unavailable with a fetch_failed reason and a
 // non-nil empty slice, rather than failing the whole call.

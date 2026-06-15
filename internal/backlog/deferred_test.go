@@ -114,6 +114,40 @@ func TestReduceDeferredTieBreakByNumber(t *testing.T) {
 	}
 }
 
+// TestReduceDeferredBodyRefs pins the dependency-readiness signal: each deferred
+// issue carries the distinct #N references parsed from its body (the rendered
+// plaintext bodyText), PR references and the issue's own number excluded. The
+// self-exclusion is checked both alongside real refs and alone (where it empties
+// the slice, which must stay non-nil so it serializes as []).
+func TestReduceDeferredBodyRefs(t *testing.T) {
+	withRefs := labeledIssue(1, 50, "deferred")
+	// Plaintext body: a duplicate ref, a PR reference, and a self-reference.
+	withRefs.BodyText = "Blocked by #10 and #11. Also tracks #10. Self ref #1. Needs PR #99 first."
+	selfOnly := labeledIssue(7, 50, "deferred")
+	selfOnly.BodyText = "Depends on #7 only."
+
+	facts := ReduceDeferred([]github.Issue{withRefs, selfOnly}, 2, []string{"deferred"}, 20, now)
+	if facts.DeferredCount != 2 {
+		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
+	}
+	// Most-inactive-first ordering ties on 50 days, broken by number: #1 then #7.
+	got1 := facts.DeferredIssues[0]
+	if got1.Number != 1 {
+		t.Fatalf("first deferred = #%d, want #1", got1.Number)
+	}
+	wantRefs := []int{10, 11}
+	if len(got1.BodyRefs) != len(wantRefs) || got1.BodyRefs[0] != 10 || got1.BodyRefs[1] != 11 {
+		t.Errorf("issue 1 BodyRefs = %v, want %v (deduped, sorted, PR + self excluded)", got1.BodyRefs, wantRefs)
+	}
+	got7 := facts.DeferredIssues[1]
+	if got7.BodyRefs == nil {
+		t.Error("issue 7 BodyRefs = nil, want non-nil empty slice (self-only, serializes as [])")
+	}
+	if len(got7.BodyRefs) != 0 {
+		t.Errorf("issue 7 BodyRefs = %v, want empty (only a self-reference)", got7.BodyRefs)
+	}
+}
+
 func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	issues := []github.Issue{labeledIssue(1, 100, "deferred"), labeledIssue(2, 90, "deferred")}
 	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, now)

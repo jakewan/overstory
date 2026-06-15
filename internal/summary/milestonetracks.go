@@ -3,7 +3,6 @@ package summary
 import (
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -38,10 +37,19 @@ type MilestoneTracksFacts struct {
 // nil) when the description carries no recognizable track structure — the common
 // case, and a clean result rather than an error. ListTruncated marks a track list
 // capped at the list limit.
+//
+// Description is the verbatim milestone description, surfaced for theme/prose
+// rendering (the milestone's stated purpose lives only here). Tracks is the
+// authoritative member structure — it applies the stoplist, PR-exclusion,
+// fenced-code skipping, and member cap — so a client must not re-parse
+// Description for membership, or its counts will diverge from this reduction.
+// Unbounded by design: a milestone description is operator-authored planning
+// prose, so it carries no truncation seam like the other list-shaped fields.
 type MilestoneTrackSet struct {
 	Number        int     `json:"number"`
 	Title         string  `json:"title"`
 	URL           string  `json:"url"`
+	Description   string  `json:"description,omitempty"`
 	Tracks        []Track `json:"tracks"`
 	ListTruncated bool    `json:"listTruncated"`
 }
@@ -86,12 +94,6 @@ var (
 	// A bold run-in label with optional parenthetical, then a colon:
 	// `**Label** (status):`. The label group is non-greedy up to the closing `**`.
 	boldRunInRe = regexp.MustCompile(`^\s*\*\*\s*([^*]+?)\s*\*\*\s*(\([^)]*\))?\s*:`)
-	// An issue reference. PR references are excluded by inspecting the preceding text
-	// (issueRefRe alone cannot tell `#5` from `PR #5`).
-	issueRefRe = regexp.MustCompile(`#(\d+)`)
-	// Preceding-text marker for a pull-request reference to exclude: a `PR`/`PR#`/
-	// `PR ` (word-boundaried, so "expr" doesn't match) or a `pull/` path segment.
-	prContextRe = regexp.MustCompile(`(?i)(\bpr\s*|pull/)$`)
 	// A task-list item, capturing the single character inside the checkbox brackets.
 	checkboxRe = regexp.MustCompile(`^\s*[-*+]\s+\[(.)\]`)
 	// A fenced-code delimiter line (``` or ~~~). Toggles fence state; double-tilde
@@ -122,6 +124,7 @@ func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones in
 			Number:        m.Number,
 			Title:         m.Title,
 			URL:           m.URL,
+			Description:   m.Description,
 			Tracks:        tracks,
 			ListTruncated: trackListTruncated,
 		})
@@ -242,16 +245,11 @@ func addMembers(t *Track, text string) {
 			checkboxChar = c
 		}
 	}
-	for _, loc := range issueRefRe.FindAllStringSubmatchIndex(text, -1) {
-		refStart, numStart, numEnd := loc[0], loc[2], loc[3]
-		pre := text[:refStart]
-		if prContextRe.MatchString(pre) {
-			continue
-		}
-		num, err := strconv.Atoi(text[numStart:numEnd])
-		if err != nil {
-			continue
-		}
+	// reduce.IssueRefMatches handles the #N scan and PR-reference exclusion (the
+	// shared convention); the per-member decoration is read from the text before
+	// each reference, which ref.Start locates.
+	for _, ref := range reduce.IssueRefMatches(text) {
+		pre := text[:ref.Start]
 		token := ""
 		switch {
 		case strings.Count(pre, "~~")%2 == 1:
@@ -261,7 +259,7 @@ func addMembers(t *Track, text string) {
 		case hasCheckbox:
 			token = checkboxChar
 		}
-		t.Members = append(t.Members, TrackMember{Number: num, StatusToken: token})
+		t.Members = append(t.Members, TrackMember{Number: ref.Number, StatusToken: token})
 	}
 }
 
