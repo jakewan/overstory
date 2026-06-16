@@ -44,7 +44,7 @@ func projectSummaryTool() *mcp.Tool {
 				// is what keeps in.Limit — and every reduction's cap — at 1 or more.
 				"limit": {
 					Type:        "integer",
-					Description: "maximum number of items to list per reduction: members per milestone and the milestone list, issues per hygiene signal, open PRs, and recommendation candidates",
+					Description: "maximum number of items to list per reduction: members per milestone and the milestone list, issues per hygiene signal, open PRs, recommendation candidates, and members per stream for criticalPath",
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
