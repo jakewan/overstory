@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/reduce"
 )
@@ -14,16 +15,17 @@ import (
 // block carries its own counts and truncation seams so a caller renders them
 // independently.
 type Facts struct {
-	Repo        string                 `json:"repo"`
-	GeneratedAt time.Time              `json:"generatedAt"`
-	Staleness   StalenessFacts         `json:"staleness"`
-	Deferred    DeferredFacts          `json:"deferred"`
-	AreaBalance AreaBalanceFacts       `json:"areaBalance"`
-	Quality     QualityFacts           `json:"quality"`
-	Overlap     OverlapFacts           `json:"overlap"`
-	CrossRef    CrossRefFacts          `json:"crossRef"`
-	Trajectory  TrajectoryFacts        `json:"trajectory"`
-	RateLimit   *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
+	Repo         string                 `json:"repo"`
+	GeneratedAt  time.Time              `json:"generatedAt"`
+	Staleness    StalenessFacts         `json:"staleness"`
+	Deferred     DeferredFacts          `json:"deferred"`
+	AreaBalance  AreaBalanceFacts       `json:"areaBalance"`
+	Quality      QualityFacts           `json:"quality"`
+	Overlap      OverlapFacts           `json:"overlap"`
+	CrossRef     CrossRefFacts          `json:"crossRef"`
+	Trajectory   TrajectoryFacts        `json:"trajectory"`
+	CriticalPath criticalpath.Facts     `json:"criticalPath"`
+	RateLimit    *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open

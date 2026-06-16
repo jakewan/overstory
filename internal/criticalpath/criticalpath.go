@@ -4,7 +4,7 @@
 // gate-cleared signal. It produces one block, identical for the orientation
 // (project_summary) and grooming (backlog_review) reads — only the rendering
 // differs — so rather than living in either reduction package it sits on its own,
-// to be shared by both without either depending on the other. It imports only the
+// shared by both without either depending on the other. It imports only the
 // fetched shapes (github) and the shared label primitives (reduce).
 package criticalpath
 
