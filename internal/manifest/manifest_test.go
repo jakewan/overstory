@@ -761,3 +761,57 @@ func TestResolveRejectsInvalidMilestoneTracks(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveMergesCriticalPath(t *testing.T) {
+	dir := t.TempDir()
+	// Leading/trailing whitespace on a stream name and the label must be trimmed at
+	// the resolution boundary, else the stored value never matches the matcher's
+	// trimmed canonical name.
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  criticalPath:\n    streams: [\" simulation \", narrative]\n    label: \" critical-path \"\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.CriticalPath.Streams) != 2 || cfg.CriticalPath.Streams[0] != "simulation" || cfg.CriticalPath.Streams[1] != "narrative" {
+		t.Errorf("Streams = %q, want [simulation narrative] (trimmed)", cfg.CriticalPath.Streams)
+	}
+	if cfg.CriticalPath.Label != "critical-path" {
+		t.Errorf("Label = %q, want critical-path (trimmed)", cfg.CriticalPath.Label)
+	}
+}
+
+func TestResolveNoEntryLeavesCriticalPathEmpty(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if len(cfg.CriticalPath.Streams) != 0 || cfg.CriticalPath.Label != "" {
+		t.Errorf("CriticalPath = %+v, want empty (not configured)", cfg.CriticalPath)
+	}
+}
+
+func TestResolveRejectsInvalidCriticalPath(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, wantField string
+	}{
+		{"streams without label", "acme/widgets:\n  criticalPath:\n    streams: [simulation]\n", "criticalPath.label"},
+		{"label without streams", "acme/widgets:\n  criticalPath:\n    label: critical-path\n", "criticalPath.streams"},
+		{"explicit empty streams with label", "acme/widgets:\n  criticalPath:\n    streams: []\n    label: critical-path\n", "criticalPath.streams"},
+		{"duplicate streams", "acme/widgets:\n  criticalPath:\n    streams: [simulation, Simulation]\n    label: critical-path\n", "duplicate"},
+		{"empty stream name", "acme/widgets:\n  criticalPath:\n    streams: [simulation, \"  \"]\n    label: critical-path\n", "criticalPath.streams"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, "repos.yml", tc.manifest)
+			_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+			if err == nil {
+				t.Fatalf("%s: want validation error", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantField) {
+				t.Errorf("%s: error %q does not name %q", tc.name, err, tc.wantField)
+			}
+		})
+	}
+}

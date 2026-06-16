@@ -10,6 +10,7 @@ package summary
 import (
 	"time"
 
+	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/reduce"
 )
 
@@ -27,5 +28,6 @@ type Facts struct {
 	Hygiene         HygieneFacts           `json:"hygiene"`
 	OpenPRs         PullRequestFacts       `json:"openPRs"`
 	Recommendations RecommendationFacts    `json:"recommendations"`
+	CriticalPath    criticalpath.Facts     `json:"criticalPath"`
 	RateLimit       *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
 }

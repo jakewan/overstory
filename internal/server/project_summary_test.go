@@ -111,6 +111,53 @@ func TestProjectSummaryPopulatesBlocks(t *testing.T) {
 	}
 }
 
+// TestProjectSummarySurfacesCriticalPath is the acceptance for the critical-path
+// block: given a manifest declaring an ordered stream list and the critical-path
+// label, the tool groups open critical-path-labeled issues by stream in declared
+// order and reports a per-stream gate-cleared signal. A non-critical-path issue in
+// a stream's area is not a member; a declared stream with no open member is
+// trivially cleared.
+func TestProjectSummarySurfacesCriticalPath(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n  criticalPath:\n    streams: [simulation, narrative, ui]\n    label: critical-path\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			summaryIssue(1, nil, "area/simulation", "critical-path"), // simulation member, blocks its gate
+			summaryIssue(2, nil, "area/narrative", "critical-path"),  // narrative member
+			summaryIssue(3, nil, "area/simulation"),                  // not critical-path → not a member
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	cp := facts.CriticalPath
+
+	if !cp.Configured {
+		t.Fatalf("CriticalPath.Configured = false, want true")
+	}
+	// Declared order is preserved (not count-sorted like areaInventory).
+	gotOrder := []string{cp.Streams[0].Stream, cp.Streams[1].Stream, cp.Streams[2].Stream}
+	wantOrder := []string{"simulation", "narrative", "ui"}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("stream order = %v, want %v", gotOrder, wantOrder)
+		}
+	}
+	// simulation has an open critical-path member → gate not cleared.
+	sim := cp.Streams[0]
+	if sim.GateCleared {
+		t.Errorf("simulation GateCleared = true, want false (issue 1 open)")
+	}
+	if len(sim.Members) != 1 || sim.Members[0].Number != 1 {
+		t.Errorf("simulation Members = %+v, want [#1]", sim.Members)
+	}
+	// ui has no critical-path member → trivially cleared.
+	ui := cp.Streams[2]
+	if !ui.GateCleared || len(ui.Members) != 0 {
+		t.Errorf("ui = %+v, want gateCleared with no members", ui)
+	}
+}
+
 // TestProjectSummaryDegradesMilestonesOnFetchError pins that a milestone
 // sub-fetch failure degrades only that block — not a tool error — while the
 // issue-derived blocks stay populated.
