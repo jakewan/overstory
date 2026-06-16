@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/jakewan/overstory/internal/summary"
@@ -32,7 +33,7 @@ func projectSummaryTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "project_summary",
-		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), and a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity — a caller ranks 'what next' from; the ranking judgment stays caller-side). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary.",
+		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity — a caller ranks 'what next' from; the ranking judgment stays caller-side), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -105,6 +106,12 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			ContextBodyLength:   cfg.Quality.MinBodyLength,
 		}, in.Limit, n)
 		recommendations := summary.ReduceRecommendations(issues, totalOpen, cfg.Summary.BugLabels, in.Limit, n)
+		criticalPath := criticalpath.Reduce(issues, totalOpen, criticalpath.Params{
+			Streams:      cfg.CriticalPath.Streams,
+			Label:        cfg.CriticalPath.Label,
+			AreaLabels:   cfg.AreaBalance.Labels,
+			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
+		}, in.Limit)
 
 		return nil, summary.Facts{
 			Repo:            ownerRepo,
@@ -114,6 +121,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			Hygiene:         hygiene,
 			OpenPRs:         prs,
 			Recommendations: recommendations,
+			CriticalPath:    criticalPath,
 			// The tightest budget across the three fetches: a caller pacing itself must
 			// see the lowest remaining ceiling, and a throttle's zero-remaining signal
 			// (from a degraded sub-fetch) wins so the caller learns it is throttled.

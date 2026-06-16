@@ -28,6 +28,7 @@ type Config struct {
 	Trajectory      TrajectoryConfig
 	Summary         SummaryConfig
 	MilestoneTracks MilestoneTracksConfig
+	CriticalPath    CriticalPathConfig
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -139,6 +140,20 @@ type MilestoneTracksConfig struct {
 	BoldRunIn     bool
 	FetchLimit    int
 	LabelStoplist []string
+}
+
+// CriticalPathConfig holds the resolved critical-path convention: the ordered
+// list of work-stream names that form the repo's critical path (Streams) and the
+// Label marking an issue as on that path. Streams reference canonical area names —
+// the critical-path reduction reuses the area-balance taxonomy to classify an
+// issue's stream — so a stream named "simulation" matches an issue labeled
+// "area/simulation". There is no generic default ("a critical path" is
+// repo-specific, like Deferred): a repo that declares neither leaves both empty and
+// the reduction reports itself not-configured. Declaring one without the other is a
+// configuration error.
+type CriticalPathConfig struct {
+	Streams []string
+	Label   string
 }
 
 // Defaults returns the generic defaults applied when a repository has no
@@ -293,6 +308,7 @@ type fileConfig struct {
 	Trajectory      *trajectoryFile      `yaml:"trajectory"`
 	Summary         *summaryFile         `yaml:"summary"`
 	MilestoneTracks *milestoneTracksFile `yaml:"milestoneTracks"`
+	CriticalPath    *criticalPathFile    `yaml:"criticalPath"`
 }
 
 type stalenessFile struct {
@@ -372,6 +388,15 @@ type milestoneTracksFile struct {
 	BoldRunIn     *bool     `yaml:"boldRunIn"`
 	FetchLimit    *int      `yaml:"fetchLimit"`
 	LabelStoplist *[]string `yaml:"labelStoplist"`
+}
+
+// criticalPathFile decodes the criticalPath block. Streams is a pointer-to-slice
+// for the omitted-vs-explicit distinction (an explicit empty list with a label set
+// is a validation error, not an opt-out, mirroring trajectory.windows); Label is a
+// pointer so an omitted label inherits the empty default rather than overwriting.
+type criticalPathFile struct {
+	Streams *[]string `yaml:"streams"`
+	Label   *string   `yaml:"label"`
 }
 
 func loadFile(path string) (map[string]fileConfig, error) {
@@ -491,6 +516,23 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.MilestoneTracks.LabelStoplist = *o.MilestoneTracks.LabelStoplist
 		}
 	}
+	if o.CriticalPath != nil {
+		// Whole-list replace: a stream list has no natural key to field-merge. Trim
+		// each name at the resolution boundary so the cleaned value is what flows into
+		// the reduction's matching and display — an untrimmed " simulation" would
+		// validate yet never match the matcher's trimmed canonical name, silently
+		// matching zero issues (the same boundary-trim quality.requiredCategories does).
+		if o.CriticalPath.Streams != nil {
+			streams := make([]string, 0, len(*o.CriticalPath.Streams))
+			for _, s := range *o.CriticalPath.Streams {
+				streams = append(streams, strings.TrimSpace(s))
+			}
+			base.CriticalPath.Streams = streams
+		}
+		if o.CriticalPath.Label != nil {
+			base.CriticalPath.Label = strings.TrimSpace(*o.CriticalPath.Label)
+		}
+	}
 	return base
 }
 
@@ -581,6 +623,43 @@ func validate(c Config, ownerRepo, file string) error {
 	}
 	if c.MilestoneTracks.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: milestoneTracks.fetchLimit must be > 0, got %d", file, ownerRepo, c.MilestoneTracks.FetchLimit)
+	}
+	if err := validateCriticalPath(c.CriticalPath, ownerRepo, file); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateCriticalPath enforces the both-or-neither rule and the per-stream
+// footguns. Streams and Label arrive trimmed (mergeConfig trims at the boundary),
+// so an all-whitespace stream name is already empty here. Declaring neither is the
+// valid not-configured state; declaring exactly one — including an explicit empty
+// streams list alongside a label — is a misconfiguration that would otherwise
+// resolve to a silent no-op.
+func validateCriticalPath(c CriticalPathConfig, ownerRepo, file string) error {
+	hasStreams := len(c.Streams) > 0
+	hasLabel := c.Label != ""
+	if !hasStreams && !hasLabel {
+		return nil // not configured
+	}
+	if hasStreams && !hasLabel {
+		return fmt.Errorf("manifest %q for %q: criticalPath.streams is set but criticalPath.label is empty", file, ownerRepo)
+	}
+	if !hasStreams && hasLabel {
+		return fmt.Errorf("manifest %q for %q: criticalPath.label is set but criticalPath.streams is empty", file, ownerRepo)
+	}
+	seen := make(map[string]struct{}, len(c.Streams))
+	for i, s := range c.Streams {
+		if s == "" {
+			return fmt.Errorf("manifest %q for %q: criticalPath.streams[%d] is empty", file, ownerRepo, i)
+		}
+		// Streams key the per-stream buckets case-insensitively (by canonical area
+		// name); two that collide would silently merge, so reject rather than drop one.
+		key := strings.ToLower(s)
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("manifest %q for %q: criticalPath.streams has a duplicate stream %q", file, ownerRepo, s)
+		}
+		seen[key] = struct{}{}
 	}
 	return nil
 }

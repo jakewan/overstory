@@ -35,7 +35,7 @@ Defaults are the base; your entry overrides field by field. The distinction betw
 - **Omitted** — inherits the default.
 - **Explicit value** (including an explicit empty list `[]`) — replaces the default. An empty list is how you *opt out* of a default-on reduction (e.g. `summary.bugLabels: []` turns off bug flagging; `areaBalance.prefixes: []` disables the default area prefixes; `milestoneTracks.headingLevels: []` disables heading markers, leaving bold run-in markers).
 
-`areaBalance` merges its two fields independently (omit `prefixes` to keep the defaults while setting `labels`). List-valued conventions — `deferred.labels`, `quality.requiredCategories`, `trajectory.windows`, `summary.bugLabels`, `milestoneTracks.headingLevels`, `milestoneTracks.labelStoplist` — are whole-list replaces, not element merges.
+`areaBalance` merges its two fields independently (omit `prefixes` to keep the defaults while setting `labels`). List-valued conventions — `deferred.labels`, `quality.requiredCategories`, `trajectory.windows`, `summary.bugLabels`, `milestoneTracks.headingLevels`, `milestoneTracks.labelStoplist`, `criticalPath.streams` — are whole-list replaces, not element merges.
 
 ## Minimal example
 
@@ -146,6 +146,17 @@ Conventions the `milestone_tracks` reduction consumes: how the track structure o
 | `labelStoplist` | `[]string` | common prose-section labels (`Why`, `Ikigai`, `History`, …) | Marker labels that are prose sections, not tracks (matched case-insensitively). Extend it for your repo's own section headings. |
 
 Setting both `headingLevels: []` and `boldRunIn: false` disables all markers — a valid no-op that yields zero tracks for every milestone, not a configuration error.
+
+### `criticalPath`
+
+Conventions the critical-path / gate block (surfaced by `project_summary`) consumes: the repo's ordered list of work streams that form its critical path, and the label marking an issue as on that path. Streams *are* areas — classification reuses the `areaBalance` taxonomy — so a stream named `simulation` matches an issue labeled `area/simulation`. There is no generic default; a critical path is repo-specific (like `deferred`), so a repo that declares neither field leaves the block not configured.
+
+| Field     | Type       | Default | Notes                                                                                                          |
+| --------- | ---------- | ------- | -------------------------------------------------------------------------------------------------------------- |
+| `streams` | `[]string` | none    | Ordered stream names, referencing canonical area names (the part after the `area/` prefix). Whole-list replace. |
+| `label`   | string     | none    | The label marking an issue as on the critical path (matched case-insensitively).                               |
+
+Both fields are declared together or not at all: setting one without the other — including an explicit empty `streams: []` alongside a `label` — is a configuration error, not a silent no-op. Stream names are trimmed, must be non-empty, and must be unique (case-insensitively).
 
 ## Validation
 

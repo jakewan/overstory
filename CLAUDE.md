@@ -17,7 +17,7 @@ See `README.md` for the full design.
 
 ## Status and layout
 
-The server exposes three tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, and trajectory blocks. `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, and recommendation-input blocks. `milestone_tracks` is the within-milestone *priority-structure* read — the ordered tracks (and their member issues) operators encode in a milestone's description — parsed declaratively per the repo's marker conventions. The mirrored Claude/Cursor render skills arrive in their own changes.
+The server exposes three tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, and trajectory blocks. `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, recommendation-input, and critical-path/gate blocks (the last when the repo's manifest declares a critical path). `milestone_tracks` is the within-milestone *priority-structure* read — the ordered tracks (and their member issues) operators encode in a milestone's description — parsed declaratively per the repo's marker conventions. The mirrored Claude/Cursor render skills arrive in their own changes.
 
 ```
 cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
@@ -27,6 +27,7 @@ internal/github/      # in-process GitHub GraphQL data layer (issues, milestones
 internal/reduce/      # reduction primitives shared by backlog and summary (label matcher, day math)
 internal/backlog/     # the grooming reduction (pure functions, structured facts)
 internal/summary/     # the orientation reduction (pure functions, structured facts)
+internal/criticalpath/# the critical-path / gate reduction shared by both tools (pure functions, structured facts)
 ```
 
 Further reductions and the packages they need arrive in their own changes — do not create packages speculatively; add them when a change needs them.

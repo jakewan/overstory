@@ -58,6 +58,7 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 | `hygiene`         | Four signals over open issues: missing-area, unmilestoned-and-aged, stale (neglected — deferred issues excluded), deferred-without-context. | `hygiene.go` |
 | `openPRs`         | Each open PR's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count. Degradable. | `pullrequests.go` |
 | `recommendations` | Per-issue inputs (bug-labeled, milestone, age, inactivity) a caller ranks "what next" from. The ranking judgment stays caller-side. | `recommendations.go` |
+| `criticalPath`    | When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
 
 Plus the optional top-level `rateLimit`.
 
