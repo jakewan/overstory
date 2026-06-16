@@ -44,6 +44,7 @@ The **grooming** read: what in the backlog needs maintenance attention. Composit
 | `overlap`     | Groups of open issues with similar titles — candidate duplicates.       | `overlap.go` |
 | `crossRef`    | Groups of open issues that reference one another — candidate consolidation. | `crossref.go` |
 | `trajectory`  | Per lookback window, issues created, closed, and net — the growing/shrinking signal. Aggregate (unaffected by `limit`); degradable. | `trajectory.go` |
+| `criticalPath`| When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
 
 Plus the optional top-level `rateLimit`.
 

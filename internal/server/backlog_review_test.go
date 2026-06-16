@@ -170,6 +170,42 @@ func crossLinkedIssue(num int, title string, referencedBy ...int) github.Issue {
 	return is
 }
 
+// TestBacklogReviewSurfacesCriticalPath pins the critical-path / gate block on the
+// grooming read: the same reduction project_summary surfaces, over the corpus
+// backlog_review already fetches. A declared stream with an open critical-path
+// member blocks its gate; one with none is cleared.
+func TestBacklogReviewSurfacesCriticalPath(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n  criticalPath:\n    streams: [simulation, narrative, ui]\n    label: critical-path\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			labeledIssue(1, "area/simulation", "critical-path"), // simulation member, blocks its gate
+			labeledIssue(2, "area/narrative", "critical-path"),  // narrative member
+			labeledIssue(3, "area/simulation"),                  // not critical-path → not a member
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	cp := facts.CriticalPath
+
+	if !cp.Configured {
+		t.Fatalf("CriticalPath.Configured = false, want true")
+	}
+	wantOrder := []string{"simulation", "narrative", "ui"}
+	for i, w := range wantOrder {
+		if cp.Streams[i].Stream != w {
+			t.Fatalf("stream[%d] = %q, want %q (declared order)", i, cp.Streams[i].Stream, w)
+		}
+	}
+	if sim := cp.Streams[0]; sim.GateCleared || len(sim.Members) != 1 || sim.Members[0].Number != 1 {
+		t.Errorf("simulation = %+v, want uncleared with member #1", sim)
+	}
+	if ui := cp.Streams[2]; !ui.GateCleared || len(ui.Members) != 0 {
+		t.Errorf("ui = %+v, want cleared with no members", ui)
+	}
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area

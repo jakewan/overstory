@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/jakewan/overstory/internal/backlog"
+	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/jakewan/overstory/internal/reduce"
@@ -147,7 +148,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), and a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -155,7 +156,7 @@ func backlogReviewTool() *mcp.Tool {
 				"repo":  {Type: "string", Description: "repository name"},
 				"limit": {
 					Type:        "integer",
-					Description: "maximum number of items to list per reduction: issues for staleness, deferred, and quality; overlap groups for overlap; cross-reference groups for crossRef",
+					Description: "maximum number of items to list per reduction: issues for staleness, deferred, and quality; overlap groups for overlap; cross-reference groups for crossRef; members per stream for criticalPath",
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
@@ -169,7 +170,7 @@ func backlogReviewTool() *mcp.Tool {
 // backlogReviewHandler resolves the repo's conventions, fetches its open issues,
 // and reduces them to the composite backlog facts — one block per grooming
 // signal (staleness, deferred, area balance, quality, overlap, cross-reference,
-// trajectory). Most blocks reduce the one open-issue fetch; trajectory adds a
+// trajectory, critical path). Most blocks reduce the one open-issue fetch; trajectory adds a
 // second open-and-closed fetch and degrades to an unavailable block on failure.
 // Errors from the open fetch are returned plain so the SDK surfaces them as tool
 // errors (IsError); a manifest error names a file, so it is logged to stderr and
@@ -217,6 +218,12 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
 		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		crossref := backlog.ReduceCrossRef(result.Issues, result.TotalOpen, in.Limit)
+		criticalPath := criticalpath.Reduce(result.Issues, result.TotalOpen, criticalpath.Params{
+			Streams:      cfg.CriticalPath.Streams,
+			Label:        cfg.CriticalPath.Label,
+			AreaLabels:   cfg.AreaBalance.Labels,
+			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
+		}, in.Limit)
 
 		// Trajectory needs a second fetch (closed issues too); a failure there
 		// degrades the block rather than failing the whole review, since the other
@@ -224,16 +231,17 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		trajectory, budget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, result.RateLimit, n, now)
 
 		return nil, backlog.Facts{
-			Repo:        ownerRepo,
-			GeneratedAt: n,
-			Staleness:   staleness,
-			Deferred:    deferred,
-			AreaBalance: area,
-			Quality:     quality,
-			Overlap:     overlap,
-			CrossRef:    crossref,
-			Trajectory:  trajectory,
-			RateLimit:   mapRateLimit(budget),
+			Repo:         ownerRepo,
+			GeneratedAt:  n,
+			Staleness:    staleness,
+			Deferred:     deferred,
+			AreaBalance:  area,
+			Quality:      quality,
+			Overlap:      overlap,
+			CrossRef:     crossref,
+			Trajectory:   trajectory,
+			CriticalPath: criticalPath,
+			RateLimit:    mapRateLimit(budget),
 		}, nil
 	}
 }
