@@ -149,7 +149,7 @@ Setting both `headingLevels: []` and `boldRunIn: false` disables all markers —
 
 ### `criticalPath`
 
-Conventions the critical-path / gate block (surfaced by `project_summary` and `backlog_review`) consumes: the repo's ordered list of work streams that form its critical path, and the label marking an issue as on that path. Streams *are* areas — classification reuses the `areaBalance` taxonomy — so a stream named `simulation` matches an issue labeled `area/simulation`. There is no generic default; a critical path is repo-specific (like `deferred`), so a repo that declares neither field leaves the block not configured.
+Conventions the critical-path / gate block (surfaced by `project_summary`) consumes: the repo's ordered list of work streams that form its critical path, and the label marking an issue as on that path. Streams *are* areas — classification reuses the `areaBalance` taxonomy — so a stream named `simulation` matches an issue labeled `area/simulation`. There is no generic default; a critical path is repo-specific (like `deferred`), so a repo that declares neither field leaves the block not configured.
 
 | Field     | Type       | Default | Notes                                                                                                          |
 | --------- | ---------- | ------- | -------------------------------------------------------------------------------------------------------------- |

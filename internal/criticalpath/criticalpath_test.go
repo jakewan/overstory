@@ -45,6 +45,28 @@ func TestReduceNotConfigured(t *testing.T) {
 	}
 }
 
+// TestReduceStreamsWithoutLabelIsNotConfigured: streams declared without a label
+// (or with a whitespace-only one) cannot classify any issue, so the reduction is a
+// no-op rather than reporting configured and clearing every gate. The manifest
+// layer rejects this, but the reduction guards it too so a direct caller can't
+// produce a lying gate.
+func TestReduceStreamsWithoutLabelIsNotConfigured(t *testing.T) {
+	for _, label := range []string{"", "   "} {
+		facts := Reduce(
+			[]github.Issue{issue(1, "critical-path", "area/simulation")},
+			1,
+			Params{Streams: []string{"simulation"}, Label: label, AreaPrefixes: areaPrefix},
+			20,
+		)
+		if facts.Configured {
+			t.Errorf("label %q: Configured = true, want false (no label ⇒ cannot classify)", label)
+		}
+		if len(facts.Streams) != 0 {
+			t.Errorf("label %q: Streams = %+v, want empty no-op", label, facts.Streams)
+		}
+	}
+}
+
 // TestReducePreservesDeclaredOrder: streams are emitted in declared order, not
 // sorted by member count — the property that distinguishes this from areaInventory.
 func TestReducePreservesDeclaredOrder(t *testing.T) {

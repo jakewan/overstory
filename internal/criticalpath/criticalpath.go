@@ -1,11 +1,11 @@
 // Package criticalpath holds overstory's critical-path / gate reduction: a pure
 // function that groups a repository's open critical-path-labeled issues into the
 // operator-declared, ordered list of streams and reports, per stream, a
-// gate-cleared signal. It is shared by both the orientation (project_summary) and
-// grooming (backlog_review) reductions — the block is identical in both, only the
-// rendering differs — so it lives in its own package rather than in either
-// reduction, importing only the fetched shapes (github) and the shared label
-// primitives (reduce); neither reduction depends on the other.
+// gate-cleared signal. It produces one block, identical for the orientation
+// (project_summary) and grooming (backlog_review) reads — only the rendering
+// differs — so rather than living in either reduction package it sits on its own,
+// to be shared by both without either depending on the other. It imports only the
+// fetched shapes (github) and the shared label primitives (reduce).
 package criticalpath
 
 import (
@@ -92,7 +92,11 @@ type Params struct {
 // totalOpen keeps OpenIssueCount exact when the window is truncated.
 func Reduce(issues []github.Issue, totalOpen int, params Params, listLimit int) Facts {
 	facts := Facts{
-		Configured:     len(params.Streams) > 0,
+		// Both streams and a label are required to classify; guard here, not only at
+		// the manifest layer, so a direct caller passing streams with an empty label
+		// reports not-configured rather than configured-but-matching-nothing (which
+		// would clear every gate). This matches the Configured godoc.
+		Configured:     len(params.Streams) > 0 && strings.TrimSpace(params.Label) != "",
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
 		FetchTruncated: len(issues) < totalOpen,
