@@ -112,7 +112,7 @@ func manifestFilesFromEnv() []string {
 		return nil
 	}
 	var files []string
-	for _, p := range strings.Split(raw, ":") {
+	for p := range strings.SplitSeq(raw, ":") {
 		if p = strings.TrimSpace(p); p != "" {
 			files = append(files, p)
 		}
@@ -198,8 +198,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			// A throttle carries a recovery signal the caller can act on: name the
 			// absolute instant it can retry at, resolving a relative retry-after
 			// against this layer's clock. Other failures surface plain.
-			var rle github.RateLimitedError
-			if errors.As(err, &rle) {
+			if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 				if when := rateLimitResetTime(rle, now); !when.IsZero() {
 					return nil, backlog.Facts{}, fmt.Errorf("fetching issues for %s: %w (retry after %s)", ownerRepo, err, when.UTC().Format(time.RFC3339))
 				}
@@ -264,8 +263,7 @@ func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo str
 	if err == nil {
 		return backlog.ReduceTrajectory(activity.Activities, cfg.Windows, activity.Truncated, n), freshestBudget(openBudget, activity.RateLimit)
 	}
-	var rle github.RateLimitedError
-	if errors.As(err, &rle) {
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return backlog.TrajectoryFacts{Available: false, Unavailable: "rate_limited", Windows: []backlog.TrajectoryWindow{}},
 			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
 	}
