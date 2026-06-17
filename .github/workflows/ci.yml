@@ -89,6 +89,6 @@ jobs:
       # mise.toml, so CI builds the docs with the same toolchain as local
       # development. `just docs-build` runs mdbook, which invokes the linkcheck2
       # renderer; a broken link or structure fails the build.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       - run: just docs-build
