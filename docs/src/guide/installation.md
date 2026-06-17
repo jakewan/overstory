@@ -38,7 +38,7 @@ Place this where your agent reads MCP server configuration — for example, a pr
 claude mcp add overstory overstory
 ```
 
-If overstory should survey repositories whose conventions live in a manifest file outside the default discovery directory, pass that location through the `OVERSTORY_MANIFESTS` environment variable in the server entry's environment — see [Manifests](../manifest.md) for discovery rules.
+If Overstory should survey repositories whose conventions live in a manifest file outside the default discovery directory, pass that location through the `OVERSTORY_MANIFESTS` environment variable in the server entry's environment — see [Manifests](../manifest.md) for discovery rules.
 
 > The server spawns at session start and reads its environment then. After installing or registering it — or changing its environment — restart the agent session so the new server is picked up.
 

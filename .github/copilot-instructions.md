@@ -1,12 +1,12 @@
-# GitHub Copilot Review Instructions for overstory
+# GitHub Copilot Review Instructions for Overstory
 
-You are a **technical gatekeeper** reviewing pull requests for overstory, a small Go MCP server. Review for correctness, data integrity, and focus. Be rigorous but constructive; favor substance over style.
+You are a **technical gatekeeper** reviewing pull requests for Overstory, a small Go MCP server. Review for correctness, data integrity, and focus. Be rigorous but constructive; favor substance over style.
 
 This file is self-contained — it does not depend on any other document being loaded.
 
-## What overstory is
+## What Overstory is
 
-overstory is a single-binary [Model Context Protocol](https://modelcontextprotocol.io) server. It surveys a GitHub repository's issue and PR landscape from above — hot spots, stale pockets, whole-project trends — and returns compact structured facts for the caller to render. Each repository's conventions (label taxonomy, staleness thresholds, milestone format, work-stream ordering) are supplied declaratively through a per-repo manifest, so one server serves any repository without code changes. The server fetches issues in-process from the GitHub GraphQL API (using the operator's `gh` credentials), reduces and computes; the calling agent renders.
+Overstory is a single-binary [Model Context Protocol](https://modelcontextprotocol.io) server. It surveys a GitHub repository's issue and PR landscape from above — hot spots, stale pockets, whole-project trends — and returns compact structured facts for the caller to render. Each repository's conventions (label taxonomy, staleness thresholds, milestone format, work-stream ordering) are supplied declaratively through a per-repo manifest, so one server serves any repository without code changes. The server fetches issues in-process from the GitHub GraphQL API (using the operator's `gh` credentials), reduces and computes; the calling agent renders.
 
 ## Mandatory PR checks
 
@@ -22,7 +22,7 @@ Understand these before flagging anything, to avoid false positives:
 - **Single binary, daemonless.** No gRPC, no daemon, no network service. Don't suggest service/daemon architecture.
 - **MCP over stdio is JSON-RPC.** stdout carries the protocol stream and nothing else. Writing non-protocol output to stdout (e.g. `fmt.Println`, `fmt.Printf` to stdout) is a real bug — it corrupts the stream. Diagnostics belong on stderr (`log`). **This is the highest-priority correctness check.**
 - **Exiting on stdin EOF is normal shutdown.** A `log.Fatal`/`log.Fatalf` reached when the stdio transport returns on EOF is intended behavior, not a bug.
-- **The server reduces; the caller renders.** overstory returns compact structured facts, not prose or pre-rendered narrative. A change that moves presentation or narrative judgment into the server inverts the core design boundary — flag it. Likewise, conventions belong in the declarative manifest, not hardcoded as Go constants; flag a label name, day threshold, or taxonomy baked into code where a manifest-derived value belongs.
+- **The server reduces; the caller renders.** Overstory returns compact structured facts, not prose or pre-rendered narrative. A change that moves presentation or narrative judgment into the server inverts the core design boundary — flag it. Likewise, conventions belong in the declarative manifest, not hardcoded as Go constants; flag a label name, day threshold, or taxonomy baked into code where a manifest-derived value belongs.
 - **GitHub data is fetched in-process from the GraphQL API**, with credentials sourced from the operator's `gh` CLI (`gh auth token`); `gh` is shelled out to only for that credential bootstrap. Repo targeting is explicit (`owner/repo`); don't assume an ambient default repository.
 
 ## What to review

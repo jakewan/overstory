@@ -1,8 +1,8 @@
-# overstory — Agent Guide
+# Overstory — Agent Guide
 
 This file orients an AI agent (or a new contributor) working in this repository. It is self-contained: everything needed to work here is described below or in the linked in-repo files.
 
-## What overstory is
+## What Overstory is
 
 A generic, manifest-driven [MCP](https://modelcontextprotocol.io) server for GitHub project management. It surveys a repository's issue and PR landscape from above — hot spots, stale pockets, whole-project trends — and returns compact structured facts for the calling agent to render.
 

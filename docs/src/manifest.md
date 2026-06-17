@@ -2,7 +2,7 @@
 
 A manifest supplies a repository's conventions — its label taxonomy, thresholds, and formats — declaratively, so a single server serves any repository without code changes. Each repository's entry is deep-merged over generic defaults: you declare only what differs.
 
-Manifests are **operator-supplied**, not stored in the target repository. They live in your own config, which lets overstory survey arbitrary repositories (including ones you don't control) without those repositories adopting anything.
+Manifests are **operator-supplied**, not stored in the target repository. They live in your own config, which lets Overstory survey arbitrary repositories (including ones you don't control) without those repositories adopting anything.
 
 The authoritative source for every default and validation rule below is `internal/manifest/manifest.go` (`Defaults()` and `validate()`). This page tracks it; when they disagree, the code wins.
 

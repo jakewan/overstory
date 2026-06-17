@@ -1,4 +1,4 @@
-# Contributing to overstory
+# Contributing to Overstory
 
 ## Issues
 
@@ -13,7 +13,7 @@ Focus on describing the problem clearly. Solution ideas are welcome as supplemen
 
 ## Scope
 
-overstory is a single-purpose MCP server: it surveys a GitHub repository's issue and PR landscape and returns compact structured facts for the caller to render, applying each repository's conventions from a declarative manifest. It reduces and computes; it renders nothing of its own, and it hardcodes no repository's conventions.
+Overstory is a single-purpose MCP server: it surveys a GitHub repository's issue and PR landscape and returns compact structured facts for the caller to render, applying each repository's conventions from a declarative manifest. It reduces and computes; it renders nothing of its own, and it hardcodes no repository's conventions.
 
 Contributions should stay within this focused scope. If you're unsure whether something fits, open an issue describing the problem first.
 
@@ -57,6 +57,10 @@ Keep the docs pinned to the code:
 - When a tool is added, renamed, or changes its parameters, update its mention in `README.md` and `docs/src/tools.md`.
 - When the install or registration path changes, update `docs/src/guide/installation.md` — its single home; the README only links to it.
 - The tool/fact reference documents the stable shape and points at the Go source (`internal/backlog/`, `internal/summary/`) for field-by-field detail, so adding a field to a `Facts` struct doesn't require a doc edit. Update the reference only when a block is added, removed, or changes meaning.
+
+### Project name
+
+Write **Overstory** (capitalized) when naming the project in prose — titles, headings, and references, at a sentence start or mid-sentence. Use lowercase **overstory** only for the literal identifier token: the binary (`cmd/overstory`), Go package and import paths, the `mcpServers` config key, the registry name, the `OVERSTORY_MANIFESTS` environment variable and `…/overstory/…` config paths, and runtime strings (the `log` prefix, the GitHub user-agent). This mirrors the MCP convention of a lowercase machine `name` paired with a Title-Case display `title`: the server registers `name: overstory`, `title: Overstory`.
 
 ## Pull Requests
 
