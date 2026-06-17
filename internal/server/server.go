@@ -28,7 +28,11 @@ import (
 )
 
 const (
+	// serverName is the programmatic MCP identifier (lowercase, matches the
+	// binary and config key); serverTitle is the human-readable display name MCP
+	// clients show. The split mirrors the MCP registry's name/title convention.
 	serverName    = "overstory"
+	serverTitle   = "Overstory"
 	serverVersion = "0.1.0"
 )
 
@@ -93,7 +97,7 @@ func New(opts ...Option) *mcp.Server {
 	}
 	resolver := manifest.NewResolver(root, files)
 
-	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: serverVersion}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Title: serverTitle, Version: serverVersion}, nil)
 	mcp.AddTool(srv, backlogReviewTool(), backlogReviewHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, projectSummaryTool(), projectSummaryHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, milestoneTracksTool(), milestoneTracksHandler(resolver, cfg.fetcher, cfg.now))
