@@ -80,8 +80,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		// window cap — it is the repo's "how many open issues to fetch" knob.
 		result, err := fetcher.ListOpenIssues(ctx, ownerRepo, cfg.Staleness.FetchLimit)
 		if err != nil {
-			var rle github.RateLimitedError
-			if errors.As(err, &rle) {
+			if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 				if when := rateLimitResetTime(rle, now); !when.IsZero() {
 					return nil, summary.Facts{}, fmt.Errorf("fetching issues for %s: %w (retry after %s)", ownerRepo, err, when.UTC().Format(time.RFC3339))
 				}
@@ -141,8 +140,7 @@ func summaryMilestones(ctx context.Context, fetcher github.Fetcher, ownerRepo st
 		truncated := len(res.Milestones) < res.TotalOpen
 		return summary.ReduceMilestones(res.Milestones, res.TotalOpen, truncated, issues, limit, n), res.RateLimit
 	}
-	var rle github.RateLimitedError
-	if errors.As(err, &rle) {
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return summary.MilestoneFacts{Available: false, Unavailable: "rate_limited", Milestones: []summary.MilestoneProgress{}},
 			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
 	}
@@ -158,8 +156,7 @@ func summaryPullRequests(ctx context.Context, fetcher github.Fetcher, ownerRepo 
 		truncated := len(res.PullRequests) < res.TotalOpen
 		return summary.ReducePullRequests(res.PullRequests, res.TotalOpen, truncated, cfg.PRStalenessDays, limit, n), res.RateLimit
 	}
-	var rle github.RateLimitedError
-	if errors.As(err, &rle) {
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return summary.PullRequestFacts{Available: false, Unavailable: "rate_limited", PullRequests: []summary.PullRequestState{}},
 			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
 	}

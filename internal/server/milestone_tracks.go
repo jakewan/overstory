@@ -93,8 +93,7 @@ func milestoneTracksReduce(ctx context.Context, fetcher github.Fetcher, ownerRep
 		truncated := len(res.Milestones) < res.TotalOpen
 		return summary.ReduceMilestoneTracks(res.Milestones, res.TotalOpen, truncated, mapTrackParams(cfg), limit), res.RateLimit
 	}
-	var rle github.RateLimitedError
-	if errors.As(err, &rle) {
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return summary.MilestoneTracksFacts{Available: false, Unavailable: "rate_limited", Milestones: []summary.MilestoneTrackSet{}},
 			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
 	}
