@@ -295,6 +295,10 @@ func TestListOpenIssuesErrorClassification(t *testing.T) {
 		{"not found status", http.StatusNotFound, ``, ErrRepoNotFound},
 		{"graphql not found", http.StatusOK, `{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"x"}]}`, ErrRepoNotFound},
 		{"null repository", http.StatusOK, `{"data":{"repository":null}}`, ErrRepoNotFound},
+		// A top-level error returns a literal `data: null`. The doRaw rateLimit peek
+		// must not mistake unmarshalling that null for a failure and mask the real
+		// GraphQL error before classification runs.
+		{"data null with error", http.StatusOK, `{"data":null,"errors":[{"type":"NOT_FOUND","message":"x"}]}`, ErrRepoNotFound},
 		{"graphql rate limited", http.StatusOK, `{"errors":[{"type":"RATE_LIMITED","message":"x"}]}`, ErrRateLimited},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
