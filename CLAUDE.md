@@ -17,7 +17,7 @@ See `README.md` for the full design.
 
 ## Status and layout
 
-The server exposes three tools, each over an explicit `owner/repo` resolved against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, trajectory, and critical-path/gate blocks (the last when the repo's manifest declares a critical path). `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, recommendation-input, and critical-path/gate blocks (the last when the repo's manifest declares a critical path). `milestone_tracks` is the within-milestone *priority-structure* read — the ordered tracks (and their member issues) operators encode in a milestone's description — parsed declaratively per the repo's marker conventions. The mirrored Claude/Cursor render skills arrive in their own changes.
+The server exposes four tools, each over an explicit `owner/repo`. The first three resolve against that repo's manifest conventions. `backlog_review` is the *grooming* read — what in the backlog needs maintenance attention — returning staleness, deferred, area-balance, quality, overlap, cross-reference, trajectory, and critical-path/gate blocks (the last when the repo's manifest declares a critical path). `project_summary` is the *orientation* read — given what's open now, what to pick up — returning milestone-progress, area-inventory, hygiene, open-PR, recommendation-input, and critical-path/gate blocks (the last when the repo's manifest declares a critical path). `milestone_tracks` is the within-milestone *priority-structure* read — the ordered tracks (and their member issues) operators encode in a milestone's description — parsed declaratively per the repo's marker conventions. `authored_activity` is the *attention* read — given an author login and a time window, the six decomposed counts (commits, issues/PRs opened, reviews submitted, PRs/issues engaged) of what that user authored and engaged with; it is author- and window-driven and reads no manifest conventions, and is the per-repo measure primitive a cross-project attention audit loops over. The mirrored Claude/Cursor render skills arrive in their own changes.
 
 ```
 cmd/overstory/        # binary entry point (constructs the MCP server, speaks stdio)
@@ -28,6 +28,7 @@ internal/reduce/      # reduction primitives shared by backlog and summary (labe
 internal/backlog/     # the grooming reduction (pure functions, structured facts)
 internal/summary/     # the orientation reduction (pure functions, structured facts)
 internal/criticalpath/# the critical-path / gate reduction shared by both tools (pure functions, structured facts)
+internal/authored/    # the authored-activity reduction (pure functions, structured facts)
 ```
 
 Further reductions and the packages they need arrive in their own changes — do not create packages speculatively; add them when a change needs them.

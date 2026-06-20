@@ -132,6 +132,43 @@ const pullRequestsQuery = `query($owner:String!,$name:String!,$first:Int!,$after
   }
 }`
 
+// authoredSearchQuery resolves the author's user id and the five search counts in
+// one root-level request (not repository-rooted — search and user are root
+// fields, so this decodes via doRaw, not do). Each search reads only issueCount
+// with first:0, so no nodes are paged — the count comes back directly. The five
+// query strings are passed as variables ($q0..$q4) rather than interpolated, so
+// caller-supplied values can never become query structure; the qualifiers inside
+// them (is:issue/is:pr, author:/commenter:/reviewed-by:, the window) are asserted
+// by a dedicated string test, since the query-contract guard cannot see inside a
+// search string argument. type:ISSUE searches issues AND pull requests; the
+// is:issue/is:pr qualifier in each string is what splits them.
+const authoredSearchQuery = `query($author:String!,$q0:String!,$q1:String!,$q2:String!,$q3:String!,$q4:String!){
+  rateLimit{ remaining resetAt }
+  user(login:$author){ id }
+  s0: search(query:$q0, type:ISSUE, first:0){ issueCount }
+  s1: search(query:$q1, type:ISSUE, first:0){ issueCount }
+  s2: search(query:$q2, type:ISSUE, first:0){ issueCount }
+  s3: search(query:$q3, type:ISSUE, first:0){ issueCount }
+  s4: search(query:$q4, type:ISSUE, first:0){ issueCount }
+}`
+
+// commitHistoryQuery counts the author's commits on the repository's default
+// branch within the window, filtered by the resolved user id. history.totalCount
+// is the exact count (no node paging). A null defaultBranchRef/target (empty
+// default branch) decodes to a zero count.
+const commitHistoryQuery = `query($owner:String!,$name:String!,$id:ID!,$since:GitTimestamp!,$until:GitTimestamp!){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    defaultBranchRef{
+      target{
+        ... on Commit {
+          history(author:{id:$id}, since:$since, until:$until){ totalCount }
+        }
+      }
+    }
+  }
+}`
+
 // GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process.
 // endpoint, tokens, and client are fields so tests can drive it against an
 // httptest.Server with a static token.
@@ -251,14 +288,15 @@ func queryVars(owner, name string, first int, after *string) map[string]any {
 	return vars
 }
 
-// do executes one GraphQL request and returns the raw data.repository payload
-// plus the rateLimit budget, leaving connection/node decoding to each caller.
-// It is the single home for the request, status and GraphQL-error classification,
-// and the null-repository check both fetch shapes share. The decoded rateLimit
-// node is passed into classifyGraphQLErrors so a RATE_LIMITED error can fall back
-// to its resetAt when the response carried no rate headers — the source of the
-// throttle recovery signal the server surfaces.
-func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[string]any, owner, name string) (repository json.RawMessage, budget *RateLimit, err error) {
+// doRaw executes one GraphQL request and returns the raw data block plus the
+// rateLimit budget, after status and GraphQL-error classification. Unlike do it
+// makes no assumption about a repository-rooted query, so a root-level fetch
+// (user, search) can decode its own fields from data — do builds on it for the
+// repository-rooted shapes. The rateLimit node is peeked from data and passed
+// into classifyGraphQLErrors so a RATE_LIMITED error can fall back to its resetAt
+// when the response carried no rate headers — the throttle recovery signal the
+// server surfaces.
+func (f *GraphQLFetcher) doRaw(ctx context.Context, token, query string, vars map[string]any, owner, name string) (data json.RawMessage, budget *RateLimit, err error) {
 	payload, merr := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if merr != nil {
 		return nil, nil, fmt.Errorf("encoding GraphQL query: %w", merr)
@@ -285,19 +323,53 @@ func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[s
 		return nil, nil, statusErr
 	}
 
-	var decoded gqlEnvelope
-	if decErr := json.NewDecoder(resp.Body).Decode(&decoded); decErr != nil {
+	var env struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []gqlError      `json:"errors"`
+	}
+	if decErr := json.NewDecoder(resp.Body).Decode(&env); decErr != nil {
 		return nil, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, decErr)
+	}
+	// rateLimit sits at the data root in every query; peek it out so a
+	// RATE_LIMITED error can fall back to its resetAt and so the success budget
+	// surfaces. A null/absent data block leaves it nil.
+	var root struct {
+		RateLimit *rateLimitNode `json:"rateLimit"`
+	}
+	if len(env.Data) > 0 {
+		if uerr := json.Unmarshal(env.Data, &root); uerr != nil {
+			return nil, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, uerr)
+		}
 	}
 	// GraphQL can return a 200 carrying an errors array (e.g. NOT_FOUND with a
 	// null repository), so this is checked regardless of HTTP status.
-	if gqlErr := classifyGraphQLErrors(decoded.Errors, resp.Header, decoded.Data.RateLimit, owner, name); gqlErr != nil {
+	if gqlErr := classifyGraphQLErrors(env.Errors, resp.Header, root.RateLimit, owner, name); gqlErr != nil {
 		return nil, nil, gqlErr
 	}
-	if decoded.Data.Repository == nil {
+	return env.Data, toRateLimit(root.RateLimit), nil
+}
+
+// do executes one repository-rooted GraphQL request and returns the raw
+// data.repository payload plus the rateLimit budget, leaving connection/node
+// decoding to each caller. It is the single home for the null-repository check
+// the repository-rooted fetch shapes share, built on doRaw's request spine.
+func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[string]any, owner, name string) (json.RawMessage, *RateLimit, error) {
+	data, budget, err := f.doRaw(ctx, token, query, vars, owner, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	var d struct {
+		Repository *json.RawMessage `json:"repository"`
+	}
+	if len(data) > 0 {
+		if uerr := json.Unmarshal(data, &d); uerr != nil {
+			return nil, nil, fmt.Errorf("decoding GitHub response for %s/%s: %w", owner, name, uerr)
+		}
+	}
+	if d.Repository == nil {
 		return nil, nil, fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 	}
-	return *decoded.Data.Repository, toRateLimit(decoded.Data.RateLimit), nil
+	return *d.Repository, budget, nil
 }
 
 // ListIssuesUpdatedSince fetches issues (open and closed) updated at or after
@@ -513,6 +585,103 @@ func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, na
 	return data.PullRequests, budget, nil
 }
 
+// AuthoredActivity counts what `author` authored and engaged with in ownerRepo
+// over [since, until]. It runs two requests (≈7 server-side operations: a user
+// resolve plus five searches in the first, a commit-history count in the second;
+// each search has its own index-consistency and secondary-rate-limit exposure):
+// the root-level search/user request resolves the author and reads the five
+// search counts, then — only when the author resolved — the repository-rooted
+// request counts default-branch commits. An unresolved login is ErrAuthorNotFound
+// (naming the login), never coerced to zero counts.
+func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author string, since, until time.Time) (AuthoredActivityResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return AuthoredActivityResult{}, err
+	}
+	author = strings.TrimSpace(author)
+	if author == "" {
+		return AuthoredActivityResult{}, fmt.Errorf("author login is required")
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return AuthoredActivityResult{}, err
+	}
+
+	// One window, one instant: the same RFC3339 UTC bounds drive both the search
+	// date qualifiers and the history GitTimestamps, so the two requests can't
+	// straddle a day boundary differently.
+	sinceStr := since.UTC().Format(time.RFC3339)
+	untilStr := until.UTC().Format(time.RFC3339)
+	qs := authoredSearchQueries(owner+"/"+name, author, sinceStr, untilStr)
+	vars1 := map[string]any{
+		"author": author,
+		"q0":     qs[0], "q1": qs[1], "q2": qs[2], "q3": qs[3], "q4": qs[4],
+	}
+	data, budget1, err := f.doRaw(ctx, token, authoredSearchQuery, vars1, owner, name)
+	if err != nil {
+		return AuthoredActivityResult{}, err
+	}
+	var sd authoredSearchData
+	if derr := json.Unmarshal(data, &sd); derr != nil {
+		return AuthoredActivityResult{}, fmt.Errorf("decoding authored activity for %s/%s: %w", owner, name, derr)
+	}
+	if sd.User == nil {
+		// A null user is not a GraphQL error, so classify it here: surfacing it as
+		// six zeros would be indistinguishable from a real-but-inactive user.
+		return AuthoredActivityResult{}, fmt.Errorf("%q in %s/%s: %w", author, owner, name, ErrAuthorNotFound)
+	}
+
+	vars2 := map[string]any{"owner": owner, "name": name, "id": sd.User.ID, "since": sinceStr, "until": untilStr}
+	repo, budget2, err := f.do(ctx, token, commitHistoryQuery, vars2, owner, name)
+	if err != nil {
+		return AuthoredActivityResult{}, err
+	}
+	var cd commitHistoryData
+	if derr := json.Unmarshal(repo, &cd); derr != nil {
+		return AuthoredActivityResult{}, fmt.Errorf("decoding commit history for %s/%s: %w", owner, name, derr)
+	}
+	commits := 0
+	if cd.DefaultBranchRef != nil && cd.DefaultBranchRef.Target != nil {
+		commits = cd.DefaultBranchRef.Target.History.TotalCount
+	}
+
+	// The second request is the later observation, so its budget wins; fall back
+	// to the first when the second carried none.
+	budget := budget2
+	if budget == nil {
+		budget = budget1
+	}
+	return AuthoredActivityResult{
+		CommitsAuthored:     commits,
+		IssuesOpened:        sd.S0.IssueCount,
+		PullRequestsOpened:  sd.S1.IssueCount,
+		ReviewsSubmitted:    sd.S2.IssueCount,
+		PullRequestsEngaged: sd.S3.IssueCount,
+		IssuesEngaged:       sd.S4.IssueCount,
+		RateLimit:           budget,
+	}, nil
+}
+
+// authoredSearchQueries assembles the five GitHub search query strings in the
+// order the authoredSearchQuery aliases consume them (s0..s4). Issues/PRs opened
+// filter on created date (the authored event); reviews and the two engagement
+// categories filter on the item's updated date — an approximation, since search
+// cannot filter by comment/review date. The -author exclusion isolates
+// engagement on others' work from the author's own opened items. Window is one
+// shared RFC3339 UTC pair. The result order is load-bearing and pinned by test.
+func authoredSearchQueries(repo, author, since, until string) [5]string {
+	created := "created:" + since + ".." + until
+	updated := "updated:" + since + ".." + until
+	base := "repo:" + repo
+	return [5]string{
+		base + " is:issue author:" + author + " " + created,                           // issuesOpened
+		base + " is:pr author:" + author + " " + created,                              // pullRequestsOpened
+		base + " is:pr reviewed-by:" + author + " " + updated,                         // reviewsSubmitted
+		base + " is:pr commenter:" + author + " -author:" + author + " " + updated,    // pullRequestsEngaged
+		base + " is:issue commenter:" + author + " -author:" + author + " " + updated, // issuesEngaged
+	}
+}
+
 // toRateLimit adapts the decoded GraphQL node to the exported budget, or nil
 // when the response carried no rateLimit block.
 func toRateLimit(n *rateLimitNode) *RateLimit {
@@ -595,24 +764,40 @@ func splitOwnerRepo(ownerRepo string) (owner, name string, err error) {
 	return parts[0], parts[1], nil
 }
 
-// gqlEnvelope mirrors the GraphQL envelope: a data block and/or an errors array.
-// RateLimit is the root rateLimit field — the remaining points budget and its
-// reset, surfaced as a pacing fact on success and harvested as a reset-time
-// fallback on a RATE_LIMITED error (where HTTP rate headers are often absent).
-// Repository is left as raw JSON so the shared request spine stays agnostic to
-// which connection shape (open-issue grooming vs. lean activity) the caller
-// decodes from it.
-type gqlEnvelope struct {
-	Data struct {
-		RateLimit  *rateLimitNode   `json:"rateLimit"`
-		Repository *json.RawMessage `json:"repository"`
-	} `json:"data"`
-	Errors []gqlError `json:"errors"`
-}
-
 type rateLimitNode struct {
 	Remaining int       `json:"remaining"`
 	ResetAt   time.Time `json:"resetAt"`
+}
+
+// authoredSearchData decodes the root-level authored-activity request: the
+// resolved user (nil when the login doesn't exist) and the five aliased search
+// counts. Each search node carries only issueCount (first:0 paged no nodes).
+type authoredSearchData struct {
+	User *struct {
+		ID string `json:"id"`
+	} `json:"user"`
+	S0 searchCount `json:"s0"`
+	S1 searchCount `json:"s1"`
+	S2 searchCount `json:"s2"`
+	S3 searchCount `json:"s3"`
+	S4 searchCount `json:"s4"`
+}
+
+type searchCount struct {
+	IssueCount int `json:"issueCount"`
+}
+
+// commitHistoryData decodes the repository-rooted commit-count request.
+// defaultBranchRef and target are pointers because GitHub returns null for an
+// empty default branch, which leaves the commit count zero.
+type commitHistoryData struct {
+	DefaultBranchRef *struct {
+		Target *struct {
+			History struct {
+				TotalCount int `json:"totalCount"`
+			} `json:"history"`
+		} `json:"target"`
+	} `json:"defaultBranchRef"`
 }
 
 type gqlError struct {
