@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,7 +69,13 @@ func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (g
 
 func (f fakeFetcher) AuthoredActivity(_ context.Context, ownerRepo, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
 	if f.authoredByRepo != nil {
-		c := f.authoredByRepo[ownerRepo]
+		// A missing key is a test-setup omission, not a real fetch: surface it as an
+		// error so a forgotten repo fails the test loudly rather than masquerading as
+		// a successful zero-count result.
+		c, ok := f.authoredByRepo[ownerRepo]
+		if !ok {
+			return github.AuthoredActivityResult{}, fmt.Errorf("fakeFetcher: no canned authored result for %q", ownerRepo)
+		}
 		return c.result, c.err
 	}
 	return f.authoredResult, f.authoredErr
