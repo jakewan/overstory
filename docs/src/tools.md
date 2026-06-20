@@ -1,12 +1,12 @@
 # Tools & Facts
 
-Overstory exposes three read-only tools. Each returns a composite of **structured facts** — no prose, no markdown, no pre-rendered output. Turning facts into a report is the caller's job; this separation is what lets one server serve many render styles.
+Overstory exposes four read-only tools. Each returns a composite of **structured facts** — no prose, no markdown, no pre-rendered output. Turning facts into a report is the caller's job; this separation is what lets one server serve many render styles.
 
 This page documents the *shape and semantics* of what the tools return — the top-level composite, what each block is for, and the cross-cutting conventions. For the exhaustive field-by-field listing, read the Go structs named below: their `json:"..."` tags **are** the wire contract, so pointing at them keeps this reference from drifting as fields are added.
 
 ## Common parameters
 
-All three tools take the same inputs:
+The three manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (`authored_activity` is author- and window-driven; its parameters are documented in [its section](#authored_activity).)
 
 | Parameter | Type    | Required | Default | Bounds  | Meaning                          |
 | --------- | ------- | -------- | ------- | ------- | -------------------------------- |
@@ -72,3 +72,23 @@ The within-milestone **priority-structure** read: the ordered tracks operators e
 For each open milestone, the parsed `tracks` in description order, each carrying a `label`, an optional raw `status` (a bold run-in's parenthetical, uninterpreted), and ordered `members` — each an issue `number` with a raw `statusToken` (`~~` for a struck/abandoned member, a checkbox marker char, or absent). Tracks are recognized by manifest-declared markers (heading levels and/or bold run-in labels) with a prose-section label stoplist; see [`milestoneTracks`](./manifest.md#milestonetracks). A description with no track structure yields a milestone with no tracks — the common case — not an error. The block is a single milestone fetch (which also retrieves each milestone's raw-markdown description), degradable as above; the milestone-list, per-milestone track-list, and per-track member-list truncation seams are each surfaced.
 
 > **Structural extraction, caller-side judgment.** The server emits the structure it parses; deciding which track is "on top" or where a cut line falls is the caller's judgment. **Member precision:** list-structured tracks (checkbox/numbered) extract cleanly, but references in inline-prose tracks, markdown link text, or HTML blocks are captured verbatim and may be dependency *mentions* rather than members (pull-request references are excluded; a bare `#N` that is actually a PR cannot be distinguished from an issue without a live lookup). This is an accepted imprecision of structural extraction — the caller filters, and a future live-issue-state join is the real resolver.
+
+## `authored_activity`
+
+The **attention** read: how much one user authored and engaged with in a repository over a bounded window — the per-repo measure primitive a cross-project attention audit loops over. Composite struct: `authored.Facts` in `internal/authored/`.
+
+Unlike the three reads above it is **author- and window-driven and reads no manifest conventions**, and takes its own parameters:
+
+| Parameter | Type   | Required | Default | Meaning                                                        |
+| --------- | ------ | -------- | ------- | ------------------------------------------------------------- |
+| `owner`   | string | yes      | —       | Repository owner (user or org).                               |
+| `repo`    | string | yes      | —       | Repository name.                                              |
+| `author`  | string | yes      | —       | GitHub login whose authored and engagement activity is measured. |
+| `since`   | string | yes      | —       | Window start, an RFC3339 timestamp.                           |
+| `until`   | string | no       | now     | Window end, an RFC3339 timestamp.                             |
+
+It returns six **decomposed counts** under `counts` — `commitsAuthored`, `issuesOpened`, `pullRequestsOpened`, `reviewsSubmitted`, `pullRequestsEngaged` (commented, not authored), and `issuesEngaged` — each a `{ count, fidelity }` pair, plus the echoed `author`/`since`/`until` and the optional top-level `rateLimit`. The counts are never summed; weighting and the attention verdict stay caller-side.
+
+There are **no list/fetch truncation seams** here (these are counts, not bounded lists) and degradation is **all-or-nothing**: any fetch failure surfaces as a tool-call error (a throttle names its retry instant), and an unresolved `author` login is a named error rather than six zeros — a silently-partial count would understate attention. Because it inherits the operator's `gh` credentials, it can measure private repositories the user-rooted contributions query cannot reach.
+
+> **Per-category fidelity is part of the contract.** The categories are not equally precise, and each `count` carries a `fidelity` label saying so: `commitsAuthored` is the default-branch commit count attributed to the author's linked identity (it misses squash-merged and email-unlinked commits), while the five search-derived counts are search-index-approximate and — for reviews and engagement — windowed by the item's activity rather than the exact comment/review date. A caller reads each count through its label rather than as uniform ground truth.

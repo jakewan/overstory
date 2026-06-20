@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/jakewan/overstory/internal/authored"
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
@@ -72,7 +73,7 @@ func WithClock(now func() time.Time) Option {
 }
 
 // New builds the overstory MCP server and registers the backlog_review,
-// project_summary, and milestone_tracks tools.
+// project_summary, milestone_tracks, and authored_activity tools.
 // With no options it uses production defaults: issues fetched via the GitHub
 // GraphQL API (credentials from gh), manifests discovered from
 // $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
@@ -101,6 +102,7 @@ func New(opts ...Option) *mcp.Server {
 	mcp.AddTool(srv, backlogReviewTool(), backlogReviewHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, projectSummaryTool(), projectSummaryHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, milestoneTracksTool(), milestoneTracksHandler(resolver, cfg.fetcher, cfg.now))
+	mcp.AddTool(srv, authoredActivityTool(), authoredActivityHandler(cfg.fetcher, cfg.now))
 	return srv
 }
 
@@ -356,4 +358,91 @@ func mapQuality(in manifest.QualityConfig) backlog.QualityParams {
 		cats[i] = backlog.Category{Name: c.Name, Labels: c.Labels, Prefixes: mapPrefixes(c.Prefixes)}
 	}
 	return backlog.QualityParams{MinBodyLength: in.MinBodyLength, Categories: cats}
+}
+
+// authoredActivityInput is the tool's decoded input. Unlike the other tools it
+// carries an author login and an explicit window, and reads no manifest
+// conventions. Since/Until are RFC3339 timestamps; Until is optional and defaults
+// to now. Required fields live in the published schema, not here.
+type authoredActivityInput struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Author string `json:"author"`
+	Since  string `json:"since"`
+	Until  string `json:"until"`
+}
+
+// authoredActivityTool publishes the input contract. owner/repo/author/since are
+// required; until is optional (defaults to now). There is no limit parameter —
+// the tool returns counts, not lists, so there is nothing to cap.
+func authoredActivityTool() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "authored_activity",
+		Description: "Measure how much one GitHub user authored and engaged with in one repository over a caller-supplied time window, and return six decomposed, objective counts for the caller to weigh and render: commitsAuthored (default-branch commits attributed to the author's linked identity — misses squash-merged and email-unlinked commits), issuesOpened and pullRequestsOpened (items the author created in the window), reviewsSubmitted (pull requests the author formally reviewed), and pullRequestsEngaged and issuesEngaged (items the author commented on but did not author). Each count ships with a per-category fidelity label, because the categories are not equally precise: the commit count is event-precise within its attribution limits, while the five search-derived counts are search-index-approximate and (for reviews and engagement) windowed by the item's activity rather than the exact comment/review date. The counts are never summed — weighting and the attention verdict stay caller-side. This tool is author- and window-driven and reads no manifest conventions; it inherits the operator's gh credentials, so it can measure private repositories the user-rooted contributions query cannot. It runs over a single owner/repo per call (the caller loops to measure several). An unresolved author login is a named error, never six silent zeros; any fetch failure surfaces as a tool error rather than a partial count.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"owner":  {Type: "string", Description: "repository owner (user or org)"},
+				"repo":   {Type: "string", Description: "repository name"},
+				"author": {Type: "string", Description: "the GitHub login whose authored and engagement activity is measured"},
+				"since":  {Type: "string", Description: "window start as an RFC3339 timestamp (e.g. 2026-01-01T00:00:00Z)"},
+				"until":  {Type: "string", Description: "window end as an RFC3339 timestamp; defaults to now when omitted"},
+			},
+			Required: []string{"owner", "repo", "author", "since"},
+		},
+	}
+}
+
+// authoredActivityHandler validates the window and author, fetches the decomposed
+// authored-activity counts, and reduces them to facts. It reads no manifest (the
+// primitive is window/author-driven, not convention-driven), so unlike the other
+// handlers it takes no resolver. The window is parsed and ordered before any
+// fetch, so a malformed or inverted window fails fast with a named error; a
+// throttle surfaces its retry instant like the other tools.
+func authoredActivityHandler(fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[authoredActivityInput, authored.Facts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in authoredActivityInput) (*mcp.CallToolResult, authored.Facts, error) {
+		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
+		author := strings.TrimSpace(in.Author)
+		if owner == "" || repo == "" {
+			return nil, authored.Facts{}, fmt.Errorf("owner and repo are required")
+		}
+		if author == "" {
+			return nil, authored.Facts{}, fmt.Errorf("author is required")
+		}
+		ownerRepo := owner + "/" + repo
+
+		n := now()
+		since, perr := time.Parse(time.RFC3339, strings.TrimSpace(in.Since))
+		if perr != nil {
+			return nil, authored.Facts{}, fmt.Errorf("since must be an RFC3339 timestamp, got %q", in.Since)
+		}
+		until := n
+		if u := strings.TrimSpace(in.Until); u != "" {
+			until, perr = time.Parse(time.RFC3339, u)
+			if perr != nil {
+				return nil, authored.Facts{}, fmt.Errorf("until must be an RFC3339 timestamp, got %q", in.Until)
+			}
+		}
+		if !until.After(since) {
+			return nil, authored.Facts{}, fmt.Errorf("until (%s) must be after since (%s)", until.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339))
+		}
+
+		result, err := fetcher.AuthoredActivity(ctx, ownerRepo, author, since, until)
+		if err != nil {
+			// A throttle carries a retry instant the caller can act on; other
+			// failures (including an unresolved author) surface plain.
+			if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+				if when := rateLimitResetTime(rle, now); !when.IsZero() {
+					return nil, authored.Facts{}, fmt.Errorf("fetching authored activity for %s: %w (retry after %s)", ownerRepo, err, when.UTC().Format(time.RFC3339))
+				}
+			}
+			return nil, authored.Facts{}, fmt.Errorf("fetching authored activity for %s: %w", ownerRepo, err)
+		}
+
+		facts := authored.Reduce(result, author, since, until)
+		facts.Repo = ownerRepo
+		facts.GeneratedAt = n
+		facts.RateLimit = mapRateLimit(result.RateLimit)
+		return nil, facts, nil
+	}
 }

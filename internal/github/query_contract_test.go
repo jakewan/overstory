@@ -105,6 +105,10 @@ func TestQueryDecodeContract(t *testing.T) {
 		{"milestones rate limit", milestonesQuery, rateLimitNode{}},
 		{"pull-request connection", pullRequestsQuery, pullRequestsConnection{}},
 		{"pull-request rate limit", pullRequestsQuery, rateLimitNode{}},
+		{"authored search data", authoredSearchQuery, authoredSearchData{}},
+		{"authored search rate limit", authoredSearchQuery, rateLimitNode{}},
+		{"commit history data", commitHistoryQuery, commitHistoryData{}},
+		{"commit history rate limit", commitHistoryQuery, rateLimitNode{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if missing := missingQueryFields(tc.query, tc.sample); len(missing) > 0 {
@@ -160,6 +164,8 @@ func TestQueryStructuralKeys(t *testing.T) {
 		{"activity", activityQuery, []string{"repository", "issues", "rateLimit"}},
 		{"milestones", milestonesQuery, []string{"repository", "milestones", "rateLimit"}},
 		{"pull requests", pullRequestsQuery, []string{"repository", "pullRequests", "rateLimit"}},
+		{"authored search", authoredSearchQuery, []string{"rateLimit", "user", "s0", "s1", "s2", "s3", "s4"}},
+		{"commit history", commitHistoryQuery, []string{"repository", "defaultBranchRef", "rateLimit"}},
 	} {
 		t.Run(q.name, func(t *testing.T) {
 			idents := queryIdentifiers(q.query)

@@ -29,6 +29,8 @@ type fakeFetcher struct {
 	milestonesErr  error
 	pullRequests   github.PullRequestListResult
 	pullRequestErr error
+	authoredResult github.AuthoredActivityResult
+	authoredErr    error
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
@@ -45,6 +47,10 @@ func (f fakeFetcher) ListOpenMilestones(_ context.Context, _ string, _ int) (git
 
 func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (github.PullRequestListResult, error) {
 	return f.pullRequests, f.pullRequestErr
+}
+
+func (f fakeFetcher) AuthoredActivity(_ context.Context, _, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+	return f.authoredResult, f.authoredErr
 }
 
 // fixedClock is the injected wall clock; staleness is deterministic under it.

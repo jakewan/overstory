@@ -159,6 +159,29 @@ type IssueActivityResult struct {
 	RateLimit  *RateLimit
 }
 
+// AuthoredActivityResult carries the decomposed authored/engagement counts for
+// one user in one repository over a bounded window: the six categories the
+// attention-audit consumer reads, kept as separate numbers (never summed) so the
+// consumer owns any weighting. There is no truncation seam — these are counts,
+// not a bounded list. RateLimit is the budget snapshot from the fetch, or nil
+// when the responses carried none.
+//
+// The categories' precision differs and is documented per-category by the
+// reduction's fidelity labels: CommitsAuthored is the default-branch commit count
+// attributed to the author's linked identity; IssuesOpened/PullRequestsOpened
+// count items the author created in the window; ReviewsSubmitted counts PRs the
+// author formally reviewed; PullRequestsEngaged/IssuesEngaged count items the
+// author commented on but did not author.
+type AuthoredActivityResult struct {
+	CommitsAuthored     int
+	IssuesOpened        int
+	PullRequestsOpened  int
+	ReviewsSubmitted    int
+	PullRequestsEngaged int
+	IssuesEngaged       int
+	RateLimit           *RateLimit
+}
+
 // Fetcher fetches a repository's issues, milestones, and pull requests for the
 // reductions. It exists so tests can substitute a fake without invoking gh or the
 // network. ListOpenIssues returns the open-issue grooming window
@@ -168,12 +191,15 @@ type IssueActivityResult struct {
 // returns the open milestones with their authoritative open/closed counts, for
 // the orientation reduction's milestone-progress view; ListOpenPullRequests
 // returns the open pull requests with draft state, head branch, and CI rollup,
-// for the orientation reduction's in-flight-work view.
+// for the orientation reduction's in-flight-work view; AuthoredActivity returns
+// the decomposed authored/engagement counts for one author over the [since,until]
+// window (author- and window-driven, manifest-independent).
 type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
 	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)
 	ListOpenPullRequests(ctx context.Context, ownerRepo string, fetchLimit int) (PullRequestListResult, error)
+	AuthoredActivity(ctx context.Context, ownerRepo, author string, since, until time.Time) (AuthoredActivityResult, error)
 }
 
 // Sentinel errors classify the failure modes a caller acts on. They name the
@@ -187,6 +213,11 @@ var (
 	// ErrRepoNotFound means the repository does not exist or is not accessible
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")
+	// ErrAuthorNotFound means the requested author login does not resolve to a
+	// GitHub user, so authored-activity counts would be six meaningless zeros
+	// indistinguishable from a real-but-inactive user — surfaced as an error
+	// rather than coerced to zero.
+	ErrAuthorNotFound = errors.New("author login not found")
 	// ErrRateLimited means the GitHub API rejected the request for rate limiting.
 	ErrRateLimited = errors.New("GitHub API rate limit exceeded")
 )
