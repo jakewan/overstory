@@ -51,10 +51,15 @@ func TestAuthoredSearchQueriesContainQualifiers(t *testing.T) {
 
 // authoredServer dispatches the two AuthoredActivity requests by inspecting the
 // query body: the search/user request and the commit-history request hit the same
-// endpoint, so the body's shape selects the canned response.
-func authoredServer(t *testing.T, searchBody, historyBody string) *httptest.Server {
+// endpoint, so the body's shape selects the canned response. It returns a pointer
+// to the request count so a test can assert exactly how many requests ran — the
+// two requests are sequential (request 2 only after request 1 fully returns), so
+// the unsynchronized counter is safe.
+func authoredServer(t *testing.T, searchBody, historyBody string) (*httptest.Server, *int) {
 	t.Helper()
+	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		var req struct {
 			Query string `json:"query"`
 		}
@@ -70,13 +75,13 @@ func authoredServer(t *testing.T, searchBody, historyBody string) *httptest.Serv
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, &requests
 }
 
 func TestAuthoredActivityMapsSixCounts(t *testing.T) {
 	search := `{"data":{"user":{"id":"U_1"},"s0":{"issueCount":3},"s1":{"issueCount":5},"s2":{"issueCount":7},"s3":{"issueCount":9},"s4":{"issueCount":4},"rateLimit":{"remaining":4990,"resetAt":"2026-06-20T00:00:00Z"}}}`
 	history := `{"data":{"repository":{"defaultBranchRef":{"target":{"history":{"totalCount":12}}}},"rateLimit":{"remaining":4980,"resetAt":"2026-06-20T00:00:00Z"}}}`
-	srv := authoredServer(t, search, history)
+	srv, _ := authoredServer(t, search, history)
 
 	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -111,7 +116,7 @@ func TestAuthoredActivityMapsSixCounts(t *testing.T) {
 func TestAuthoredActivityUnknownAuthorErrors(t *testing.T) {
 	// user resolves null — an unknown login, not a real-but-inactive user.
 	search := `{"data":{"user":null,"s0":{"issueCount":0},"s1":{"issueCount":0},"s2":{"issueCount":0},"s3":{"issueCount":0},"s4":{"issueCount":0}}}`
-	srv := authoredServer(t, search, "")
+	srv, requests := authoredServer(t, search, "")
 
 	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -122,13 +127,19 @@ func TestAuthoredActivityUnknownAuthorErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), "nope") {
 		t.Errorf("error %q does not name the unresolved login", err)
 	}
+	// The commit-history request must be skipped when the author doesn't resolve —
+	// there is no id to filter on. Assert the request count directly rather than
+	// inferring it from the error type.
+	if *requests != 1 {
+		t.Errorf("made %d requests, want 1 (second request must be skipped for an unknown author)", *requests)
+	}
 }
 
 func TestAuthoredActivityEmptyDefaultBranchCountsZeroCommits(t *testing.T) {
 	search := `{"data":{"user":{"id":"U_1"},"s0":{"issueCount":1},"s1":{"issueCount":0},"s2":{"issueCount":0},"s3":{"issueCount":0},"s4":{"issueCount":0}}}`
 	// A repo with no default branch (empty repo) returns null defaultBranchRef.
 	history := `{"data":{"repository":{"defaultBranchRef":null}}}`
-	srv := authoredServer(t, search, history)
+	srv, _ := authoredServer(t, search, history)
 
 	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)

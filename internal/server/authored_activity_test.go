@@ -137,6 +137,27 @@ func TestAuthoredActivityRepoNotFound(t *testing.T) {
 	}
 }
 
+// TestAuthoredActivityRateLimitedNamesResetInstant pins the all-or-nothing
+// degradation contract's recovery signal: a throttle surfaces as a tool error
+// naming the absolute retry instant, not a partial count.
+func TestAuthoredActivityRateLimitedNamesResetInstant(t *testing.T) {
+	reset := fixedClock.Add(15 * time.Minute)
+	srv := New(WithFetcher(authoredFetcher(github.AuthoredActivityResult{}, github.RateLimitedError{ResetAt: reset})), WithClock(func() time.Time { return fixedClock }))
+
+	res := callAuthoredActivity(t, srv, map[string]any{
+		"owner":  "acme",
+		"repo":   "widgets",
+		"author": "alice",
+		"since":  "2026-05-01T00:00:00Z",
+	})
+	if !res.IsError {
+		t.Fatalf("IsError = false, want true for a throttled fetch")
+	}
+	if msg := contentText(res); !strings.Contains(msg, reset.UTC().Format(time.RFC3339)) {
+		t.Errorf("error %q does not name the reset instant %s", msg, reset.UTC().Format(time.RFC3339))
+	}
+}
+
 // TestAuthoredActivityUnknownAuthor pins that an unresolved login surfaces as a
 // named error (not six silent zeros indistinguishable from an inactive user).
 func TestAuthoredActivityUnknownAuthor(t *testing.T) {
