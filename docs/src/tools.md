@@ -6,7 +6,7 @@ This page documents the *shape and semantics* of what the tools return — the t
 
 ## Common parameters
 
-The three manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (`authored_activity` and `authored_activity_batch` are author- and window-driven; their parameters are documented in [their](#authored_activity) [sections](#authored_activity_batch).)
+The three manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (`authored_activity` and `authored_activity_batch` are author- and window-driven; their parameters are documented in their own sections — [`authored_activity`](#authored_activity) and [`authored_activity_batch`](#authored_activity_batch).)
 
 | Parameter | Type    | Required | Default | Bounds  | Meaning                          |
 | --------- | ------- | -------- | ------- | ------- | -------------------------------- |

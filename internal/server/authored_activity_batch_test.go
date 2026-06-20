@@ -253,6 +253,48 @@ func TestAuthoredActivityBatchValidatesInput(t *testing.T) {
 	}
 }
 
+// TestAuthoredActivityBatchCancelledContextErrors pins that a cancelled request
+// surfaces as a tool error, not a fabricated success built from the placeholder
+// markers the fan-out stamps for not-yet-started repos. It drives the handler
+// directly because cancellation can't be injected deterministically through the
+// in-memory session.
+func TestAuthoredActivityBatchCancelledContextErrors(t *testing.T) {
+	fetcher := authoredBatchFetcher(map[string]authoredCanned{"acme/widgets": {result: sixCounts(1, 0, 0, 0, 0, 0)}})
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := handler(ctx, nil, authoredActivityBatchInput{
+		Repos:  []string{"acme/widgets"},
+		Author: "alice",
+		Since:  "2026-05-01T00:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("err = nil, want a cancellation error (not a fabricated success)")
+	}
+}
+
+// TestAuthoredActivityBatchCanonicalizesSlugWhitespace pins the intended forgiving
+// behavior: a slug with whitespace around the slash is trimmed to its canonical
+// owner/repo (GitHub slugs carry no spaces), so it matches the fetched repo and
+// the entry echoes the canonical form.
+func TestAuthoredActivityBatchCanonicalizesSlugWhitespace(t *testing.T) {
+	fetcher := authoredBatchFetcher(map[string]authoredCanned{"acme/widgets": {result: sixCounts(7, 0, 0, 0, 0, 0)}})
+	srv := New(WithFetcher(fetcher), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeBatchFacts(t, callAuthoredActivityBatch(t, srv, map[string]any{
+		"repos":  []any{"  acme / widgets  "},
+		"author": "alice",
+		"since":  "2026-05-01T00:00:00Z",
+	}))
+	if len(facts.Repos) != 1 {
+		t.Fatalf("len(Repos) = %d, want 1", len(facts.Repos))
+	}
+	if facts.Repos[0].Repo != "acme/widgets" || !facts.Repos[0].Available {
+		t.Errorf("Repos[0] = %+v, want canonicalized acme/widgets available", facts.Repos[0])
+	}
+}
+
 // TestAuthoredActivityBatchReposSerializeAsArray pins the non-null convention
 // through the JSON round-trip: the per-repo entry list is always an array, never
 // null, so a client never special-cases a null.

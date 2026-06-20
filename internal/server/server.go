@@ -532,6 +532,12 @@ func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time) 
 		}
 
 		entries := fanOutAuthored(ctx, fetcher, repos, author, since, until, now)
+		// A cancelled request must surface as an error, not a fabricated success: the
+		// fan-out stamps not-yet-started repos with a placeholder, so without this
+		// guard the handler would return a 200 result built from those placeholders.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, authored.BatchFacts{}, fmt.Errorf("authored_activity_batch cancelled: %w", cerr)
+		}
 		// The author login is repo-independent, so an unresolvable login fails every
 		// repo identically — escalate it to one named whole-batch error rather than
 		// returning N silent author-not-found markers.
@@ -582,8 +588,11 @@ func validateRepos(in []string) ([]string, error) {
 // repo's failure degrades only its own entry. Each goroutine writes its own index
 // in a pre-sized slice (distinct indices, read only after Wait), preserving input
 // order without a mutex. The request ctx threads to every fetch so a client
-// cancellation tears down in-flight work, and a goroutine blocked acquiring the
-// semaphore on a cancelled batch abandons its slot rather than blocking forever.
+// cancellation aborts in-flight HTTP; a goroutine blocked acquiring the semaphore
+// abandons its slot when the batch is cancelled, and one that acquires after
+// cancellation skips its fetch (fetchAuthoredEntry's fast-path ctx check). The
+// per-entry markers a cancelled batch produces are placeholders the handler
+// discards wholesale once it observes ctx.Err().
 func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time) []authored.BatchEntry {
 	entries := make([]authored.BatchEntry, len(repos))
 	sem := make(chan struct{}, authoredBatchConcurrency)
@@ -611,6 +620,11 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 // its cause logged to stderr (never the caller channel), as the trajectory fetch
 // degrade does.
 func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, author string, since, until time.Time, now func() time.Time) authored.BatchEntry {
+	// On an already-cancelled batch, skip the network call: the handler discards
+	// the whole result on ctx.Err(), so this placeholder is never returned.
+	if ctx.Err() != nil {
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
+	}
 	result, err := fetcher.AuthoredActivity(ctx, repo, author, since, until)
 	if err == nil {
 		return authored.BatchEntry{Repo: repo, Result: result}
