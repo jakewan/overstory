@@ -79,13 +79,20 @@ func Reduce(result github.AuthoredActivityResult, author string, since, until ti
 		Author: author,
 		Since:  since.UTC(),
 		Until:  until.UTC(),
-		Counts: Counts{
-			CommitsAuthored:     Count{Count: result.CommitsAuthored, Fidelity: fidelityCommits},
-			IssuesOpened:        Count{Count: result.IssuesOpened, Fidelity: fidelityOpened},
-			PullRequestsOpened:  Count{Count: result.PullRequestsOpened, Fidelity: fidelityOpened},
-			ReviewsSubmitted:    Count{Count: result.ReviewsSubmitted, Fidelity: fidelityReviews},
-			PullRequestsEngaged: Count{Count: result.PullRequestsEngaged, Fidelity: fidelityPREngage},
-			IssuesEngaged:       Count{Count: result.IssuesEngaged, Fidelity: fidelityIsEngage},
-		},
+		Counts: countsFrom(result),
+	}
+}
+
+// countsFrom stamps each fetched count with its per-category fidelity label. It
+// is shared by Reduce (single repo) and ReduceBatch (per-repo entry) so the two
+// surfaces can never diverge on what a count means.
+func countsFrom(result github.AuthoredActivityResult) Counts {
+	return Counts{
+		CommitsAuthored:     Count{Count: result.CommitsAuthored, Fidelity: fidelityCommits},
+		IssuesOpened:        Count{Count: result.IssuesOpened, Fidelity: fidelityOpened},
+		PullRequestsOpened:  Count{Count: result.PullRequestsOpened, Fidelity: fidelityOpened},
+		ReviewsSubmitted:    Count{Count: result.ReviewsSubmitted, Fidelity: fidelityReviews},
+		PullRequestsEngaged: Count{Count: result.PullRequestsEngaged, Fidelity: fidelityPREngage},
+		IssuesEngaged:       Count{Count: result.IssuesEngaged, Fidelity: fidelityIsEngage},
 	}
 }

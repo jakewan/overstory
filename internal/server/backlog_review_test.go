@@ -31,6 +31,23 @@ type fakeFetcher struct {
 	pullRequestErr error
 	authoredResult github.AuthoredActivityResult
 	authoredErr    error
+	// authoredByRepo drives the batch fan-out: AuthoredActivity returns the canned
+	// outcome keyed by owner/repo when this is non-nil, so each repo in a batch can
+	// take a different path (counts, not-found, throttle). When nil, the single
+	// authoredResult/authoredErr fields apply — keeping every single-repo test green.
+	authoredByRepo map[string]authoredCanned
+}
+
+// authoredCanned is one repo's canned AuthoredActivity outcome for the batch fake.
+type authoredCanned struct {
+	result github.AuthoredActivityResult
+	err    error
+}
+
+// withBudget stamps a RateLimit budget onto a result, for batch aggregation tests.
+func withBudget(r github.AuthoredActivityResult, remaining int, reset time.Time) github.AuthoredActivityResult {
+	r.RateLimit = &github.RateLimit{Remaining: remaining, ResetAt: reset}
+	return r
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
@@ -49,7 +66,11 @@ func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (g
 	return f.pullRequests, f.pullRequestErr
 }
 
-func (f fakeFetcher) AuthoredActivity(_ context.Context, _, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+func (f fakeFetcher) AuthoredActivity(_ context.Context, ownerRepo, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+	if f.authoredByRepo != nil {
+		c := f.authoredByRepo[ownerRepo]
+		return c.result, c.err
+	}
 	return f.authoredResult, f.authoredErr
 }
 
