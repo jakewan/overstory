@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -73,7 +74,8 @@ func WithClock(now func() time.Time) Option {
 }
 
 // New builds the overstory MCP server and registers the backlog_review,
-// project_summary, milestone_tracks, and authored_activity tools.
+// project_summary, milestone_tracks, authored_activity, and
+// authored_activity_batch tools.
 // With no options it uses production defaults: issues fetched via the GitHub
 // GraphQL API (credentials from gh), manifests discovered from
 // $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
@@ -103,6 +105,7 @@ func New(opts ...Option) *mcp.Server {
 	mcp.AddTool(srv, projectSummaryTool(), projectSummaryHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, milestoneTracksTool(), milestoneTracksHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, authoredActivityTool(), authoredActivityHandler(cfg.fetcher, cfg.now))
+	mcp.AddTool(srv, authoredActivityBatchTool(), authoredActivityBatchHandler(cfg.fetcher, cfg.now))
 	return srv
 }
 
@@ -412,19 +415,9 @@ func authoredActivityHandler(fetcher github.Fetcher, now func() time.Time) mcp.T
 		ownerRepo := owner + "/" + repo
 
 		n := now()
-		since, perr := time.Parse(time.RFC3339, strings.TrimSpace(in.Since))
-		if perr != nil {
-			return nil, authored.Facts{}, fmt.Errorf("since must be an RFC3339 timestamp, got %q", in.Since)
-		}
-		until := n
-		if u := strings.TrimSpace(in.Until); u != "" {
-			until, perr = time.Parse(time.RFC3339, u)
-			if perr != nil {
-				return nil, authored.Facts{}, fmt.Errorf("until must be an RFC3339 timestamp, got %q", in.Until)
-			}
-		}
-		if !until.After(since) {
-			return nil, authored.Facts{}, fmt.Errorf("until (%s) must be after since (%s)", until.UTC().Format(time.RFC3339), since.UTC().Format(time.RFC3339))
+		since, until, werr := parseWindow(in.Since, in.Until, n)
+		if werr != nil {
+			return nil, authored.Facts{}, werr
 		}
 
 		result, err := fetcher.AuthoredActivity(ctx, ownerRepo, author, since, until)
@@ -445,4 +438,206 @@ func authoredActivityHandler(fetcher github.Fetcher, now func() time.Time) mcp.T
 		facts.RateLimit = mapRateLimit(result.RateLimit)
 		return nil, facts, nil
 	}
+}
+
+// parseWindow parses the since/until RFC3339 inputs into an ordered window: an
+// omitted until defaults to now, and an unparseable, inverted, or empty window is
+// rejected with a named error. The caller samples now once and passes it in so the
+// whole call — and, for a batch, every repo — shares one window instant.
+func parseWindow(since, until string, now time.Time) (time.Time, time.Time, error) {
+	s, err := time.Parse(time.RFC3339, strings.TrimSpace(since))
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("since must be an RFC3339 timestamp, got %q", since)
+	}
+	u := now
+	if raw := strings.TrimSpace(until); raw != "" {
+		if u, err = time.Parse(time.RFC3339, raw); err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("until must be an RFC3339 timestamp, got %q", until)
+		}
+	}
+	if !u.After(s) {
+		return time.Time{}, time.Time{}, fmt.Errorf("until (%s) must be after since (%s)", u.UTC().Format(time.RFC3339), s.UTC().Format(time.RFC3339))
+	}
+	return s, u, nil
+}
+
+const (
+	// authoredBatchConcurrency bounds how many repos fetch at once. It is
+	// deliberately small: each repo is ~2 GraphQL requests, several of them search
+	// operations, and GitHub's secondary rate limit is sensitive to concurrent
+	// bursts on the search endpoint, not just the primary points budget.
+	authoredBatchConcurrency = 3
+	// authoredBatchMaxRepos caps a single batch so concurrency × per-repo ops stays
+	// bounded; it mirrors the schema's maxItems.
+	authoredBatchMaxRepos = 50
+)
+
+// authoredActivityBatchInput is the batch tool's decoded input: a list of
+// owner/repo slugs measured for one author over one window. Until is optional
+// (defaults to now); constraints live in the published schema.
+type authoredActivityBatchInput struct {
+	Repos  []string `json:"repos"`
+	Author string   `json:"author"`
+	Since  string   `json:"since"`
+	Until  string   `json:"until"`
+}
+
+// authoredActivityBatchTool publishes the batch input contract. repos is a
+// non-empty, bounded array of owner/repo; author/since are required; until is
+// optional. There is no limit parameter — the tool returns per-repo counts, not
+// lists.
+func authoredActivityBatchTool() *mcp.Tool {
+	minRepos, maxRepos := 1, authoredBatchMaxRepos
+	return &mcp.Tool{
+		Name:        "authored_activity_batch",
+		Description: "Measure how much one GitHub user authored and engaged with across several repositories over a caller-supplied time window — the batched form of authored_activity. Given a list of owner/repo and one author login, it fans out the same six decomposed counts per repository (commitsAuthored, issuesOpened, pullRequestsOpened, reviewsSubmitted, pullRequestsEngaged, issuesEngaged — each with its per-category fidelity label) and returns one entry per repository in request order. Repositories are independent: one that is not found or rate-limited degrades to a per-repo marker (not_found / rate_limited / fetch_failed) without sinking the others' counts, and the batch surfaces a single aggregated rate-limit budget — the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. Because the author login resolves globally (independent of repository), an unresolvable login is one whole-batch error naming it rather than per-repo markers — but a login that resolves to a real, unrelated account yields honest zeros that no tool can distinguish from genuine inactivity. The tool reads no manifest conventions and inherits the operator's gh credentials, so it can measure private repositories. It returns per-repo facts only — summing across repositories, ranking, and the attention verdict stay caller-side.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"repos": {
+					Type:        "array",
+					Description: "the repositories to measure, each as an owner/repo slug",
+					Items:       &jsonschema.Schema{Type: "string"},
+					MinItems:    &minRepos,
+					MaxItems:    &maxRepos,
+				},
+				"author": {Type: "string", Description: "the GitHub login whose authored and engagement activity is measured"},
+				"since":  {Type: "string", Description: "window start as an RFC3339 timestamp (e.g. 2026-01-01T00:00:00Z)"},
+				"until":  {Type: "string", Description: "window end as an RFC3339 timestamp; defaults to now when omitted"},
+			},
+			Required: []string{"repos", "author", "since"},
+		},
+	}
+}
+
+// authoredActivityBatchHandler validates the author, the repo list, and the
+// window, fans out the per-repo fetches, and reduces them to batch facts. It reads
+// no manifest (the primitive is window/author-driven) so it takes no resolver. An
+// unresolvable author — repo-independent, so it fails every repo — surfaces as one
+// whole-batch error; every other failure degrades only its own repo's entry.
+func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[authoredActivityBatchInput, authored.BatchFacts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in authoredActivityBatchInput) (*mcp.CallToolResult, authored.BatchFacts, error) {
+		author := strings.TrimSpace(in.Author)
+		if author == "" {
+			return nil, authored.BatchFacts{}, fmt.Errorf("author is required")
+		}
+		repos, verr := validateRepos(in.Repos)
+		if verr != nil {
+			return nil, authored.BatchFacts{}, verr
+		}
+		n := now()
+		since, until, werr := parseWindow(in.Since, in.Until, n)
+		if werr != nil {
+			return nil, authored.BatchFacts{}, werr
+		}
+
+		entries := fanOutAuthored(ctx, fetcher, repos, author, since, until, now)
+		// A cancelled request must surface as an error, not a fabricated success: the
+		// fan-out stamps not-yet-started repos with a placeholder, so without this
+		// guard the handler would return a 200 result built from those placeholders.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, authored.BatchFacts{}, fmt.Errorf("authored_activity_batch cancelled: %w", cerr)
+		}
+		// The author login is repo-independent, so an unresolvable login fails every
+		// repo identically — escalate it to one named whole-batch error rather than
+		// returning N silent author-not-found markers.
+		for _, e := range entries {
+			if e.Unavailable == authored.UnavailableAuthorNotFound {
+				return nil, authored.BatchFacts{}, fmt.Errorf("author %q is not a GitHub user", author)
+			}
+		}
+
+		facts := authored.ReduceBatch(entries, author, since, until)
+		facts.GeneratedAt = n
+		return nil, facts, nil
+	}
+}
+
+// validateRepos normalizes and validates the batch's repo slugs before any fetch:
+// non-empty, within the max, each exactly owner/repo (one slash, both halves
+// non-blank), and no case-insensitive duplicates (matching the manifest layer's
+// repo-key collision rule). It returns the canonicalized slugs in input order.
+func validateRepos(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, fmt.Errorf("repos must list at least one owner/repo")
+	}
+	if len(in) > authoredBatchMaxRepos {
+		return nil, fmt.Errorf("repos lists %d repositories, at most %d allowed", len(in), authoredBatchMaxRepos)
+	}
+	repos := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		owner, name, ok := strings.Cut(strings.TrimSpace(raw), "/")
+		owner, name = strings.TrimSpace(owner), strings.TrimSpace(name)
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return nil, fmt.Errorf("repository %q is not a valid owner/repo", raw)
+		}
+		slug := owner + "/" + name
+		key := strings.ToLower(slug)
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("repository %q is listed more than once", raw)
+		}
+		seen[key] = struct{}{}
+		repos = append(repos, slug)
+	}
+	return repos, nil
+}
+
+// fanOutAuthored fetches each repo's authored activity concurrently (bounded by
+// authoredBatchConcurrency) and classifies every outcome into a BatchEntry, so one
+// repo's failure degrades only its own entry. Each goroutine writes its own index
+// in a pre-sized slice (distinct indices, read only after Wait), preserving input
+// order without a mutex. The request ctx threads to every fetch so a client
+// cancellation aborts in-flight HTTP; a goroutine blocked acquiring the semaphore
+// abandons its slot when the batch is cancelled, and one that acquires after
+// cancellation skips its fetch (fetchAuthoredEntry's fast-path ctx check). The
+// per-entry markers a cancelled batch produces are placeholders the handler
+// discards wholesale once it observes ctx.Err().
+func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time) []authored.BatchEntry {
+	entries := make([]authored.BatchEntry, len(repos))
+	sem := make(chan struct{}, authoredBatchConcurrency)
+	var wg sync.WaitGroup
+	for i, repo := range repos {
+		wg.Go(func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				entries[i] = authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
+				return
+			}
+			entries[i] = fetchAuthoredEntry(ctx, fetcher, repo, author, since, until, now)
+		})
+	}
+	wg.Wait()
+	return entries
+}
+
+// fetchAuthoredEntry fetches one repo and maps its outcome to a BatchEntry: counts
+// on success, else a per-repo marker. An unresolvable author is flagged with the
+// internal author-not-found reason the handler escalates to a whole-batch error; a
+// throttle carries its resolved reset instant; any other failure is fetch_failed,
+// its cause logged to stderr (never the caller channel), as the trajectory fetch
+// degrade does.
+func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, author string, since, until time.Time, now func() time.Time) authored.BatchEntry {
+	// On an already-cancelled batch, skip the network call: the handler discards
+	// the whole result on ctx.Err(), so this placeholder is never returned.
+	if ctx.Err() != nil {
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
+	}
+	result, err := fetcher.AuthoredActivity(ctx, repo, author, since, until)
+	if err == nil {
+		return authored.BatchEntry{Repo: repo, Result: result}
+	}
+	switch {
+	case errors.Is(err, github.ErrAuthorNotFound):
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableAuthorNotFound}
+	case errors.Is(err, github.ErrRepoNotFound):
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableNotFound}
+	}
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableRateLimited, ResetAt: rateLimitResetTime(rle, now)}
+	}
+	log.Printf("overstory: authored activity fetch for %s: %v", repo, err)
+	return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
 }

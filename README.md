@@ -13,7 +13,7 @@ GitHub GraphQL API — authenticated with the operator's existing `gh` credentia
 repository's manifest-declared conventions, and returns compact structured facts — leaving
 narrative and presentation to the agent or tool driving it.
 
-> Status: early development. Design and scope are still taking shape. The server speaks MCP over stdio and exposes four tools — `backlog_review` (a grooming read of what in the backlog needs attention), `project_summary` (an orientation read of what's open and what to pick up), `milestone_tracks` (the within-milestone priority structure operators encode in a milestone's description), and `authored_activity` (an attention read of what a given user authored and engaged with over a time window) — each over an explicit `owner/repo`; the first three resolve against that repo's manifest conventions, while `authored_activity` is author- and window-driven and reads none.
+> Status: early development. Design and scope are still taking shape. The server speaks MCP over stdio and exposes five tools — `backlog_review` (a grooming read of what in the backlog needs attention), `project_summary` (an orientation read of what's open and what to pick up), `milestone_tracks` (the within-milestone priority structure operators encode in a milestone's description), `authored_activity` (an attention read of what a given user authored and engaged with over a time window in one repo), and `authored_activity_batch` (that attention read fanned out across a list of repos, one independent per-repo result each) — the first three resolve a single explicit `owner/repo` against that repo's manifest conventions, while the two `authored_activity*` reads are author- and window-driven and read none.
 
 ## Usage
 
