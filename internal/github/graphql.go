@@ -213,7 +213,7 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		budget *RateLimit
 	)
 	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for page := 0; page < maxPages; page++ {
+	for range maxPages {
 		first := pageSize
 		if remaining := fetchLimit - len(issues); remaining < first {
 			first = remaining
@@ -399,7 +399,7 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 		exhausted    bool // drained the connection: nothing more to fetch
 	)
 	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for page := 0; page < maxPages; page++ {
+	for range maxPages {
 		first := pageSize
 		if remaining := fetchLimit - len(activities); remaining < first {
 			first = remaining
@@ -469,7 +469,7 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 		budget     *RateLimit
 	)
 	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for page := 0; page < maxPages; page++ {
+	for range maxPages {
 		first := pageSize
 		if remaining := fetchLimit - len(milestones); remaining < first {
 			first = remaining
@@ -537,7 +537,7 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 		budget    *RateLimit
 	)
 	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for page := 0; page < maxPages; page++ {
+	for range maxPages {
 		first := pageSize
 		if remaining := fetchLimit - len(prs); remaining < first {
 			first = remaining
