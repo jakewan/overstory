@@ -49,6 +49,8 @@ Add the entry under `## [Unreleased]` in the matching category — `Added`, `Cha
 
 Anchor each entry to its introducing PR as a trailing `(#N)` — the PR number, not the issue (the related issue is linked from the PR body instead). Because the number isn't known until the PR exists, the entry can be authored with the tracking-issue number and corrected to the PR number once it's created.
 
+When a PR corrects or refines the behavior of a feature still under `[Unreleased]`, amend that feature's existing entry in place rather than adding a separate `Fixed`/`Changed` line — you don't log a fix for behavior that never shipped, and `[Unreleased]` should describe what will actually ship. The PR's changelog footprint is the in-place refinement; it carries no standalone `(#N)` anchor of its own.
+
 ## Branch Freshness
 
 (extension point: `freshness-response-policy`)
