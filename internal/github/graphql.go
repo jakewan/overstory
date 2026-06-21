@@ -666,9 +666,12 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 // order the authoredSearchQuery aliases consume them (s0..s4). Issues/PRs opened
 // filter on created date (the authored event); reviews and the two engagement
 // categories filter on the item's updated date — an approximation, since search
-// cannot filter by comment/review date. The -author exclusion isolates
-// engagement on others' work from the author's own opened items. Window is one
-// shared RFC3339 UTC pair. The result order is load-bearing and pinned by test.
+// cannot filter by comment/review date. The -author exclusion isolates attention
+// to others' work — peer review and engagement — from the author's own items: it
+// keeps reviewsSubmitted to peer review (GitHub wraps every inline PR comment in a
+// review object, so replies on one's own PR would otherwise inflate it) and the
+// two engagement counts to others' threads. Window is one shared RFC3339 UTC pair.
+// The result order is load-bearing and pinned by test.
 func authoredSearchQueries(repo, author, since, until string) [5]string {
 	created := "created:" + since + ".." + until
 	updated := "updated:" + since + ".." + until
@@ -676,7 +679,7 @@ func authoredSearchQueries(repo, author, since, until string) [5]string {
 	return [5]string{
 		base + " is:issue author:" + author + " " + created,                           // issuesOpened
 		base + " is:pr author:" + author + " " + created,                              // pullRequestsOpened
-		base + " is:pr reviewed-by:" + author + " " + updated,                         // reviewsSubmitted
+		base + " is:pr reviewed-by:" + author + " -author:" + author + " " + updated,  // reviewsSubmitted
 		base + " is:pr commenter:" + author + " -author:" + author + " " + updated,    // pullRequestsEngaged
 		base + " is:issue commenter:" + author + " -author:" + author + " " + updated, // issuesEngaged
 	}

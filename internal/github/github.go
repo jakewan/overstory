@@ -169,9 +169,10 @@ type IssueActivityResult struct {
 // The categories' precision differs and is documented per-category by the
 // reduction's fidelity labels: CommitsAuthored is the default-branch commit count
 // attributed to the author's linked identity; IssuesOpened/PullRequestsOpened
-// count items the author created in the window; ReviewsSubmitted counts PRs the
-// author formally reviewed; PullRequestsEngaged/IssuesEngaged count items the
-// author commented on but did not author.
+// count items the author created in the window; ReviewsSubmitted counts others'
+// PRs the author reviewed (peer review, excluding the author's own PRs);
+// PullRequestsEngaged/IssuesEngaged count items the author commented on but did
+// not author.
 type AuthoredActivityResult struct {
 	CommitsAuthored     int
 	IssuesOpened        int

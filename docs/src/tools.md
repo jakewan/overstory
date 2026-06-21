@@ -87,7 +87,7 @@ Unlike the three reads above it is **author- and window-driven and reads no mani
 | `since`   | string | yes      | —       | Window start, an RFC3339 timestamp.                           |
 | `until`   | string | no       | now     | Window end, an RFC3339 timestamp.                             |
 
-It returns six **decomposed counts** under `counts` — `commitsAuthored`, `issuesOpened`, `pullRequestsOpened`, `reviewsSubmitted`, `pullRequestsEngaged` (commented, not authored), and `issuesEngaged` — each a `{ count, fidelity }` pair, plus the echoed `author`/`since`/`until` and the optional top-level `rateLimit`. The counts are never summed; weighting and the attention verdict stay caller-side.
+It returns six **decomposed counts** under `counts` — `commitsAuthored`, `issuesOpened`, `pullRequestsOpened`, `reviewsSubmitted` (others' PRs), `pullRequestsEngaged` (commented, not authored), and `issuesEngaged` — each a `{ count, fidelity }` pair, plus the echoed `author`/`since`/`until` and the optional top-level `rateLimit`. The counts are never summed; weighting and the attention verdict stay caller-side.
 
 There are **no list/fetch truncation seams** here (these are counts, not bounded lists) and degradation is **all-or-nothing**: any fetch failure surfaces as a tool-call error (a throttle names its retry instant), and an unresolved `author` login is a named error rather than six zeros — a silently-partial count would understate attention. Because it inherits the operator's `gh` credentials, it can measure private repositories the user-rooted contributions query cannot reach.
 

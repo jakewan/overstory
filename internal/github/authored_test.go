@@ -30,7 +30,7 @@ func TestAuthoredSearchQueriesContainQualifiers(t *testing.T) {
 	}{
 		{"issuesOpened", qs[0], []string{repo, "is:issue", "author:alice", created}},
 		{"pullRequestsOpened", qs[1], []string{repo, "is:pr", "author:alice", created}},
-		{"reviewsSubmitted", qs[2], []string{repo, "is:pr", "reviewed-by:alice", updated}},
+		{"reviewsSubmitted", qs[2], []string{repo, "is:pr", "reviewed-by:alice", "-author:alice", updated}},
 		{"pullRequestsEngaged", qs[3], []string{repo, "is:pr", "commenter:alice", "-author:alice", updated}},
 		{"issuesEngaged", qs[4], []string{repo, "is:issue", "commenter:alice", "-author:alice", updated}},
 	} {
