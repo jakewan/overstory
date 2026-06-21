@@ -29,7 +29,7 @@ import (
 const (
 	fidelityCommits  = "default-branch commits whose author is identity-linked to this user; misses squash-merged and email-unlinked commits"
 	fidelityOpened   = "search-index count; approximate and lags for recent windows"
-	fidelityReviews  = "formal reviews on PRs active in the window; approximate versus exact review dates"
+	fidelityReviews  = "peer reviews on others' PRs active in the window (excludes the author's own PRs); approximate versus exact review dates"
 	fidelityPREngage = "comment engagement on PRs active in the window; may miss inline review-thread comments"
 	fidelityIsEngage = "comment engagement on issues active in the window"
 )

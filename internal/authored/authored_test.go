@@ -63,4 +63,18 @@ func TestReduceMapsCountsAndStampsFidelity(t *testing.T) {
 	if facts.Counts.CommitsAuthored.Fidelity == facts.Counts.IssuesOpened.Fidelity {
 		t.Errorf("commit and search fidelity labels are identical; they describe different precision")
 	}
+
+	// The reviews label must state that the count is peer-only — reviews of others'
+	// PRs, excluding the author's own. Without this the consumer cannot tell whether
+	// self-PR review traffic inflates it (the bug this label documents the fix for).
+	reviewsLabel := strings.ToLower(facts.Counts.ReviewsSubmitted.Fidelity)
+	// Pin the self-exclusion meaning, not an incidental word: require "peer" plus an
+	// explicit exclusion of the author's own PRs ("exclud..." + "own"), so a reword
+	// that keeps an "own"-containing word (owner, known) but drops the meaning fails.
+	if !strings.Contains(reviewsLabel, "peer") ||
+		!strings.Contains(reviewsLabel, "exclud") ||
+		!strings.Contains(reviewsLabel, "own") {
+		t.Errorf("reviewsSubmitted fidelity must state it is peer-only and excludes the author's own PRs; got %q",
+			facts.Counts.ReviewsSubmitted.Fidelity)
+	}
 }
