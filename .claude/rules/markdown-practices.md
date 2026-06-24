@@ -20,6 +20,10 @@ Conventions for the user/integrator documentation book (`docs/src/`). These keep
 
 - Write each paragraph as one long line; let the renderer wrap. Don't hard-wrap prose at a fixed column — this matches the PR/commit convention in `pr-conventions.md`.
 
+## Reproducing verbatim content
+
+- When a page reproduces content that itself contains triple-backtick code fences — the reference render skills under `docs/src/guide/render-skills/` reproduce a skill's `SKILL.md` body verbatim — wrap the reproduction in a **four-backtick** outer fence instead of the usual three. A three-backtick outer fence closes at the first inner triple-backtick and the rest of the body mis-renders as page structure. linkcheck2 validates links and anchors, not fence nesting, so the build will not reject this — the page just renders wrong, which makes the convention recall-dependent rather than build-enforced.
+
 ## Tool and fact reference
 
 - The tool/fact reference documents the stable *shape* and points at the Go source (`internal/backlog/`, `internal/summary/`) for field-by-field detail. Don't duplicate struct fields into prose — adding a field to a `Facts` struct shouldn't require a doc edit. Update the reference only when a block is added, removed, or changes meaning (see `CONTRIBUTING.md`).
