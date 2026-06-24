@@ -19,3 +19,5 @@ Thumbs.db
 
 # Claude
 .claude/settings.local.json
+# Linked worktrees Claude Code creates under the repo (embedded git repos, never tracked)
+.claude/worktrees/
