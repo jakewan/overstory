@@ -28,7 +28,7 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       docs: ${{ steps.filter.outputs.docs }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v4
         id: filter
         with:
@@ -49,7 +49,7 @@ jobs:
     if: needs.detect-changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # go-version-file keeps the Go version single-sourced in go.mod;
       # setup-go@v6 enables module caching by default.
@@ -66,7 +66,7 @@ jobs:
     if: needs.detect-changes.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -83,7 +83,7 @@ jobs:
     if: needs.detect-changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # mise installs the pinned mdbook + mdbook-linkcheck2 backend from
       # mise.toml, so CI builds the docs with the same toolchain as local
