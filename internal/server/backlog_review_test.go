@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,12 +38,26 @@ type fakeFetcher struct {
 	// take a different path (counts, not-found, throttle). When nil, the single
 	// authoredResult/authoredErr fields apply — keeping every single-repo test green.
 	authoredByRepo map[string]authoredCanned
+	// authoredCalls counts AuthoredActivity invocations across the fan-out's
+	// goroutines, so a backpressure test can assert "exactly one fetch ran." It is a
+	// pointer because fakeFetcher is copied by value into the interface and on every
+	// value-receiver call — a value atomic would unshare the count (and trip
+	// copylocks). Nil leaves the count untracked.
+	authoredCalls *atomic.Int64
+	// authoredSeq, when non-nil, drives the outcome by call ordinal (1-based) rather
+	// than by repo, so a test can pin behavior that depends on fetch order without
+	// depending on which repo wins a concurrency slot (e.g. "first call throttles, a
+	// later call would author-fail"). Requires authoredCalls to be set.
+	authoredSeq func(call int64) authoredCanned
 }
 
 // authoredCanned is one repo's canned AuthoredActivity outcome for the batch fake.
+// When block is set the call honors the context — it blocks until ctx is done and
+// returns ctx.Err() — so a per-repo timeout test can drive a hung fetch.
 type authoredCanned struct {
 	result github.AuthoredActivityResult
 	err    error
+	block  bool
 }
 
 // withBudget stamps a RateLimit budget onto a result, for batch aggregation tests.
@@ -67,7 +82,14 @@ func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (g
 	return f.pullRequests, f.pullRequestErr
 }
 
-func (f fakeFetcher) AuthoredActivity(_ context.Context, ownerRepo, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+func (f fakeFetcher) AuthoredActivity(ctx context.Context, ownerRepo, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+	var call int64
+	if f.authoredCalls != nil {
+		call = f.authoredCalls.Add(1)
+	}
+	if f.authoredSeq != nil {
+		return resolveCanned(ctx, f.authoredSeq(call))
+	}
 	if f.authoredByRepo != nil {
 		// A missing key is a test-setup omission, not a real fetch: surface it as an
 		// error so a forgotten repo fails the test loudly rather than masquerading as
@@ -76,9 +98,19 @@ func (f fakeFetcher) AuthoredActivity(_ context.Context, ownerRepo, _ string, _,
 		if !ok {
 			return github.AuthoredActivityResult{}, fmt.Errorf("fakeFetcher: no canned authored result for %q", ownerRepo)
 		}
-		return c.result, c.err
+		return resolveCanned(ctx, c)
 	}
 	return f.authoredResult, f.authoredErr
+}
+
+// resolveCanned returns a canned outcome, honoring block by waiting on the context
+// (so a per-repo timeout derived from it fires and yields ctx.Err()).
+func resolveCanned(ctx context.Context, c authoredCanned) (github.AuthoredActivityResult, error) {
+	if c.block {
+		<-ctx.Done()
+		return github.AuthoredActivityResult{}, ctx.Err()
+	}
+	return c.result, c.err
 }
 
 // fixedClock is the injected wall clock; staleness is deterministic under it.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -136,10 +137,15 @@ func TestAuthoredActivityBatchSurfacesPerRepoResults(t *testing.T) {
 }
 
 // TestAuthoredActivityBatchThrottleAggregatesBudget pins the throttle-aware
-// aggregation: one repo throttled, one healthy, one with no budget. The throttled
-// repo degrades to a per-repo marker (the batch does NOT error), and the batch
-// budget reports {Remaining:0, ResetAt:the throttle reset} so a caller is never
-// told it has budget mid-throttle.
+// aggregation: one repo throttled, two others. The throttled repo degrades to a
+// per-repo marker (the batch does NOT error), and the batch budget reports
+// {Remaining:0, ResetAt:the throttle reset} so a caller is never told it has budget
+// mid-throttle — the throttle-wins rule, which holds whether or not the other repos
+// fetched. (That rule is also pinned deterministically at the unit level in
+// internal/authored.) The other repos are asserted loosely on purpose: under
+// backpressure a throttle stops new launches, so a not-yet-started repo may be
+// skipped as not_attempted rather than carrying its counts — scheduler-dependent at
+// concurrency > 1, and not what this test is about.
 func TestAuthoredActivityBatchThrottleAggregatesBudget(t *testing.T) {
 	reset := fixedClock.Add(15 * time.Minute)
 	fetcher := authoredBatchFetcher(map[string]authoredCanned{
@@ -166,8 +172,12 @@ func TestAuthoredActivityBatchThrottleAggregatesBudget(t *testing.T) {
 	if throttled.ResetAt == nil || !throttled.ResetAt.Equal(reset) {
 		t.Errorf("Repos[0].ResetAt = %v, want %v", throttled.ResetAt, reset)
 	}
-	if !facts.Repos[1].Available || !facts.Repos[2].Available {
-		t.Error("the non-throttled repos must still carry counts")
+	// The non-throttled repos either carried their counts or were skipped by
+	// backpressure (not_attempted) — never a hard failure.
+	for _, i := range []int{1, 2} {
+		if r := facts.Repos[i]; !r.Available && r.Unavailable != authored.UnavailableNotAttempted {
+			t.Errorf("Repos[%d] = %+v, want available with counts or not_attempted", i, r)
+		}
 	}
 	if facts.RateLimit == nil {
 		t.Fatal("RateLimit = nil, want the throttle recovery signal")
@@ -260,7 +270,7 @@ func TestAuthoredActivityBatchValidatesInput(t *testing.T) {
 // in-memory session.
 func TestAuthoredActivityBatchCancelledContextErrors(t *testing.T) {
 	fetcher := authoredBatchFetcher(map[string]authoredCanned{"acme/widgets": {result: sixCounts(1, 0, 0, 0, 0, 0)}})
-	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock })
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, authoredBatchConcurrency, authoredBatchPerRepoTimeout)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -292,6 +302,143 @@ func TestAuthoredActivityBatchCanonicalizesSlugWhitespace(t *testing.T) {
 	}
 	if facts.Repos[0].Repo != "acme/widgets" || !facts.Repos[0].Available {
 		t.Errorf("Repos[0] = %+v, want canonicalized acme/widgets available", facts.Repos[0])
+	}
+}
+
+// TestAuthoredActivityBatchBackpressureStopsLaunchAfterThrottle pins the throttle
+// backpressure contract: once any repo's fetch is rate-limited the batch stops
+// launching new fetches rather than amplifying the throttle. Every repo is canned to
+// throttle and concurrency is 1, so the first acquirer throttles and sets the stop
+// before releasing its slot — exactly one fetch runs (asserted via the call counter,
+// since which repo wins the slot is scheduler-chosen), the rest degrade to
+// not_attempted, and the batch is not an error. The aggregated budget reports the
+// throttle's recovery instant.
+func TestAuthoredActivityBatchBackpressureStopsLaunchAfterThrottle(t *testing.T) {
+	reset := fixedClock.Add(15 * time.Minute)
+	var calls atomic.Int64
+	fetcher := fakeFetcher{
+		authoredCalls: &calls,
+		authoredByRepo: map[string]authoredCanned{
+			"acme/a": {err: github.RateLimitedError{ResetAt: reset}},
+			"acme/b": {err: github.RateLimitedError{ResetAt: reset}},
+			"acme/c": {err: github.RateLimitedError{ResetAt: reset}},
+			"acme/d": {err: github.RateLimitedError{ResetAt: reset}},
+		},
+	}
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 1, authoredBatchPerRepoTimeout)
+
+	_, facts, err := handler(context.Background(), nil, authoredActivityBatchInput{
+		Repos:  []string{"acme/a", "acme/b", "acme/c", "acme/d"},
+		Author: "alice",
+		Since:  "2026-05-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("fetch count = %d, want 1 (a throttle stops new launches)", got)
+	}
+	rateLimited, notAttempted := 0, 0
+	for _, r := range facts.Repos {
+		switch r.Unavailable {
+		case authored.UnavailableRateLimited:
+			rateLimited++
+		case authored.UnavailableNotAttempted:
+			notAttempted++
+		default:
+			t.Errorf("repo %s: unexpected marker %q (available=%v)", r.Repo, r.Unavailable, r.Available)
+		}
+	}
+	if rateLimited != 1 || notAttempted != 3 {
+		t.Errorf("markers = %d rate_limited / %d not_attempted, want 1 / 3", rateLimited, notAttempted)
+	}
+	if facts.RateLimit == nil || facts.RateLimit.Remaining != 0 || !facts.RateLimit.ResetAt.Equal(reset) {
+		t.Errorf("RateLimit = %+v, want {Remaining:0, ResetAt:%v}", facts.RateLimit, reset)
+	}
+}
+
+// TestAuthoredActivityBatchPerRepoTimeoutDegradesSlowRepo pins the per-repo deadline:
+// a repo whose fetch hangs is bounded by a deadline derived from the batch context,
+// so it degrades to its own fetch_failed marker (not a misclassification, not a
+// whole-batch error) while a healthy repo running alongside it still returns counts.
+// The timeout is generous (50ms) so a healthy repo's instant synchronous return
+// cannot trip it, even under the race detector.
+func TestAuthoredActivityBatchPerRepoTimeoutDegradesSlowRepo(t *testing.T) {
+	fetcher := fakeFetcher{authoredByRepo: map[string]authoredCanned{
+		"acme/slow": {block: true},
+		"acme/fast": {result: sixCounts(3, 0, 0, 0, 0, 0)},
+	}}
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 2, 50*time.Millisecond)
+
+	_, facts, err := handler(context.Background(), nil, authoredActivityBatchInput{
+		Repos:  []string{"acme/slow", "acme/fast"},
+		Author: "alice",
+		Since:  "2026-05-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v (a per-repo timeout must not fail the batch)", err)
+	}
+	byRepo := make(map[string]authored.RepoActivity, len(facts.Repos))
+	for _, r := range facts.Repos {
+		byRepo[r.Repo] = r
+	}
+	if slow := byRepo["acme/slow"]; slow.Available || slow.Unavailable != authored.UnavailableFetchFailed {
+		t.Errorf("slow repo = %+v, want unavailable fetch_failed", slow)
+	}
+	if fast := byRepo["acme/fast"]; !fast.Available || fast.Counts == nil || fast.Counts.CommitsAuthored.Count != 3 {
+		t.Errorf("fast repo = %+v, want available with counts", fast)
+	}
+}
+
+// TestAuthoredActivityBatchThrottlePreemptsAuthorEscalation pins the accepted
+// interaction between backpressure and the whole-batch author contract: an
+// unresolvable author normally escalates to one named error, but when a throttle
+// stops the launch first, the author-not-found fetch never runs, so the batch returns
+// a degraded partial (a throttle + not_attempted markers) rather than the author
+// error. Keyed on call ordinal, not repo, so it does not depend on which repo wins
+// the slot: the first fetch throttles; a later fetch would author-fail but is
+// pre-empted.
+func TestAuthoredActivityBatchThrottlePreemptsAuthorEscalation(t *testing.T) {
+	reset := fixedClock.Add(10 * time.Minute)
+	var calls atomic.Int64
+	fetcher := fakeFetcher{
+		authoredCalls: &calls,
+		authoredSeq: func(call int64) authoredCanned {
+			if call == 1 {
+				return authoredCanned{err: github.RateLimitedError{ResetAt: reset}}
+			}
+			return authoredCanned{err: github.ErrAuthorNotFound}
+		},
+	}
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 1, authoredBatchPerRepoTimeout)
+
+	res, facts, err := handler(context.Background(), nil, authoredActivityBatchInput{
+		Repos:  []string{"acme/a", "acme/b", "acme/c"},
+		Author: "ghost",
+		Since:  "2026-05-01T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("got whole-batch error %v, want a degraded partial (a throttle pre-empts author escalation)", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatal("IsError = true, want false")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("fetch count = %d, want 1 (the lurking author_not_found never ran)", got)
+	}
+	rateLimited, notAttempted := 0, 0
+	for _, r := range facts.Repos {
+		switch r.Unavailable {
+		case authored.UnavailableRateLimited:
+			rateLimited++
+		case authored.UnavailableNotAttempted:
+			notAttempted++
+		default:
+			t.Errorf("repo %s: unexpected marker %q (available=%v)", r.Repo, r.Unavailable, r.Available)
+		}
+	}
+	if rateLimited != 1 || notAttempted != 2 {
+		t.Errorf("markers = %d rate_limited / %d not_attempted, want 1 / 2", rateLimited, notAttempted)
 	}
 }
 

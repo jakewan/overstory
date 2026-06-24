@@ -19,6 +19,13 @@ const (
 	UnavailableRateLimited    = "rate_limited"
 	UnavailableFetchFailed    = "fetch_failed"
 	UnavailableAuthorNotFound = "author_not_found"
+	// UnavailableNotAttempted marks a repo the fan-out deliberately did not fetch:
+	// once one repo is throttled the batch stops launching new fetches (backpressure,
+	// so it does not amplify the throttle it just hit), and every not-yet-started repo
+	// is recorded as not_attempted rather than fetch_failed — it is a deliberate skip,
+	// not a failure. Which repos are skipped is an arbitrary subset of those not yet
+	// started, not the request-order tail.
+	UnavailableNotAttempted = "not_attempted"
 )
 
 // BatchEntry is one repo's fan-out outcome, the neutral input the server fills
