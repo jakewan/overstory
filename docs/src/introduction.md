@@ -8,10 +8,12 @@ This book is the user/integrator documentation: how to install the server, regis
 
 ## Documentation Structure
 
-- **Guide** — [Installation & Registration](./guide/installation.md): build and install the binary, the `gh`-authentication prerequisite, and how to register Overstory as an MCP server.
+- **Guide**
+  - [Installation & Registration](./guide/installation.md) — build and install the binary, the `gh`-authentication prerequisite, and how to register Overstory as an MCP server.
+  - [Rendering the Facts](./guide/rendering.md) — the consumer side of the reduce/render split: how a caller turns a fact payload into a report, with two reference render skills ([Project Summary](./guide/render-skills/project-summary.md), [Backlog Review](./guide/render-skills/backlog-review.md)) to adapt.
 - **Reference**
   - [Manifests](./manifest.md) — how a repository's conventions are discovered, keyed, and deep-merged, plus the full block-by-block schema.
-  - [Tools & Facts](./tools.md) — the two tools, their parameters, and the structured facts they return.
+  - [Tools & Facts](./tools.md) — the tools, their parameters, and the structured facts they return.
 
 ## Getting Started
 
