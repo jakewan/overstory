@@ -83,6 +83,12 @@ func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (g
 }
 
 func (f fakeFetcher) AuthoredActivity(ctx context.Context, ownerRepo, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+	// authoredSeq is keyed on the call ordinal, which only advances when authoredCalls
+	// is set — without it every call would see ordinal 0 and silently misbehave. Fail
+	// loudly on that setup error rather than producing misleading results.
+	if f.authoredSeq != nil && f.authoredCalls == nil {
+		panic("fakeFetcher: authoredSeq requires authoredCalls to be set")
+	}
 	var call int64
 	if f.authoredCalls != nil {
 		call = f.authoredCalls.Add(1)

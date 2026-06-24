@@ -498,7 +498,7 @@ func authoredActivityBatchTool() *mcp.Tool {
 	minRepos, maxRepos := 1, authoredBatchMaxRepos
 	return &mcp.Tool{
 		Name:        "authored_activity_batch",
-		Description: "Measure how much one GitHub user authored and engaged with across several repositories over a caller-supplied time window — the batched form of authored_activity. Given a list of owner/repo and one author login, it fans out the same six decomposed counts per repository (commitsAuthored, issuesOpened, pullRequestsOpened, reviewsSubmitted, pullRequestsEngaged, issuesEngaged — each with its per-category fidelity label) and returns one entry per repository in request order. Repositories are independent: a missing or failed one degrades to its own per-repo marker (not_found / fetch_failed) without sinking the others' counts, and the batch surfaces a single aggregated rate-limit budget — the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. A rate_limited repository additionally trips backpressure: to avoid amplifying the rate limit the batch stops launching new fetches, so an arbitrary subset of the not-yet-started repositories returns not_attempted (a deliberate skip, not a failure — in-flight fetches still complete); this can pre-empt the whole-batch author error below when a throttle precedes the author's resolution. Because the author login resolves globally (independent of repository), an unresolvable login is one whole-batch error naming it rather than per-repo markers — but a login that resolves to a real, unrelated account yields honest zeros that no tool can distinguish from genuine inactivity. The tool reads no manifest conventions and inherits the operator's gh credentials, so it can measure private repositories. It returns per-repo facts only — summing across repositories, ranking, and the attention verdict stay caller-side.",
+		Description: "Measure how much one GitHub user authored and engaged with across several repositories over a caller-supplied time window — the batched form of authored_activity. Given a list of owner/repo and one author login, it fans out the same six decomposed counts per repository (commitsAuthored, issuesOpened, pullRequestsOpened, reviewsSubmitted, pullRequestsEngaged, issuesEngaged — each with its per-category fidelity label) and returns one entry per repository in request order. Repositories are independent — each entry is either the counts or one of four per-repo markers: not_found, rate_limited, fetch_failed, not_attempted. A not_found or fetch_failed repository degrades to its own marker without sinking the others' counts, and the batch surfaces a single aggregated rate-limit budget — the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. A rate_limited repository additionally trips backpressure: to avoid amplifying the rate limit the batch stops launching new fetches, so an arbitrary subset of the not-yet-started repositories returns not_attempted (a deliberate skip, not a failure — in-flight fetches still complete); this can pre-empt the whole-batch author error below when a throttle precedes the author's resolution. Because the author login resolves globally (independent of repository), an unresolvable login is one whole-batch error naming it rather than per-repo markers — but a login that resolves to a real, unrelated account yields honest zeros that no tool can distinguish from genuine inactivity. The tool reads no manifest conventions and inherits the operator's gh credentials, so it can measure private repositories. It returns per-repo facts only — summing across repositories, ranking, and the attention verdict stay caller-side.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -608,12 +608,19 @@ func validateRepos(in []string) ([]string, error) {
 // deadline so a hung repo degrades to its own fetch_failed without stalling the rest.
 func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) []authored.BatchEntry {
 	entries := make([]authored.BatchEntry, len(repos))
-	// Guard the precondition: concurrency must be at least 1. A zero buffer makes an
-	// unbuffered semaphore (every send blocks forever, hanging the handler) and a
-	// negative one panics at make. Production wires a positive const, so this only
-	// catches a future caller misconfiguring an otherwise-trusted internal parameter.
+	// Guard two preconditions on the tuning parameters, so a future caller
+	// misconfiguring an otherwise-trusted internal parameter degrades to a safe
+	// default rather than a surprising failure. Production wires positive consts.
+	// concurrency must be at least 1: a zero buffer makes an unbuffered semaphore
+	// (every send blocks forever, hanging the handler) and a negative one panics at
+	// make. A non-positive perRepoTimeout would make context.WithTimeout fire an
+	// immediate deadline, degrading every repo to fetch_failed; fall back to the
+	// default budget instead.
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	if perRepoTimeout <= 0 {
+		perRepoTimeout = authoredBatchPerRepoTimeout
 	}
 	sem := make(chan struct{}, concurrency)
 	// stopLaunch is the throttle backpressure signal: once any repo's fetch returns a
