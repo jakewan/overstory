@@ -63,7 +63,7 @@ Two things to notice. The factual sections (`Active Milestones`, `Hygiene Signal
 
 The example above fits comfortably under any limit — the repository has four open issues. A real backlog does not, and that is where the caller's most important discipline lives: **a truncated result is a lower bound, never a complete picture.**
 
-Every block surfaces this explicitly so the caller can tell incomplete data from complete:
+Truncation is surfaced explicitly, never silently, so the caller can tell incomplete data from complete. Each flag appears on the blocks where its kind of truncation can occur:
 
 - `fetchTruncated` — the scan window didn't cover every open issue, so counts themselves are a floor.
 - `listTruncated` — more matches exist than were listed under the call's `limit`.
