@@ -36,6 +36,14 @@ In priority order:
 5. **Test coverage** — new production `.go` files should have `_test.go` coverage. Tests should describe behavior from the caller's perspective (what), not mirror implementation (how), and cover invalid input and error paths, not just the happy path.
 6. **Focus** — every change should serve the PR's stated purpose; flag unrelated drive-by changes.
 
+## Reviewing documentation changes
+
+Overstory ships an mdbook under `docs/src/`. For PRs that touch it:
+
+- **Build-enforced conventions — don't re-flag.** The `mdbook` build (linkcheck2 backend) fails CI on broken intra-book links, bad anchors, or a page missing from `SUMMARY.md`; don't speculatively flag those. Prose is one long line per paragraph by convention — don't flag the absence of fixed-column wrapping.
+- **Don't ask for more struct-field prose.** The tool/fact reference documents the stable *shape* and points at the Go source for field-level detail. Flag prose that enumerates a `Facts` struct's fields (it rots as fields are added); don't request additional field-by-field documentation.
+- **Reference render skills are verbatim snapshots.** The pages under `docs/src/guide/render-skills/` reproduce skills maintained in the operator's own agent configuration, verbatim, as adaptable examples (each carries a provenance stamp saying so). Flag a reproduction that diverges from a faithful copy, or a broken outer code fence — but do **not** flag wording, omissions, or improvements *within* the snapshot body: that text is a faithful copy of an artifact maintained elsewhere, so "fixing" it here would break the snapshot.
+
 ## Personal-details check
 
 This is a public repository. Flag any PR that introduces personal or identifying details into code, comments, commit messages, or fixtures: real names, email addresses, absolute home-directory paths (`/home/<user>/…`), machine or host names, or private/internal project names. Necessary attribution (the LICENSE copyright line, git authorship) is fine.
