@@ -44,6 +44,8 @@ This server speaks JSON-RPC over stdio.
 - Tests describe **what** the code does from the caller's perspective, not **how**. An interface should exist because a test needs to substitute an implementation, not as speculative abstraction.
 - Exercise tool behavior through an in-memory client/server session (`mcp.NewInMemoryTransports`), asserting on the structured result — and on `IsError` for the error paths.
 - The github layer's wire-decode structs are drift-checked against their GraphQL query by `TestQueryDecodeContract`, which only inspects the structs its cases enumerate. When you add a query or a decode struct, register it there — an unregistered decode type is silently unguarded, the exact drift this test exists to catch.
+- Don't assume goroutine scheduling in concurrency tests. A bounded fan-out (e.g. `fanOutAuthored` in `internal/server`) acquires its semaphore slots in scheduler-chosen order, not request order, so a positional assertion (`Repos[0]` threw, `Repos[1]` succeeded) is a race. Assert an order-independent invariant instead — a shared call counter (`*atomic.Int64` on the fake), or a setup where every path is equivalent so order can't change the outcome.
+- Stress-run new or changed concurrency tests under `go test -race -count=N` before trusting them. A single green run hides a scheduler-dependent flake; the race detector plus repeated runs surfaces it. This also guards *existing* tests whose timing assumptions a newly added shared-state gate (a stop flag, a backpressure signal) can silently invalidate.
 
 ## Documentation
 
