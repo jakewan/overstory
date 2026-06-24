@@ -44,4 +44,4 @@ If Overstory should survey repositories whose conventions live in a manifest fil
 
 ## Confirm it works
 
-Once registered, the agent exposes two tools, `backlog_review` and `project_summary`, each taking an `owner` and `repo`. Call either against a repository you can read with `gh`; it returns structured facts (see [Tools & Facts](../tools.md)). No tool modifies anything — both are read-only surveys.
+Once registered, the agent exposes Overstory's read-only tools — `backlog_review`, `project_summary`, `milestone_tracks`, `authored_activity`, and `authored_activity_batch` (see [Tools & Facts](../tools.md) for their parameters and the facts they return). Call one against a repository you can read with `gh`; it returns structured facts. No tool modifies anything — they are all read-only surveys.
