@@ -105,6 +105,8 @@ func TestQueryDecodeContract(t *testing.T) {
 		{"milestones rate limit", milestonesQuery, rateLimitNode{}},
 		{"pull-request connection", pullRequestsQuery, pullRequestsConnection{}},
 		{"pull-request rate limit", pullRequestsQuery, rateLimitNode{}},
+		{"pull-request activity connection", prActivityQuery, prActivityConnection{}},
+		{"pull-request activity rate limit", prActivityQuery, rateLimitNode{}},
 		{"authored search data", authoredSearchQuery, authoredSearchData{}},
 		{"authored search rate limit", authoredSearchQuery, rateLimitNode{}},
 		{"commit history data", commitHistoryQuery, commitHistoryData{}},
@@ -164,6 +166,7 @@ func TestQueryStructuralKeys(t *testing.T) {
 		{"activity", activityQuery, []string{"repository", "issues", "rateLimit"}},
 		{"milestones", milestonesQuery, []string{"repository", "milestones", "rateLimit"}},
 		{"pull requests", pullRequestsQuery, []string{"repository", "pullRequests", "rateLimit"}},
+		{"pull-request activity", prActivityQuery, []string{"repository", "pullRequests", "rateLimit"}},
 		{"authored search", authoredSearchQuery, []string{"rateLimit", "user", "s0", "s1", "s2", "s3", "s4"}},
 		{"commit history", commitHistoryQuery, []string{"repository", "defaultBranchRef", "rateLimit"}},
 	} {

@@ -140,6 +140,26 @@ const pullRequestsQuery = `query($owner:String!,$name:String!,$first:Int!,$after
   }
 }`
 
+// prActivityQuery fetches a page of the open-and-closed/merged pull-request
+// activity window for the change-request closure-ratio (PR-trajectory) reduction,
+// most-recent-update first. It mirrors activityQuery's shape for PRs: the
+// DESC-by-updatedAt order lets ListPullRequestsUpdatedSince stop once it reaches a
+// PR updated before the window floor (every PR opened or closed in the window has
+// updatedAt >= that event >= the floor). states includes MERGED because a merged
+// PR has state MERGED, not CLOSED — both carry a non-null closedAt, so closedAt
+// captures all outflow (merged and closed-without-merge alike). The node selection
+// is deliberately lean — number, createdAt, closedAt, updatedAt only. closedAt is
+// null for an open (or reopened) PR.
+const prActivityQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    pullRequests(states:[OPEN,CLOSED,MERGED], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:DESC}){
+      pageInfo{ hasNextPage endCursor }
+      nodes{ number createdAt closedAt updatedAt }
+    }
+  }
+}`
+
 // authoredSearchQuery resolves the author's user id and the five search counts in
 // one root-level request (not repository-rooted — search and user are root
 // fields, so this decodes via doRaw, not do). Each search reads only issueCount
@@ -288,6 +308,23 @@ func (f *GraphQLFetcher) queryActivity(ctx context.Context, token, owner, name s
 		return activityConnection{}, nil, fmt.Errorf("decoding GitHub activity for %s/%s: %w", owner, name, derr)
 	}
 	return data.Issues, budget, nil
+}
+
+// queryPRActivity fetches one page of the open-and-closed/merged pull-request
+// activity window for the PR-trajectory reduction, decoding the shared spine's
+// payload into the lean PR-activity connection.
+func (f *GraphQLFetcher) queryPRActivity(ctx context.Context, token, owner, name string, first int, after *string) (prActivityConnection, *RateLimit, error) {
+	repo, budget, err := f.do(ctx, token, prActivityQuery, queryVars(owner, name, first, after), owner, name)
+	if err != nil {
+		return prActivityConnection{}, nil, err
+	}
+	var data struct {
+		PullRequests prActivityConnection `json:"pullRequests"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return prActivityConnection{}, nil, fmt.Errorf("decoding GitHub pull-request activity for %s/%s: %w", owner, name, derr)
+	}
+	return data.PullRequests, budget, nil
 }
 
 // queryVars builds the GraphQL variables shared by both fetch shapes; after is
@@ -456,6 +493,78 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 		// connection was drained. Every other exit leaves the window unproven.
 		Truncated: !crossedFloor && !exhausted,
 		RateLimit: budget,
+	}, nil
+}
+
+// ListPullRequestsUpdatedSince fetches the pull requests updated at or after
+// `since`, newest-update-first, up to fetchLimit, for the change-request
+// closure-ratio (PR-trajectory) reduction. It is the PR analog of
+// ListIssuesUpdatedSince: it pages until it observes a PR updated before `since`
+// — the window floor, past which no in-window open or close can sort — or the
+// connection is exhausted. Truncated is reported floor/exhaustion-driven, not
+// stop-reason-driven, so the trajectory counts are never reported as complete when
+// they are a lower bound.
+func (f *GraphQLFetcher) ListPullRequestsUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (PullRequestActivityResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return PullRequestActivityResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return PullRequestActivityResult{}, err
+	}
+
+	var (
+		activities   []PullRequestActivity
+		cursor       *string
+		budget       *RateLimit
+		crossedFloor bool // saw a PR updated before the floor: everything in-window precedes it
+		exhausted    bool // drained the connection: nothing more to fetch
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(activities); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := f.queryPRActivity(ctx, token, owner, name, first, cursor)
+		if qerr != nil {
+			return PullRequestActivityResult{}, qerr
+		}
+		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
+		for _, nd := range conn.Nodes {
+			if nd.UpdatedAt.Before(since) {
+				crossedFloor = true
+				break
+			}
+			activities = append(activities, nd.toActivity())
+		}
+		if crossedFloor {
+			break
+		}
+		if !conn.PageInfo.HasNextPage {
+			exhausted = true // connection drained: coverage is complete
+			break
+		}
+		if conn.PageInfo.EndCursor == "" {
+			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
+		}
+		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
+		}
+		next := conn.PageInfo.EndCursor
+		cursor = &next
+		if len(activities) >= fetchLimit {
+			break
+		}
+	}
+	return PullRequestActivityResult{
+		Activities: activities,
+		Truncated:  !crossedFloor && !exhausted,
+		RateLimit:  budget,
 	}, nil
 }
 
@@ -1139,6 +1248,32 @@ type issueActivityNode struct {
 
 func (n issueActivityNode) toActivity() IssueActivity {
 	return IssueActivity{Number: n.Number, CreatedAt: n.CreatedAt, ClosedAt: n.ClosedAt}
+}
+
+// prActivityConnection is the lean pull-request connection the PR-trajectory fetch
+// decodes: pagination plus the open/close/update timestamps, no per-PR payload.
+type prActivityConnection struct {
+	PageInfo struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []prActivityNode `json:"nodes"`
+}
+
+// prActivityNode decodes one lean PR-activity node. ClosedAt is a value (not a
+// pointer) time: GitHub returns null for an open or reopened PR, and time.Time's
+// UnmarshalJSON treats null as a no-op, leaving the zero time — which
+// PullRequestActivity reads as "currently open". A merged PR carries a non-null
+// closedAt, so it counts as outflow alongside a closed-without-merge PR.
+type prActivityNode struct {
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"createdAt"`
+	ClosedAt  time.Time `json:"closedAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (n prActivityNode) toActivity() PullRequestActivity {
+	return PullRequestActivity{Number: n.Number, CreatedAt: n.CreatedAt, ClosedAt: n.ClosedAt}
 }
 
 // milestonesConnection is the open-milestone connection: pagination, the

@@ -24,6 +24,7 @@ type Facts struct {
 	Overlap      OverlapFacts             `json:"overlap"`
 	CrossRef     CrossRefFacts            `json:"crossRef"`
 	Trajectory   TrajectoryFacts          `json:"trajectory"`
+	PRTrajectory PRTrajectoryFacts        `json:"prTrajectory"`
 	CriticalPath criticalpath.Facts       `json:"criticalPath"`
 	OpenIssueSet reduce.OpenIssueSetFacts `json:"openIssueSet"`
 	RateLimit    *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
