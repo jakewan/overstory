@@ -37,4 +37,12 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	if _, err := f.ListOpenPullRequests(ctx, repo, 5); err != nil {
 		t.Errorf("ListOpenPullRequests against %s: %v", repo, err)
 	}
+	// The REST issue-events fetch has no struct↔query contract test (it decodes a
+	// bare JSON array, not a GraphQL query), so this live call is the only guard that
+	// the real REST payload shape still maps into IssueEvent.
+	if res, err := f.ListIssueEvents(ctx, repo, time.Now().AddDate(0, 0, -90), 50); err != nil {
+		t.Errorf("ListIssueEvents against %s: %v", repo, err)
+	} else if len(res.Events) > 0 && res.Events[0].EventID == 0 {
+		t.Errorf("ListIssueEvents against %s decoded a zero event id — the REST payload shape may have drifted", repo)
+	}
 }
