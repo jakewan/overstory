@@ -159,6 +159,30 @@ type IssueActivityResult struct {
 	RateLimit  *RateLimit
 }
 
+// PullRequestActivity is the minimal projection of a pull request the PR-
+// trajectory reduction needs: its number and its open/close instants. ClosedAt is
+// the zero time when the PR is currently open, and is populated for both a merged
+// PR and one closed without merge (merging closes the PR), so it captures all
+// outflow — the PR analog of IssueActivity.ClosedAt. CreatedAt and ClosedAt are
+// UTC, as the GraphQL API returns them.
+type PullRequestActivity struct {
+	Number    int       `json:"number"`
+	CreatedAt time.Time `json:"createdAt"`
+	ClosedAt  time.Time `json:"closedAt"`
+}
+
+// PullRequestActivityResult carries the pull requests fetched for the PR-
+// trajectory reduction — those updated at or after the requested instant, open
+// and closed/merged alike. Truncated is true when the fetch cap was reached before
+// the activity window was fully covered, so the trajectory counts derived from it
+// are lower bounds, not exact; it is the fetch's only truncation seam. RateLimit
+// is the most-recent budget snapshot, or nil when the response carried none.
+type PullRequestActivityResult struct {
+	Activities []PullRequestActivity
+	Truncated  bool
+	RateLimit  *RateLimit
+}
+
 // AuthoredActivityResult carries the decomposed authored/engagement counts for
 // one user in one repository over a bounded window: the six categories the
 // attention-audit consumer reads, kept as separate numbers (never summed) so the
@@ -236,7 +260,11 @@ type IssueEventsResult struct {
 // network. ListOpenIssues returns the open-issue grooming window
 // (newest-activity-last, up to fetchLimit); ListIssuesUpdatedSince returns the
 // lean open-and-closed activity window updated at or after `since` (up to
-// fetchLimit), feeding the creation-vs-closure trajectory; ListOpenMilestones
+// fetchLimit), feeding the creation-vs-closure trajectory;
+// ListPullRequestsUpdatedSince returns the lean open-and-closed/merged
+// pull-request activity window updated at or after `since` (up to fetchLimit),
+// feeding the change-request closure-ratio (PR-trajectory) reduction;
+// ListOpenMilestones
 // returns the open milestones with their authoritative open/closed counts, for
 // the orientation reduction's milestone-progress view; ListOpenPullRequests
 // returns the open pull requests with draft state, head branch, and CI rollup,
@@ -250,6 +278,7 @@ type IssueEventsResult struct {
 type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
+	ListPullRequestsUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (PullRequestActivityResult, error)
 	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)
 	ListOpenPullRequests(ctx context.Context, ownerRepo string, fetchLimit int) (PullRequestListResult, error)
 	AuthoredActivity(ctx context.Context, ownerRepo, author string, since, until time.Time) (AuthoredActivityResult, error)

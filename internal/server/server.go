@@ -161,7 +161,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), a pull-request-trajectory block (for each of the same lookback windows, the pull requests opened, closed, and net opened-minus-closed — the change-request closure-ratio signal for whether the project keeps pace with incoming PRs — over a dedicated open-and-closed/merged PR fetch reusing the trajectory windows; closed counts both merged and closed-without-merge, and the block returns these counts rather than a computed ratio for the caller to derive; like the issue trajectory it is aggregate, not affected by limit, and marks itself unavailable if its fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -237,10 +237,15 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
 
-		// Trajectory needs a second fetch (closed issues too); a failure there
-		// degrades the block rather than failing the whole review, since the other
-		// six blocks already reduced the successful open-issue fetch.
-		trajectory, budget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, result.RateLimit, n, now)
+		// Trajectory and PR-trajectory each need their own second fetch (closed/merged
+		// items too); a failure in either degrades only its own block rather than
+		// failing the whole review, since the open-issue blocks already reduced the
+		// successful open fetch. Each returns its own fetch's budget so the handler can
+		// pick the tightest across all three — a degraded fetch's zero-remaining throttle
+		// wins, so a self-pacing caller is never told it has budget at the moment it was
+		// throttled.
+		trajectory, trajBudget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
+		prTrajectory, prTrajBudget := reducePRTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
 
 		return nil, backlog.Facts{
 			Repo:         ownerRepo,
@@ -252,29 +257,31 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			Overlap:      overlap,
 			CrossRef:     crossref,
 			Trajectory:   trajectory,
+			PRTrajectory: prTrajectory,
 			CriticalPath: criticalPath,
 			// The full fetched open-issue window, never capped by in.Limit: a caller
 			// resolves a deferred issue's bodyRefs against this set, so a real open
 			// blocker beyond any list cap must still appear here.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
-			RateLimit:    mapRateLimit(budget),
+			RateLimit:    mapRateLimit(tightestBudget(result.RateLimit, trajBudget, prTrajBudget)),
 		}, nil
 	}
 }
 
 // reduceTrajectory runs the trajectory reduction's own fetch — issues updated
 // since the widest window, open and closed — and reduces it, degrading to an
-// unavailable block on failure rather than failing the whole review. It also
-// returns the rate-limit budget to surface: the trajectory fetch's fresher budget
-// on success; on a rate-limit degrade, the throttle's recovery signal (Remaining
-// 0 plus its reset) rather than the now-stale open-fetch budget that would tell a
-// caller "you have budget" at the moment it was throttled; on any other degrade,
-// the open fetch's budget (the last successful read).
-func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.TrajectoryConfig, openBudget *github.RateLimit, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
+// unavailable block on failure rather than failing the whole review. It returns
+// its own fetch's budget (like summaryMilestones/summaryPullRequests do), leaving
+// the cross-fetch selection to the handler's tightestBudget: the activity fetch's
+// budget on success; on a rate-limit degrade, the throttle's recovery signal
+// (Remaining 0 plus its reset) so tightestBudget surfaces it over any healthy read;
+// on any other degrade, nil (no fresh observation), so tightestBudget falls back to
+// the other fetches' budgets.
+func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.TrajectoryConfig, n time.Time, now func() time.Time) (backlog.TrajectoryFacts, *github.RateLimit) {
 	since := n.UTC().AddDate(0, 0, -maxInt(cfg.Windows))
 	activity, err := fetcher.ListIssuesUpdatedSince(ctx, ownerRepo, since, cfg.FetchLimit)
 	if err == nil {
-		return backlog.ReduceTrajectory(activity.Activities, cfg.Windows, activity.Truncated, n), freshestBudget(openBudget, activity.RateLimit)
+		return backlog.ReduceTrajectory(activity.Activities, cfg.Windows, activity.Truncated, n), activity.RateLimit
 	}
 	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return backlog.TrajectoryFacts{Available: false, Unavailable: "rate_limited", Windows: []backlog.TrajectoryWindow{}},
@@ -282,7 +289,28 @@ func reduceTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo str
 	}
 	// The cause may name internal detail; keep it on stderr, off the caller channel.
 	log.Printf("overstory: trajectory fetch for %s: %v", ownerRepo, err)
-	return backlog.TrajectoryFacts{Available: false, Unavailable: "fetch_failed", Windows: []backlog.TrajectoryWindow{}}, openBudget
+	return backlog.TrajectoryFacts{Available: false, Unavailable: "fetch_failed", Windows: []backlog.TrajectoryWindow{}}, nil
+}
+
+// reducePRTrajectory runs the change-request closure-ratio reduction's own fetch —
+// pull requests updated since the widest window, open and closed/merged — and
+// reduces it, mirroring reduceTrajectory's degrade and own-budget contract: it
+// reuses the same trajectory windows (issue and PR throughput read over the same
+// lookbacks so a caller can compare them) and degrades only its own block on
+// failure.
+func reducePRTrajectory(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.TrajectoryConfig, n time.Time, now func() time.Time) (backlog.PRTrajectoryFacts, *github.RateLimit) {
+	since := n.UTC().AddDate(0, 0, -maxInt(cfg.Windows))
+	activity, err := fetcher.ListPullRequestsUpdatedSince(ctx, ownerRepo, since, cfg.FetchLimit)
+	if err == nil {
+		return backlog.ReducePRTrajectory(activity.Activities, cfg.Windows, activity.Truncated, n), activity.RateLimit
+	}
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+		return backlog.PRTrajectoryFacts{Available: false, Unavailable: "rate_limited", Windows: []backlog.PRTrajectoryWindow{}},
+			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
+	}
+	// The cause may name internal detail; keep it on stderr, off the caller channel.
+	log.Printf("overstory: PR-trajectory fetch for %s: %v", ownerRepo, err)
+	return backlog.PRTrajectoryFacts{Available: false, Unavailable: "fetch_failed", Windows: []backlog.PRTrajectoryWindow{}}, nil
 }
 
 // maxInt returns the largest of xs. Trajectory windows are validated non-empty
@@ -296,16 +324,6 @@ func maxInt(xs []int) int {
 		}
 	}
 	return m
-}
-
-// freshestBudget picks the budget to report across the two fetches: the
-// trajectory fetch is the later observation, so its budget wins when present; a
-// nil (that fetch carried no budget) falls back to the open fetch's.
-func freshestBudget(open, trajectory *github.RateLimit) *github.RateLimit {
-	if trajectory != nil {
-		return trajectory
-	}
-	return open
 }
 
 // rateLimitResetTime resolves a throttle's recovery signal to an absolute

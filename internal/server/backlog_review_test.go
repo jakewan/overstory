@@ -23,16 +23,18 @@ import (
 // that don't care about trajectory are unaffected. The milestone* fields play
 // the same role for the project_summary milestone fetch.
 type fakeFetcher struct {
-	result         github.IssueListResult
-	err            error
-	activityResult github.IssueActivityResult
-	activityErr    error
-	milestones     github.MilestoneListResult
-	milestonesErr  error
-	pullRequests   github.PullRequestListResult
-	pullRequestErr error
-	authoredResult github.AuthoredActivityResult
-	authoredErr    error
+	result           github.IssueListResult
+	err              error
+	activityResult   github.IssueActivityResult
+	activityErr      error
+	prActivityResult github.PullRequestActivityResult
+	prActivityErr    error
+	milestones       github.MilestoneListResult
+	milestonesErr    error
+	pullRequests     github.PullRequestListResult
+	pullRequestErr   error
+	authoredResult   github.AuthoredActivityResult
+	authoredErr      error
 	// authoredByRepo drives the batch fan-out: AuthoredActivity returns the canned
 	// outcome keyed by owner/repo when this is non-nil, so each repo in a batch can
 	// take a different path (counts, not-found, throttle). When nil, the single
@@ -92,6 +94,10 @@ func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.
 
 func (f fakeFetcher) ListIssuesUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.IssueActivityResult, error) {
 	return f.activityResult, f.activityErr
+}
+
+func (f fakeFetcher) ListPullRequestsUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.PullRequestActivityResult, error) {
+	return f.prActivityResult, f.prActivityErr
 }
 
 func (f fakeFetcher) ListOpenMilestones(_ context.Context, _ string, _ int) (github.MilestoneListResult, error) {
@@ -1162,6 +1168,148 @@ func activityIssue(num, createdDaysAgo, closedDaysAgo int) github.IssueActivity 
 		a.ClosedAt = daysAgo(closedDaysAgo)
 	}
 	return a
+}
+
+// prActivity builds a pull-request-activity record for the PR-trajectory
+// reduction's fetch. closedDaysAgo < 0 means still open (zero ClosedAt); otherwise
+// the PR closed (merged or closed-without-merge) that many days before the fixed
+// clock.
+func prActivity(num, openedDaysAgo, closedDaysAgo int) github.PullRequestActivity {
+	a := github.PullRequestActivity{Number: num, CreatedAt: daysAgo(openedDaysAgo)}
+	if closedDaysAgo >= 0 {
+		a.ClosedAt = daysAgo(closedDaysAgo)
+	}
+	return a
+}
+
+// TestBacklogReviewSurfacesPRTrajectory pins the change-request closure-ratio
+// grooming signal: given a manifest declaring lookback windows, the tool counts
+// pull requests opened and closed within each cumulative window and reports the
+// net — over a dedicated OPEN+CLOSED+MERGED PR fetch reusing the trajectory
+// windows, alongside the issue trajectory and the open-window blocks.
+func TestBacklogReviewSurfacesPRTrajectory(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  trajectory:\n    windows: [7, 30, 90]\n")
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{
+			Issues:    []github.Issue{issue(1, daysAgo(10))},
+			TotalOpen: 1,
+		},
+		prActivityResult: github.PullRequestActivityResult{Activities: []github.PullRequestActivity{
+			prActivity(1, 2, -1),  // opened 2d, open   → opened in 7/30/90
+			prActivity(2, 5, -1),  // opened 5d, open   → opened in 7/30/90
+			prActivity(3, 20, -1), // opened 20d, open  → opened in 30/90
+			prActivity(4, 80, 3),  // opened 80d, closed 3d → closed in 7/30/90; opened in 90
+			prActivity(5, 60, 40), // opened 60d, closed 40d → closed in 90; opened in 90
+			prActivity(6, 1, 1),   // opened 1d, closed 1d → opened+closed in all
+		}},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	pt := facts.PRTrajectory
+
+	if !pt.Available {
+		t.Fatalf("PRTrajectory.Available = false, want true; %+v", pt)
+	}
+	if pt.FetchedCount != 6 {
+		t.Errorf("FetchedCount = %d, want 6", pt.FetchedCount)
+	}
+	want := []backlog.PRTrajectoryWindow{
+		{Days: 7, Opened: 3, Closed: 2, Net: 1},
+		{Days: 30, Opened: 4, Closed: 2, Net: 2},
+		{Days: 90, Opened: 6, Closed: 3, Net: 3},
+	}
+	if len(pt.Windows) != len(want) {
+		t.Fatalf("Windows = %+v, want %+v", pt.Windows, want)
+	}
+	for i, w := range want {
+		if pt.Windows[i] != w {
+			t.Errorf("Windows[%d] = %+v, want %+v", i, pt.Windows[i], w)
+		}
+	}
+	// The issue trajectory and the open-window blocks are unaffected by the PR fetch.
+	if facts.Staleness.OpenIssueCount != 1 {
+		t.Errorf("Staleness.OpenIssueCount = %d, want 1 (the fetches coexist)", facts.Staleness.OpenIssueCount)
+	}
+}
+
+// TestBacklogReviewPRTrajectoryFetchTruncated pins the never-silently-truncate
+// contract for the aggregate PR block: when the PR-activity fetch hit its cap, the
+// counts are a lower bound and FetchTruncated says so.
+func TestBacklogReviewPRTrajectoryFetchTruncated(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(10))}, TotalOpen: 1},
+		prActivityResult: github.PullRequestActivityResult{
+			Activities: []github.PullRequestActivity{prActivity(1, 2, -1)},
+			Truncated:  true,
+		},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if !facts.PRTrajectory.FetchTruncated {
+		t.Error("PRTrajectory.FetchTruncated = false, want true")
+	}
+}
+
+// TestBacklogReviewPRTrajectoryDegradesOnFetchError pins the degrade design: a
+// failed PR-activity fetch never fails the whole call — the other blocks still
+// return and the PR-trajectory block is marked unavailable with a distinguishable
+// reason. A throttle additionally surfaces its recovery signal as the rate-limit
+// budget, winning over the healthy open-fetch budget so a self-pacing caller
+// learns it was throttled.
+func TestBacklogReviewPRTrajectoryDegradesOnFetchError(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	reset := fixedClock.Add(15 * time.Minute)
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantReason string
+	}{
+		{"rate limited", github.RateLimitedError{ResetAt: reset}, "rate_limited"},
+		{"generic failure", github.ErrRepoNotFound, "fetch_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fetcher := fakeFetcher{
+				result: github.IssueListResult{
+					Issues:    []github.Issue{issue(1, daysAgo(100))},
+					TotalOpen: 1,
+					// A healthy open-fetch budget that must NOT be reported on a throttle-degrade.
+					RateLimit: &github.RateLimit{Remaining: 5000, ResetAt: fixedClock.Add(time.Hour)},
+				},
+				prActivityErr: tc.err,
+			}
+			srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+			res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})
+			if res.IsError {
+				t.Fatalf("IsError = true, want false (degrade, not fail): %s", contentText(res))
+			}
+			facts := decodeFacts(t, res)
+			if facts.PRTrajectory.Available {
+				t.Error("PRTrajectory.Available = true, want false (fetch failed)")
+			}
+			if facts.PRTrajectory.Unavailable != tc.wantReason {
+				t.Errorf("PRTrajectory.Unavailable = %q, want %q", facts.PRTrajectory.Unavailable, tc.wantReason)
+			}
+			// The other blocks still reduce the successful open fetch.
+			if facts.Staleness.StaleCount != 1 {
+				t.Errorf("Staleness.StaleCount = %d, want 1 (degrade preserves other blocks)", facts.Staleness.StaleCount)
+			}
+			if tc.wantReason == "rate_limited" {
+				if facts.RateLimit == nil {
+					t.Fatal("RateLimit = nil, want the throttle recovery signal")
+				}
+				if facts.RateLimit.Remaining != 0 {
+					t.Errorf("RateLimit.Remaining = %d, want 0 (throttle wins over healthy open budget)", facts.RateLimit.Remaining)
+				}
+				if !facts.RateLimit.ResetAt.Equal(reset) {
+					t.Errorf("RateLimit.ResetAt = %v, want %v (the throttle's reset)", facts.RateLimit.ResetAt, reset)
+				}
+			}
+		})
+	}
 }
 
 // TestBacklogReviewSurfacesTrajectory pins the creation-vs-closure grooming

@@ -31,6 +31,9 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	if _, err := f.ListIssuesUpdatedSince(ctx, repo, time.Now().AddDate(0, 0, -90), 5); err != nil {
 		t.Errorf("ListIssuesUpdatedSince against %s: %v", repo, err)
 	}
+	if _, err := f.ListPullRequestsUpdatedSince(ctx, repo, time.Now().AddDate(0, 0, -90), 5); err != nil {
+		t.Errorf("ListPullRequestsUpdatedSince against %s: %v", repo, err)
+	}
 	if _, err := f.ListOpenMilestones(ctx, repo, 5); err != nil {
 		t.Errorf("ListOpenMilestones against %s: %v", repo, err)
 	}
