@@ -47,6 +47,23 @@ func IssueRefMatches(text string) []IssueRef {
 	return out
 }
 
+// IssueRefsExcluding is IssueRefs with the given number dropped — an issue citing
+// its own number is never a dependency, so a reduction populating a "stated
+// dependencies" field passes the issue's own number here. The result stays non-nil
+// even when the exclusion empties it, so a caller embedding it serializes [] rather
+// than null.
+func IssueRefsExcluding(text string, exclude int) []int {
+	refs := IssueRefs(text)
+	out := make([]int, 0, len(refs))
+	for _, n := range refs {
+		if n == exclude {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // IssueRefs is IssueRefMatches deduped and ascending-sorted: the distinct #N
 // references in text, PR-excluded. It returns a non-nil empty slice when there
 // are none, so a caller embedding it serializes [] rather than null.

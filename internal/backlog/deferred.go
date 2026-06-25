@@ -110,7 +110,7 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
-			BodyRefs:            bodyDependencies(is),
+			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,
@@ -133,21 +133,6 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 	}
 	facts.DeferredIssues = deferred
 	return facts
-}
-
-// bodyDependencies returns the issue's body references with its own number
-// dropped — an issue citing itself is never a dependency. The result stays
-// non-nil even when self-exclusion empties it, so BodyRefs serializes as [].
-func bodyDependencies(is github.Issue) []int {
-	refs := reduce.IssueRefs(is.BodyText)
-	out := make([]int, 0, len(refs))
-	for _, n := range refs {
-		if n == is.Number {
-			continue
-		}
-		out = append(out, n)
-	}
-	return out
 }
 
 // deferredMatches is the single deferred-classification source for the backlog
