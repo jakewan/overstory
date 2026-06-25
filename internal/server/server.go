@@ -161,7 +161,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window).",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -253,6 +253,10 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			CrossRef:     crossref,
 			Trajectory:   trajectory,
 			CriticalPath: criticalPath,
+			// The full fetched open-issue window, never capped by in.Limit: a caller
+			// resolves a deferred issue's bodyRefs against this set, so a real open
+			// blocker beyond any list cap must still appear here.
+			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
 			RateLimit:    mapRateLimit(budget),
 		}, nil
 	}
@@ -338,6 +342,18 @@ func mapRateLimit(in *github.RateLimit) *reduce.RateLimitFacts {
 		return nil
 	}
 	return &reduce.RateLimitFacts{Remaining: in.Remaining, ResetAt: in.ResetAt}
+}
+
+// openIssueNumbers extracts the issue numbers from a fetched open-issue window, so
+// the handler can build the open-issue set without the reduce layer importing the
+// github shape (the same decoupling mapRateLimit/mapPrefixes keep). NewOpenIssueSet
+// sorts and dedupes, so the order here is irrelevant.
+func openIssueNumbers(issues []github.Issue) []int {
+	nums := make([]int, 0, len(issues))
+	for _, is := range issues {
+		nums = append(nums, is.Number)
+	}
+	return nums
 }
 
 func thresholdSource(matched bool) string {

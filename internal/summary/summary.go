@@ -21,13 +21,14 @@ import (
 // so each can degrade to an unavailable block (see their Available fields)
 // without failing the whole summary.
 type Facts struct {
-	Repo            string                 `json:"repo"`
-	GeneratedAt     time.Time              `json:"generatedAt"`
-	Milestones      MilestoneFacts         `json:"milestones"`
-	AreaInventory   AreaInventoryFacts     `json:"areaInventory"`
-	Hygiene         HygieneFacts           `json:"hygiene"`
-	OpenPRs         PullRequestFacts       `json:"openPRs"`
-	Recommendations RecommendationFacts    `json:"recommendations"`
-	CriticalPath    criticalpath.Facts     `json:"criticalPath"`
-	RateLimit       *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
+	Repo            string                   `json:"repo"`
+	GeneratedAt     time.Time                `json:"generatedAt"`
+	Milestones      MilestoneFacts           `json:"milestones"`
+	AreaInventory   AreaInventoryFacts       `json:"areaInventory"`
+	Hygiene         HygieneFacts             `json:"hygiene"`
+	OpenPRs         PullRequestFacts         `json:"openPRs"`
+	Recommendations RecommendationFacts      `json:"recommendations"`
+	CriticalPath    criticalpath.Facts       `json:"criticalPath"`
+	OpenIssueSet    reduce.OpenIssueSetFacts `json:"openIssueSet"`
+	RateLimit       *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
 }

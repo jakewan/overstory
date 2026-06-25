@@ -709,6 +709,76 @@ func TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewSurfacesOpenIssueSet pins the resolvable open-issue set on the
+// grooming read: the fetched open numbers (the surface a caller resolves a deferred
+// issue's bodyRefs against), ascending and complete on a non-truncated fetch.
+func TestBacklogReviewSurfacesOpenIssueSet(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(3, daysAgo(10)), issue(1, daysAgo(10)), issue(2, daysAgo(10))},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if got := facts.OpenIssueSet.Numbers; len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
+		t.Errorf("OpenIssueSet.Numbers = %v, want [1 2 3] (ascending)", got)
+	}
+	if facts.OpenIssueSet.FetchTruncated {
+		t.Error("OpenIssueSet.FetchTruncated = true, want false (whole window fetched)")
+	}
+}
+
+// TestBacklogReviewOpenIssueSetUncappedByLimit is the soundness guard for the
+// grooming read: the open-issue set is the full fetched window, never capped by
+// limit. An open issue beyond the deferred list cap must still appear in numbers,
+// or a real open blocker would read as ∉ set.
+func TestBacklogReviewOpenIssueSetUncappedByLimit(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			deferredIssue(1, daysAgo(100), "deferred"),
+			deferredIssue(2, daysAgo(100), "deferred"),
+			deferredIssue(3, daysAgo(100), "deferred"), // #3 sits beyond the limit-2 deferred list cap
+		},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 2}))
+	// The deferred list IS capped at the limit — proving the set is not derived from it.
+	if !facts.Deferred.ListTruncated || len(facts.Deferred.DeferredIssues) != 2 {
+		t.Fatalf("deferred list not capped at 2 (got %d, truncated=%v) — test no longer guards the cap",
+			len(facts.Deferred.DeferredIssues), facts.Deferred.ListTruncated)
+	}
+	want := []int{1, 2, 3}
+	got := facts.OpenIssueSet.Numbers
+	if len(got) != len(want) {
+		t.Fatalf("OpenIssueSet.Numbers = %v, want %v (full window, never limit-capped)", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("OpenIssueSet.Numbers[%d] = %d, want %d (full: %v)", i, got[i], w, got)
+		}
+	}
+}
+
+// TestBacklogReviewOpenIssueSetTruncated pins the truncation seam on the grooming
+// read: a window that didn't cover every open issue marks numbers as a floor.
+func TestBacklogReviewOpenIssueSetTruncated(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(1, daysAgo(10))},
+		TotalOpen: 10,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if !facts.OpenIssueSet.FetchTruncated {
+		t.Error("OpenIssueSet.FetchTruncated = false, want true (window did not cover every open issue)")
+	}
+}
+
 // TestBacklogReviewDeferredNotConfigured pins the no-convention path: a repo
 // whose manifest declares no deferred labels reports the block as not-configured
 // — an empty, honest no-op rather than a guess or an error.

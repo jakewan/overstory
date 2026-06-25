@@ -109,6 +109,68 @@ func TestProjectSummaryPopulatesBlocks(t *testing.T) {
 	if !sawBug {
 		t.Errorf("recommendations did not flag issue 1 as a bug: %+v", facts.Recommendations.Candidates)
 	}
+	// The open-issue set lists the fetched open numbers (the resolvable surface for
+	// a candidate's stated bodyRefs), ascending and complete on a non-truncated fetch.
+	if got := facts.OpenIssueSet.Numbers; len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Errorf("OpenIssueSet.Numbers = %v, want [1 2]", got)
+	}
+	if facts.OpenIssueSet.FetchTruncated {
+		t.Error("OpenIssueSet.FetchTruncated = true, want false (whole window fetched)")
+	}
+}
+
+// TestProjectSummaryOpenIssueSetUncappedByLimit is the soundness guard: the
+// open-issue set is the FULL fetched window, never capped by limit. With a fetched
+// window larger than the limit, an open issue sitting beyond the recommendation
+// list cap must still appear in numbers — otherwise a real open blocker would read
+// as ∉ set and the resolution contract would silently lie.
+func TestProjectSummaryOpenIssueSetUncappedByLimit(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{
+			summaryIssue(1, nil), summaryIssue(2, nil), summaryIssue(3, nil),
+			summaryIssue(4, nil), summaryIssue(5, nil), // #5 sits beyond the limit-2 list cap
+		},
+		TotalOpen: 5,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 2}))
+
+	// The recommendation list IS capped at the limit — proving the set below is not
+	// derived from it.
+	if !facts.Recommendations.ListTruncated || len(facts.Recommendations.Candidates) != 2 {
+		t.Fatalf("recommendations not capped at 2 (got %d, truncated=%v) — test no longer guards the cap",
+			len(facts.Recommendations.Candidates), facts.Recommendations.ListTruncated)
+	}
+	want := []int{1, 2, 3, 4, 5}
+	got := facts.OpenIssueSet.Numbers
+	if len(got) != len(want) {
+		t.Fatalf("OpenIssueSet.Numbers = %v, want %v (full window, never limit-capped)", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("OpenIssueSet.Numbers[%d] = %d, want %d (full: %v)", i, got[i], w, got)
+		}
+	}
+}
+
+// TestProjectSummaryOpenIssueSetTruncated pins the truncation seam: when the fetch
+// window did not cover every open issue, fetchTruncated marks numbers as a floor —
+// so a ref absent from numbers cannot be read as resolved (it may sit outside the
+// window).
+func TestProjectSummaryOpenIssueSetTruncated(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{summaryIssue(1, nil), summaryIssue(2, nil)},
+		TotalOpen: 10, // more open than fetched
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if !facts.OpenIssueSet.FetchTruncated {
+		t.Error("OpenIssueSet.FetchTruncated = false, want true (window did not cover every open issue)")
+	}
 }
 
 // TestProjectSummarySurfacesCriticalPath is the acceptance for the critical-path

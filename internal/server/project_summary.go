@@ -13,6 +13,7 @@ import (
 	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/jakewan/overstory/internal/summary"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -33,7 +34,7 @@ func projectSummaryTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "project_summary",
-		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity — a caller ranks 'what next' from; the ranking judgment stays caller-side), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary.",
+		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity — a caller ranks 'what next' from; the ranking judgment stays caller-side), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a candidate's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue to verify as a gate, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -121,6 +122,10 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			OpenPRs:         prs,
 			Recommendations: recommendations,
 			CriticalPath:    criticalPath,
+			// The full fetched open-issue window, never capped by in.Limit: a caller
+			// resolves a candidate's bodyRefs against this set, so a real open blocker
+			// beyond the list cap must still appear here or the contract would lie.
+			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(issues), len(issues) < totalOpen),
 			// The tightest budget across the three fetches: a caller pacing itself must
 			// see the lowest remaining ceiling, and a throttle's zero-remaining signal
 			// (from a degraded sub-fetch) wins so the caller learns it is throttled.
