@@ -44,6 +44,12 @@ Overstory ships an mdbook under `docs/src/`. For PRs that touch it:
 - **Don't ask for more struct-field prose.** The tool/fact reference documents the stable *shape* and points at the Go source for field-level detail. Flag prose that enumerates a `Facts` struct's fields (it rots as fields are added); don't request additional field-by-field documentation.
 - **Reference render skills are verbatim snapshots.** The pages under `docs/src/guide/render-skills/` reproduce skills maintained in the operator's own agent configuration, verbatim, as adaptable examples (each carries a provenance stamp saying so). Flag a reproduction that diverges from a faithful copy, or a broken outer code fence — but do **not** flag wording, omissions, or improvements *within* the snapshot body: that text is a faithful copy of an artifact maintained elsewhere, so "fixing" it here would break the snapshot.
 
+## Reviewing changelog changes
+
+Overstory keeps a `CHANGELOG.md` in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format. One convention is a recurring false-positive source:
+
+- **The trailing `(#N)` anchor is the introducing PR number, not the issue.** Each entry under `## [Unreleased]` ends with `(#N)` citing the pull request that introduces it; the related issue is linked from the PR body instead. Do **not** flag an entry that closes issues `#A`/`#B` for anchoring to the PR number rather than an issue number — that is the intended convention, not a mistaken reference. (An entry authored before its PR exists may carry a placeholder issue number, corrected to the PR number once the PR is opened; the landed convention is the PR number.)
+
 ## Personal-details check
 
 This is a public repository. Flag any PR that introduces personal or identifying details into code, comments, commit messages, or fixtures: real names, email addresses, absolute home-directory paths (`/home/<user>/…`), machine or host names, or private/internal project names. Necessary attribution (the LICENSE copyright line, git authorship) is fine.
