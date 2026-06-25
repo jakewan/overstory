@@ -825,10 +825,13 @@ func classifyRESTStatus(code int, hdr http.Header, body []byte, owner, name stri
 
 // restRateSignal reports whether a 403 carries any signal that it is a rate limit
 // rather than a permissions refusal: a depleted X-RateLimit-Remaining, a
-// Retry-After header, or a secondary-rate-limit message in the body (which can be
-// the only signal — secondary limits often omit the header). The body check errs
-// toward detecting a limit, since a false not-found would skip back-off and
-// compound the limit, while a false back-off only costs a deliberate retry delay.
+// Retry-After header, or a secondary-rate-limit message in the body. The body
+// check exists for the one case the headers miss — a secondary rate limit that
+// signals only in the body — and matches the specific phrase GitHub uses for it
+// rather than the bare "rate limit" substring: a primary limit always carries the
+// depleted-remaining header (caught above), so the body match need only catch the
+// secondary case, and the narrow phrase can't misread a permissions 403 whose
+// prose happens to mention rate limits as a throttle.
 func restRateSignal(hdr http.Header, body []byte) bool {
 	if strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")) == "0" {
 		return true
@@ -836,26 +839,29 @@ func restRateSignal(hdr http.Header, body []byte) bool {
 	if strings.TrimSpace(hdr.Get("Retry-After")) != "" {
 		return true
 	}
-	return strings.Contains(strings.ToLower(string(body)), "rate limit")
+	return strings.Contains(strings.ToLower(string(body)), "secondary rate limit")
 }
 
 // parseRESTBudget reads the REST core-pool budget from the response headers:
 // X-RateLimit-Remaining (requests left this hour) and X-RateLimit-Reset (a unix
-// epoch). It returns nil only when neither header is present; REST responses
-// normally always carry them, so a maintenance fetch's budget is essentially
-// never nil (unlike a GraphQL response, which can omit the rateLimit block).
+// epoch). The remaining count is the pacing signal and the budget's reason to
+// exist, so a budget is reported only when it parses — a missing or malformed
+// remaining yields nil (no budget observed) rather than a fabricated Remaining 0,
+// which the batch aggregator would otherwise read as the tightest budget and
+// surface as a false "0 requests left" with no throttle. The reset is optional
+// recovery detail layered on once a remaining is known. REST responses normally
+// carry both, so a maintenance fetch's budget is essentially never nil (unlike a
+// GraphQL response, which can omit the rateLimit block).
 func parseRESTBudget(hdr http.Header) *RateLimit {
-	rem := strings.TrimSpace(hdr.Get("X-RateLimit-Remaining"))
-	reset := strings.TrimSpace(hdr.Get("X-RateLimit-Reset"))
-	if rem == "" && reset == "" {
+	n, err := strconv.Atoi(strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")))
+	if err != nil {
 		return nil
 	}
-	var rl RateLimit
-	if n, err := strconv.Atoi(rem); err == nil {
-		rl.Remaining = n
-	}
-	if n, err := strconv.ParseInt(reset, 10, 64); err == nil && n > 0 {
-		rl.ResetAt = time.Unix(n, 0).UTC()
+	rl := RateLimit{Remaining: n}
+	if v := strings.TrimSpace(hdr.Get("X-RateLimit-Reset")); v != "" {
+		if r, rerr := strconv.ParseInt(v, 10, 64); rerr == nil && r > 0 {
+			rl.ResetAt = time.Unix(r, 0).UTC()
+		}
 	}
 	return &rl
 }

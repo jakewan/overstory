@@ -784,6 +784,24 @@ func TestListIssueEventsTruncatesOnFetchCap(t *testing.T) {
 	}
 }
 
+// TestListIssueEventsBudgetRequiresRemaining pins that a response carrying a reset
+// header but no remaining count yields a nil budget rather than a fabricated
+// Remaining 0 — the aggregator must never read an unknown budget as "0 left".
+func TestListIssueEventsBudgetRequiresRemaining(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	srv := jsonServerWithHeaders(t, http.StatusOK, map[string]string{
+		"X-RateLimit-Reset": "1750000000", // reset present, remaining absent
+		"Content-Type":      "application/json",
+	}, `[{"id":1,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}]`)
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if res.RateLimit != nil {
+		t.Errorf("RateLimit = %+v, want nil (no remaining count means no usable budget)", res.RateLimit)
+	}
+}
+
 // TestListIssueEventsClassifiesStatus pins the REST-specific status mapping that
 // deliberately differs from the GraphQL classifier: a 404 and a 403 without any
 // rate signal both surface as ErrRepoNotFound (never a RateLimitedError that would
@@ -801,6 +819,7 @@ func TestListIssueEventsClassifiesStatus(t *testing.T) {
 	}{
 		{"404 not found", http.StatusNotFound, nil, `{"message":"Not Found"}`, true, false},
 		{"403 no rate signal is access error", http.StatusForbidden, nil, `{"message":"Must have admin rights"}`, true, false},
+		{"403 prose mentioning rate limit is not a throttle", http.StatusForbidden, nil, `{"message":"Resource not accessible; see the rate limit docs"}`, true, false},
 		{"403 with depleted remaining is rate limited", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1750000000"}, `{"message":"API rate limit exceeded"}`, false, true},
 		{"403 secondary-limit body is rate limited", http.StatusForbidden, nil, `{"message":"You have exceeded a secondary rate limit"}`, false, true},
 		{"429 is always rate limited", http.StatusTooManyRequests, nil, `{"message":"Too Many Requests"}`, false, true},
