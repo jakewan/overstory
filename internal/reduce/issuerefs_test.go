@@ -31,6 +31,34 @@ func TestIssueRefs(t *testing.T) {
 	}
 }
 
+// TestIssueRefsExcluding pins the self-exclusion convenience: IssueRefs with one
+// number dropped, otherwise identical (dedup, sort, PR-exclusion, non-nil empty).
+// The excluded number is an issue's own — a self-reference is never a dependency.
+func TestIssueRefsExcluding(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		text    string
+		exclude int
+		want    []int
+	}{
+		{"excludes the given number", "blocks #5 and #3, also #5 again", 5, []int{3}},
+		{"self-only reference empties to non-nil slice", "depends on #7 only", 7, []int{}},
+		{"absent exclusion leaves refs untouched", "blocks #5 and #3", 9, []int{3, 5}},
+		{"pull-request reference still excluded", "needs PR #5 before #6 lands", 6, []int{}},
+		{"no references yields empty (non-nil) slice", "nothing to see here", 1, []int{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IssueRefsExcluding(tc.text, tc.exclude)
+			if got == nil {
+				t.Fatalf("IssueRefsExcluding(%q, %d) = nil, want non-nil slice", tc.text, tc.exclude)
+			}
+			if !equalInts(got, tc.want) {
+				t.Errorf("IssueRefsExcluding(%q, %d) = %v, want %v", tc.text, tc.exclude, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestIssueRefMatchesPreservesOrderWithoutDedup pins the rich variant the
 // milestone-tracks parser needs: appearance order, no dedup, and a Start byte
 // index that points at the '#'.

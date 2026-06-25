@@ -25,14 +25,24 @@ type RecommendationFacts struct {
 
 // RecommendationCandidate is one open issue reduced to the facts a caller ranks
 // from: whether it is a bug (a configured bug label), its milestone title (nil
-// when unmilestoned), its age, and its inactivity. No score or rank — the caller
-// owns that.
+// when unmilestoned), its stated dependencies, its age, and its inactivity. No
+// score or rank — the caller owns that.
+//
+// BodyRefs are the distinct #N references parsed from the issue body, ascending,
+// with pull-request references and the issue's own number excluded — the issue's
+// stated dependencies, so a caller's "what to start next" ranking can tell a ready
+// issue from one gated behind open siblings. It is parsed from GitHub's rendered
+// plaintext body (bodyText), not raw markdown, so only references surviving
+// plaintext rendering appear; these are a heuristic proxy for stated
+// cross-references, not GitHub's native blocked-by/sub-issue edges. Non-nil even
+// when empty, so it serializes as [] rather than null.
 type RecommendationCandidate struct {
 	Number       int     `json:"number"`
 	Title        string  `json:"title"`
 	URL          string  `json:"url"`
 	IsBug        bool    `json:"isBug"`
 	Milestone    *string `json:"milestone,omitempty"`
+	BodyRefs     []int   `json:"bodyRefs"`
 	AgeDays      int     `json:"ageDays"`
 	InactiveDays int     `json:"inactiveDays"`
 }
@@ -67,6 +77,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			URL:          is.URL,
 			IsBug:        anyMatch(bugMatcher, is.Labels),
 			Milestone:    milestone,
+			BodyRefs:     reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			AgeDays:      reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays: reduce.DaysSince(now, is.LastActivityAt),
 		})

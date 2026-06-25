@@ -211,6 +211,33 @@ func TestProjectSummaryPrimaryFetchErrorIsToolError(t *testing.T) {
 	}
 }
 
+// TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray pins the non-nil
+// convention through the JSON round-trip: a recommendation candidate with no body
+// references must serialize bodyRefs as [], not null, so a client never sees a
+// null it has to special-case. Parse-correctness (self/dup/PR exclusion) is pinned
+// by the summary unit test; this case is scoped to the [] vs null serialization
+// contract only.
+func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	noRefs := summaryIssue(1, nil)
+	noRefs.BodyText = "Ready to start; no dependencies."
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noRefs},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	// After a JSON round-trip, `[]` decodes to a non-nil empty slice and `null` to
+	// nil — so a non-nil slice here proves the encoder emitted [].
+	if facts.Recommendations.Candidates[0].BodyRefs == nil {
+		t.Error("BodyRefs = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestProjectSummaryRequiresOwnerRepo pins the input validation.
 func TestProjectSummaryRequiresOwnerRepo(t *testing.T) {
 	srv := New(WithFetcher(fakeFetcher{}), WithClock(func() time.Time { return fixedClock }))
