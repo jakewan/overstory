@@ -49,6 +49,26 @@ type fakeFetcher struct {
 	// depending on which repo wins a concurrency slot (e.g. "first call throttles, a
 	// later call would author-fail"). Requires authoredCalls to be set.
 	authoredSeq func(call int64) authoredCanned
+	// eventsResult/eventsErr drive the single-repo maintenance fetch; their zero
+	// value (empty result, nil error) makes ListIssueEvents a no-op success so tests
+	// that don't exercise maintenance are unaffected. eventsByRepo drives the batch
+	// fan-out keyed by owner/repo (each repo can take a different path), and
+	// eventsCalls counts invocations across the fan-out's goroutines for a
+	// backpressure assertion — a pointer for the same copy-by-value reason as
+	// authoredCalls.
+	eventsResult github.IssueEventsResult
+	eventsErr    error
+	eventsByRepo map[string]eventsCanned
+	eventsCalls  *atomic.Int64
+}
+
+// eventsCanned is one repo's canned ListIssueEvents outcome for the batch fake.
+// When block is set the call honors the context — it blocks until ctx is done and
+// returns ctx.Err() — so a per-repo timeout test can drive a hung fetch.
+type eventsCanned struct {
+	result github.IssueEventsResult
+	err    error
+	block  bool
 }
 
 // authoredCanned is one repo's canned AuthoredActivity outcome for the batch fake.
@@ -117,6 +137,27 @@ func resolveCanned(ctx context.Context, c authoredCanned) (github.AuthoredActivi
 		return github.AuthoredActivityResult{}, ctx.Err()
 	}
 	return c.result, c.err
+}
+
+func (f fakeFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, _ time.Time, _ int) (github.IssueEventsResult, error) {
+	if f.eventsCalls != nil {
+		f.eventsCalls.Add(1)
+	}
+	if f.eventsByRepo != nil {
+		// A missing key is a test-setup omission, not a real fetch: surface it as an
+		// error so a forgotten repo fails the test loudly rather than masquerading as
+		// a successful empty-events result.
+		c, ok := f.eventsByRepo[ownerRepo]
+		if !ok {
+			return github.IssueEventsResult{}, fmt.Errorf("fakeFetcher: no canned events for %q", ownerRepo)
+		}
+		if c.block {
+			<-ctx.Done()
+			return github.IssueEventsResult{}, ctx.Err()
+		}
+		return c.result, c.err
+	}
+	return f.eventsResult, f.eventsErr
 }
 
 // fixedClock is the injected wall clock; staleness is deterministic under it.

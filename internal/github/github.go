@@ -183,6 +183,54 @@ type AuthoredActivityResult struct {
 	RateLimit           *RateLimit
 }
 
+// IssueEvent is one actor-attributed state mutation on an issue or pull request,
+// projected from GitHub's REST issue-events stream. Type is the raw event string
+// (labeled, milestoned, closed, …); the maintenance reduction filters to the
+// mutation subset it cares about. Actor is the login that performed it; the
+// reduction filters by it (the stream is not server-side filtered by actor).
+// IssueIsPR distinguishes a pull request from an issue (the stream mixes both),
+// so a caller can split the two. ViaAutomation is set when GitHub attributes the
+// event to a GitHub App (the payload's performed_via_github_app is present), so a
+// caller can exclude workflow/app-driven churn — with the blind spot that an
+// automation running *as* the measured login is still attributed to that login.
+// EventID is GitHub's unique, monotonically increasing event id, used to
+// deduplicate across pages when a concurrent write shifts the offset window.
+// Label/Milestone/Assignee/RenameFrom/RenameTo carry the per-type payload, empty
+// for event types that don't populate them.
+//
+// It is a flattened domain type, not the REST wire shape: the nested response
+// (actor.login, issue.number, issue.pull_request, label.name, …) decodes into a
+// private wire struct that maps into this.
+type IssueEvent struct {
+	EventID       int64
+	Type          string
+	Actor         string
+	CreatedAt     time.Time
+	IssueNumber   int
+	IssueTitle    string
+	IssueIsPR     bool
+	ViaAutomation bool
+	Label         string
+	Milestone     string
+	Assignee      string
+	RenameFrom    string
+	RenameTo      string
+}
+
+// IssueEventsResult carries the issue/PR events fetched for the maintenance
+// reduction — the repository's most-recent state mutations, newest-first, scanned
+// back to the requested floor. Truncated is true when the scan stopped before it
+// could prove window coverage (the fetch cap was reached without crossing the
+// floor or exhausting the stream), so the maintenance facts derived from it are a
+// lower bound, not exact. RateLimit is the REST core-pool budget from the
+// response headers, which the REST endpoint always returns (unlike the GraphQL
+// budget, this is essentially never nil).
+type IssueEventsResult struct {
+	Events    []IssueEvent
+	Truncated bool
+	RateLimit *RateLimit
+}
+
 // Fetcher fetches a repository's issues, milestones, and pull requests for the
 // reductions. It exists so tests can substitute a fake without invoking gh or the
 // network. ListOpenIssues returns the open-issue grooming window
@@ -194,13 +242,18 @@ type AuthoredActivityResult struct {
 // returns the open pull requests with draft state, head branch, and CI rollup,
 // for the orientation reduction's in-flight-work view; AuthoredActivity returns
 // the decomposed authored/engagement counts for one author over the [since,until]
-// window (author- and window-driven, manifest-independent).
+// window (author- and window-driven, manifest-independent); ListIssueEvents
+// returns the repository's issue/PR state-mutation events back to `since`
+// (newest-first, up to fetchLimit), feeding the maintenance reduction — the only
+// REST-sourced fetch, since the events stream has no GraphQL equivalent the other
+// shapes use.
 type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
 	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)
 	ListOpenPullRequests(ctx context.Context, ownerRepo string, fetchLimit int) (PullRequestListResult, error)
 	AuthoredActivity(ctx context.Context, ownerRepo, author string, since, until time.Time) (AuthoredActivityResult, error)
+	ListIssueEvents(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueEventsResult, error)
 }
 
 // Sentinel errors classify the failure modes a caller acts on. They name the
