@@ -25,6 +25,7 @@ import (
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/maintenance"
 	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -75,8 +76,8 @@ func WithClock(now func() time.Time) Option {
 }
 
 // New builds the overstory MCP server and registers the backlog_review,
-// project_summary, milestone_tracks, authored_activity, and
-// authored_activity_batch tools.
+// project_summary, milestone_tracks, authored_activity, authored_activity_batch,
+// maintenance_activity, and maintenance_activity_batch tools.
 // With no options it uses production defaults: issues fetched via the GitHub
 // GraphQL API (credentials from gh), manifests discovered from
 // $XDG_CONFIG_HOME/overstory/manifests.d (or OVERSTORY_MANIFESTS), and the real
@@ -107,6 +108,8 @@ func New(opts ...Option) *mcp.Server {
 	mcp.AddTool(srv, milestoneTracksTool(), milestoneTracksHandler(resolver, cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, authoredActivityTool(), authoredActivityHandler(cfg.fetcher, cfg.now))
 	mcp.AddTool(srv, authoredActivityBatchTool(), authoredActivityBatchHandler(cfg.fetcher, cfg.now, authoredBatchConcurrency, authoredBatchPerRepoTimeout))
+	mcp.AddTool(srv, maintenanceActivityTool(), maintenanceActivityHandler(cfg.fetcher, cfg.now))
+	mcp.AddTool(srv, maintenanceActivityBatchTool(), maintenanceActivityBatchHandler(cfg.fetcher, cfg.now, maintenanceBatchConcurrency, maintenanceBatchPerRepoTimeout))
 	return srv
 }
 
@@ -529,7 +532,7 @@ func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time, 
 		if author == "" {
 			return nil, authored.BatchFacts{}, fmt.Errorf("author is required")
 		}
-		repos, verr := validateRepos(in.Repos)
+		repos, verr := validateRepos(in.Repos, authoredBatchMaxRepos)
 		if verr != nil {
 			return nil, authored.BatchFacts{}, verr
 		}
@@ -562,15 +565,17 @@ func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time, 
 }
 
 // validateRepos normalizes and validates the batch's repo slugs before any fetch:
-// non-empty, within the max, each exactly owner/repo (one slash, both halves
+// non-empty, within maxRepos, each exactly owner/repo (one slash, both halves
 // non-blank), and no case-insensitive duplicates (matching the manifest layer's
-// repo-key collision rule). It returns the canonicalized slugs in input order.
-func validateRepos(in []string) ([]string, error) {
+// repo-key collision rule). It returns the canonicalized slugs in input order. The
+// cap is a parameter so the authored and maintenance batches can share the helper
+// while each names its own bound (they coincide today, but the coupling is removed).
+func validateRepos(in []string, maxRepos int) ([]string, error) {
 	if len(in) == 0 {
 		return nil, fmt.Errorf("repos must list at least one owner/repo")
 	}
-	if len(in) > authoredBatchMaxRepos {
-		return nil, fmt.Errorf("repos lists %d repositories, at most %d allowed", len(in), authoredBatchMaxRepos)
+	if len(in) > maxRepos {
+		return nil, fmt.Errorf("repos lists %d repositories, at most %d allowed", len(in), maxRepos)
 	}
 	repos := make([]string, 0, len(in))
 	seen := make(map[string]struct{}, len(in))
@@ -695,4 +700,257 @@ func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, autho
 	}
 	log.Printf("overstory: authored activity fetch for %s: %v", repo, err)
 	return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
+}
+
+// maintenanceFetchLimit bounds one repo's issue-events scan. The REST stream is
+// newest-first with no server-side window filter, so the fetch reads back to the
+// window floor up to this cap; a busy repo that hits the cap before crossing the
+// floor reports Truncated, surfacing the lower-bound coverage rather than hiding
+// it. It is sized to cover a normal grooming window comfortably while bounding the
+// REST round trips (each page is up to 100 events).
+const maintenanceFetchLimit = 500
+
+// maintenanceActivityInput is the tool's decoded input: an owner/repo, the actor
+// login whose state mutations are measured, and an explicit window. It reads no
+// manifest. Since/Until are RFC3339; Until is optional and defaults to now.
+type maintenanceActivityInput struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Author string `json:"author"`
+	Since  string `json:"since"`
+	Until  string `json:"until"`
+}
+
+// maintenanceActivityTool publishes the input contract. owner/repo/author/since
+// are required; until is optional (defaults to now). There is no limit parameter —
+// the fetch scans to the window floor under an internal cap, surfaced via the
+// truncated flag.
+func maintenanceActivityTool() *mcp.Tool {
+	return &mcp.Tool{
+		Name:        "maintenance_activity",
+		Description: "Measure the state-mutation maintenance one GitHub user paid to existing issues and pull requests in one repository over a caller-supplied time window — the grooming attention authored_activity structurally misses (a relabeling, milestoning, deferral-labeling, closing/reopening, assigning, and renaming afternoon produces near-zero authored counts). It returns the touched items, most-recently-touched first, each carrying the actor's qualifying mutations in chronological order: an event's type, instant, and per-type payload (the label name, milestone title, assignee login, or rename before/after). Each item flags isPullRequest, because the events stream mixes issues and pull requests (roughly a third are PR events) — the tool stays tag-blind and lets the caller split the mix. Each event flags viaAutomation (set when GitHub attributes it to an app), so a caller can exclude workflow/app-driven churn — with the blind spot that an automation acting as the measured login is still attributed to that login, so the flag, not the count, carries the meaning. The actor is matched by login string against the events stream, so an unknown or inactive login yields zero items, never an error (unlike authored_activity's author resolution). The truncated flag marks a window the fetch could not fully cover (a busy repo past the internal scan cap), so a recent mutation may be missing. The rateLimit budget is the REST core pool (requests per hour) — a different pool from authored_activity's GraphQL points, so the two budgets are not comparable. The window's upper bound is applied after the fetch; a window ending far in the past over-reads from now and can report truncated with no in-window items. This tool is actor- and window-driven, reads no manifest conventions, inherits the operator's gh credentials, and runs over a single owner/repo per call.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"owner":  {Type: "string", Description: "repository owner (user or org)"},
+				"repo":   {Type: "string", Description: "repository name"},
+				"author": {Type: "string", Description: "the GitHub login whose state-mutation maintenance activity is measured (matched by login; an unknown login yields zero items)"},
+				"since":  {Type: "string", Description: "window start as an RFC3339 timestamp (e.g. 2026-01-01T00:00:00Z)"},
+				"until":  {Type: "string", Description: "window end as an RFC3339 timestamp; defaults to now when omitted"},
+			},
+			Required: []string{"owner", "repo", "author", "since"},
+		},
+	}
+}
+
+// maintenanceActivityHandler validates the window and actor, fetches the
+// repository's issue-events stream back to the window floor, and reduces it to the
+// grouped per-item facts. It reads no manifest (the primitive is actor/window-
+// driven). The window is parsed and ordered before any fetch, so a malformed or
+// inverted window fails fast; a throttle surfaces its retry instant like the other
+// tools. An unknown actor is not an error — it simply yields zero items.
+func maintenanceActivityHandler(fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[maintenanceActivityInput, maintenance.Facts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in maintenanceActivityInput) (*mcp.CallToolResult, maintenance.Facts, error) {
+		owner, repo := strings.TrimSpace(in.Owner), strings.TrimSpace(in.Repo)
+		author := strings.TrimSpace(in.Author)
+		if owner == "" || repo == "" {
+			return nil, maintenance.Facts{}, fmt.Errorf("owner and repo are required")
+		}
+		if author == "" {
+			return nil, maintenance.Facts{}, fmt.Errorf("author is required")
+		}
+		ownerRepo := owner + "/" + repo
+
+		n := now()
+		since, until, werr := parseWindow(in.Since, in.Until, n)
+		if werr != nil {
+			return nil, maintenance.Facts{}, werr
+		}
+
+		result, err := fetcher.ListIssueEvents(ctx, ownerRepo, since, maintenanceFetchLimit)
+		if err != nil {
+			if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+				if when := rateLimitResetTime(rle, now); !when.IsZero() {
+					return nil, maintenance.Facts{}, fmt.Errorf("fetching maintenance activity for %s: %w (retry after %s)", ownerRepo, err, when.UTC().Format(time.RFC3339))
+				}
+			}
+			return nil, maintenance.Facts{}, fmt.Errorf("fetching maintenance activity for %s: %w", ownerRepo, err)
+		}
+
+		facts := maintenance.Reduce(result, author, since, until)
+		facts.Repo = ownerRepo
+		facts.GeneratedAt = n
+		facts.RateLimit = mapRateLimit(result.RateLimit)
+		return nil, facts, nil
+	}
+}
+
+const (
+	// maintenanceBatchConcurrency bounds how many repos fetch at once. Each repo is a
+	// paginated REST scan against the core pool (requests/hour), which is roomier and
+	// less burst-sensitive than the search secondary limit the authored batch paces
+	// against — but kept modest so a wide batch does not spike concurrent REST load.
+	maintenanceBatchConcurrency = 4
+	// maintenanceBatchMaxRepos caps a single batch; it mirrors the schema's maxItems.
+	maintenanceBatchMaxRepos = 50
+	// maintenanceBatchPerRepoTimeout bounds one repo's whole paginated fetch, so a
+	// single hung or pathological repo degrades to its own fetch_failed marker without
+	// holding a concurrency slot for the full transport timeout. A healthy repo returns
+	// far inside this budget.
+	maintenanceBatchPerRepoTimeout = 45 * time.Second
+)
+
+// maintenanceActivityBatchInput is the batch tool's decoded input: a list of
+// owner/repo measured for one actor over one window. Until is optional (defaults
+// to now); constraints live in the published schema.
+type maintenanceActivityBatchInput struct {
+	Repos  []string `json:"repos"`
+	Author string   `json:"author"`
+	Since  string   `json:"since"`
+	Until  string   `json:"until"`
+}
+
+// maintenanceActivityBatchTool publishes the batch input contract. repos is a
+// non-empty, bounded array of owner/repo; author/since are required; until is
+// optional.
+func maintenanceActivityBatchTool() *mcp.Tool {
+	minRepos, maxRepos := 1, maintenanceBatchMaxRepos
+	return &mcp.Tool{
+		Name:        "maintenance_activity_batch",
+		Description: "Measure the state-mutation maintenance one GitHub user paid to existing issues and pull requests across several repositories over a caller-supplied time window — the batched form of maintenance_activity. Given a list of owner/repo and one actor login, it fans out per repository and returns one entry per repository in request order, each either the touched items (most-recently-touched first, the actor's qualifying mutations grouped under each, with isPullRequest per item and viaAutomation per event) or one of four per-repo markers: not_found, rate_limited, fetch_failed, not_attempted. A not_found or fetch_failed repository degrades to its own marker without sinking the others; a rate_limited repository additionally trips backpressure (the batch stops launching new fetches to avoid amplifying the limit, so an arbitrary subset of the not-yet-started repositories returns not_attempted — a deliberate skip, not a failure). The batch surfaces a single aggregated rate-limit budget: the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. That budget is the REST core pool (requests per hour) — a different pool from authored_activity_batch's GraphQL points, so a caller must not compare or combine the two batches' budgets. Unlike the authored batch there is no whole-batch author error: the actor is matched by login string, so an unknown or inactive login simply yields zero items per repository. The tool reads no manifest conventions, inherits the operator's gh credentials, and returns per-repo facts only — merging across repositories and the attention verdict stay caller-side.",
+		InputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"repos": {
+					Type:        "array",
+					Description: "the repositories to measure, each as an owner/repo slug",
+					Items:       &jsonschema.Schema{Type: "string"},
+					MinItems:    &minRepos,
+					MaxItems:    &maxRepos,
+				},
+				"author": {Type: "string", Description: "the GitHub login whose state-mutation maintenance activity is measured (matched by login; an unknown login yields zero items)"},
+				"since":  {Type: "string", Description: "window start as an RFC3339 timestamp (e.g. 2026-01-01T00:00:00Z)"},
+				"until":  {Type: "string", Description: "window end as an RFC3339 timestamp; defaults to now when omitted"},
+			},
+			Required: []string{"repos", "author", "since"},
+		},
+	}
+}
+
+// maintenanceActivityBatchHandler validates the actor, the repo list, and the
+// window, fans out the per-repo fetches, and reduces them to batch facts. It reads
+// no manifest. Unlike the authored batch there is no whole-batch author escalation:
+// the actor is a stream filter, not a resolved identity, so an unknown actor yields
+// zero items per repo rather than a repo-independent error.
+func maintenanceActivityBatchHandler(fetcher github.Fetcher, now func() time.Time, concurrency int, perRepoTimeout time.Duration) mcp.ToolHandlerFor[maintenanceActivityBatchInput, maintenance.BatchFacts] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in maintenanceActivityBatchInput) (*mcp.CallToolResult, maintenance.BatchFacts, error) {
+		author := strings.TrimSpace(in.Author)
+		if author == "" {
+			return nil, maintenance.BatchFacts{}, fmt.Errorf("author is required")
+		}
+		repos, verr := validateRepos(in.Repos, maintenanceBatchMaxRepos)
+		if verr != nil {
+			return nil, maintenance.BatchFacts{}, verr
+		}
+		n := now()
+		since, until, werr := parseWindow(in.Since, in.Until, n)
+		if werr != nil {
+			return nil, maintenance.BatchFacts{}, werr
+		}
+
+		entries := fanOutMaintenance(ctx, fetcher, repos, since, now, concurrency, perRepoTimeout)
+		// A cancelled request must surface as an error, not a fabricated success built
+		// from the placeholder markers the fan-out stamps for not-yet-started repos.
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, maintenance.BatchFacts{}, fmt.Errorf("maintenance_activity_batch cancelled: %w", cerr)
+		}
+
+		facts := maintenance.ReduceBatch(entries, author, since, until)
+		facts.GeneratedAt = n
+		return nil, facts, nil
+	}
+}
+
+// fanOutMaintenance fetches each repo's issue events concurrently (bounded by
+// concurrency) and classifies every outcome into a BatchEntry, so one repo's
+// failure degrades only its own entry. It is a deliberate parallel of
+// fanOutAuthored rather than a shared generic: the two differ in classification
+// (authored threads an author-not-found sentinel that maintenance has no analog
+// for) and budget pool (GraphQL points vs REST requests), and a premature generic
+// would have to parameterize the sentinel-to-marker mapping while risking the
+// landed authored race tests' timing assumptions. The actor is not passed here —
+// it is a reduction-side filter, not a fetch parameter; only `since` reaches the
+// fetch (the floor it scans back to).
+//
+// The same two adverse-condition adaptations as the authored fan-out layer on top:
+// a throttle on any repo trips stopLaunch so not-yet-started repos are skipped as
+// not_attempted rather than amplifying the rate limit, and each fetch carries a
+// perRepoTimeout deadline so a hung repo degrades to fetch_failed without stalling
+// the rest.
+func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []string, since time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) []maintenance.BatchEntry {
+	entries := make([]maintenance.BatchEntry, len(repos))
+	// Guard the tuning parameters so a misconfigured internal value degrades safely
+	// rather than hanging (a zero buffer makes the semaphore block forever) or
+	// failing every repo (a non-positive timeout fires an immediate deadline).
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if perRepoTimeout <= 0 {
+		perRepoTimeout = maintenanceBatchPerRepoTimeout
+	}
+	sem := make(chan struct{}, concurrency)
+	// stopLaunch is the throttle backpressure flag (atomic, not ctx cancellation, so
+	// in-flight fetches on the parent ctx still complete rather than aborting into
+	// fetch_failed). Once any repo throttles, new launches are skipped.
+	var stopLaunch atomic.Bool
+	var wg sync.WaitGroup
+	for i, repo := range repos {
+		wg.Go(func() {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				entries[i] = maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}
+				return
+			}
+			if stopLaunch.Load() {
+				entries[i] = maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableNotAttempted}
+				return
+			}
+			entry := fetchMaintenanceEntry(ctx, fetcher, repo, since, now, perRepoTimeout)
+			if entry.Unavailable == maintenance.UnavailableRateLimited {
+				stopLaunch.Store(true)
+			}
+			entries[i] = entry
+		})
+	}
+	wg.Wait()
+	return entries
+}
+
+// fetchMaintenanceEntry fetches one repo's events under a perRepoTimeout deadline
+// (derived from ctx, so a hung repo can't hold its slot for the full transport
+// timeout) and maps the outcome to a BatchEntry: the raw events on success (the
+// actor/window filter is applied later by ReduceBatch), else a per-repo marker. A
+// throttle carries its resolved reset instant; any other failure — including a
+// deadline trip, which matches no sentinel — is fetch_failed, its cause logged to
+// stderr. There is no author-not-found path: the events fetch resolves no actor.
+func fetchMaintenanceEntry(ctx context.Context, fetcher github.Fetcher, repo string, since time.Time, now func() time.Time, perRepoTimeout time.Duration) maintenance.BatchEntry {
+	if ctx.Err() != nil {
+		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}
+	}
+	ctx, cancel := context.WithTimeout(ctx, perRepoTimeout)
+	defer cancel()
+	result, err := fetcher.ListIssueEvents(ctx, repo, since, maintenanceFetchLimit)
+	if err == nil {
+		return maintenance.BatchEntry{Repo: repo, Result: result}
+	}
+	if errors.Is(err, github.ErrRepoNotFound) {
+		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableNotFound}
+	}
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableRateLimited, ResetAt: rateLimitResetTime(rle, now)}
+	}
+	log.Printf("overstory: maintenance activity fetch for %s: %v", repo, err)
+	return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}
 }

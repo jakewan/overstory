@@ -6,7 +6,7 @@ This page documents the *shape and semantics* of what the tools return — the t
 
 ## Common parameters
 
-The three manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (`authored_activity` and `authored_activity_batch` are author- and window-driven; their parameters are documented in their own sections — [`authored_activity`](#authored_activity) and [`authored_activity_batch`](#authored_activity_batch).)
+The three manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (The four author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)
 
 | Parameter | Type    | Required | Default | Bounds  | Meaning                          |
 | --------- | ------- | -------- | ------- | ------- | -------------------------------- |
@@ -113,3 +113,29 @@ It returns one `RepoActivity` entry per repository under `repos`, in request ord
 **The fan-out adapts to two adverse conditions under load.** On a `rate_limited` signal it stops launching new fetches rather than amplifying the throttle, so an arbitrary subset of the not-yet-started repositories returns `not_attempted` (a deliberate skip, not a failure — not the request-order tail). Because the author login rides the same request that can be throttled, a throttle that precedes the author's resolution can pre-empt the whole-batch author error above: the batch then returns a throttle plus `not_attempted` markers, and the unresolvable login surfaces cleanly on retry after `resetAt`. Independently, each repository's fetch carries its own deadline, so one hung repository degrades to `fetch_failed` without stalling the batch.
 
 > **A resolved-but-wrong login yields honest zeros.** The whole-batch author error catches only an *unresolvable* login; a login that resolves to a real but unrelated account returns genuine-looking zeros that no tool can distinguish from real inactivity — the same limit the single-repo tool carries.
+
+## `maintenance_activity`
+
+The **maintenance-attention** read: the state mutations one user paid to existing issues and pull requests in a repository over a bounded window — the relabeling, milestoning/demilestoning, deferral-labeling, closing/reopening, assigning, and renaming that the authored counts structurally miss (a grooming afternoon produces near-zero authored counts but real maintenance attention). Composite struct: `maintenance.Facts` in `internal/maintenance/`.
+
+Like `authored_activity` it is **author- and window-driven and reads no manifest conventions**, and takes the same parameters ([`owner`, `repo`, `author`, `since`, `until`](#authored_activity)). It is the project's **first REST-sourced read** — the GitHub issue-events stream has no GraphQL equivalent — which shapes three contract differences below.
+
+It returns the touched issues and PRs under `items`, **most-recently-touched first**, each carrying `isPullRequest` and the actor's qualifying mutations in chronological order; each event carries its `type`, instant, per-type payload (label name, milestone title, assignee login, or rename before/after), and a `viaAutomation` flag. The `truncated` flag marks a window the fetch could not fully cover; the echoed `author`/`since`/`until` and the optional top-level `rateLimit` round out the facts. The server stays tag-blind — splitting the issue/PR mix, weighting, and the attention verdict stay caller-side.
+
+The three REST-shaped differences from `authored_activity`:
+
+- **An unknown actor yields zero items, not an error.** The actor is matched by login string against the events stream — there is no resolution step — so an unknown or inactive login simply produces an empty `items` list, the opposite of `authored_activity`'s named author-not-found error.
+- **The `rateLimit` budget is the REST core pool** (requests per hour), a **different pool** from the authored reads' GraphQL points. The two budgets are not comparable and must never be combined.
+- **A far-past `until` over-reads.** The fetch scans back from now to the `since` floor; `until` is applied afterward. A window ending near now (the usual case) costs nothing extra, but a window ending far in the past reads everything newer than `until` and discards it, and can report `truncated` with no in-window items.
+
+> **`viaAutomation` carries the meaning, not the count.** The flag is set when GitHub attributes an event to a GitHub App, so a caller can exclude workflow/app-driven churn — but an automation running *as* the measured login is still attributed to that login, so a consumer reads each event through its flag rather than trusting the raw item count as purely human attention.
+
+## `maintenance_activity_batch`
+
+The **batched maintenance-attention** read: the same per-user measure as [`maintenance_activity`](#maintenance_activity), fanned out across several repositories in one call. Composite struct: `maintenance.BatchFacts` in `internal/maintenance/`. It takes the same list-of-repositories parameters as [`authored_activity_batch`](#authored_activity_batch) (`repos` 1–50, `author`, `since`, `until`).
+
+It returns one `RepoActivity` entry per repository under `repos`, in request order, each either **available** with the same grouped `items` as the single-repo tool, or **unavailable** with a reason (`not_found`, `rate_limited`, `fetch_failed`, `not_attempted`) and — for a throttle — the `resetAt` instant. The batch echoes `author`/`since`/`until` once and carries a single aggregated top-level `rateLimit` (the REST core pool — not comparable with `authored_activity_batch`'s GraphQL points).
+
+**Degradation is per repository, and the fan-out adapts under load exactly as [`authored_activity_batch`](#authored_activity_batch) does** — a missing or failed repository degrades only its own entry; a `rate_limited` repository trips batch-wide backpressure so an arbitrary subset of the not-yet-started repositories returns `not_attempted`; each repository's fetch carries its own deadline. The aggregated `rateLimit` is the tightest remaining across the successful repositories, or `{ remaining: 0, resetAt }` at the earliest throttle reset. Pre-fetch validation (an empty or oversized `repos` list, a malformed or duplicate slug, an unparseable or inverted window) still fails the whole call.
+
+The **one contract difference from `authored_activity_batch`**: there is **no whole-batch author error**. The actor is a stream filter, not a resolved identity, so an unknown login yields zero items per repository rather than failing the batch — and a throttle therefore never pre-empts an author error here, because there is none to pre-empt.

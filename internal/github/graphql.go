@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -14,8 +15,15 @@ import (
 
 const (
 	defaultEndpoint = "https://api.github.com/graphql"
-	pageSize        = 100
-	httpTimeout     = 30 * time.Second
+	// defaultRESTEndpoint is the REST API base (no /graphql suffix); the
+	// issue-events fetch is the only REST-sourced shape, so it is kept separate from
+	// the GraphQL endpoint rather than derived from it.
+	defaultRESTEndpoint = "https://api.github.com"
+	pageSize            = 100
+	// restPageSize is GitHub REST's maximum per_page; the issue-events fetch pages
+	// at the max to minimize round trips before crossing the window floor.
+	restPageSize = 100
+	httpTimeout  = 30 * time.Second
 	// userAgent identifies overstory to GitHub. The API expects a descriptive
 	// User-Agent; relying on the net/http default risks being throttled or
 	// blocked.
@@ -169,24 +177,28 @@ const commitHistoryQuery = `query($owner:String!,$name:String!,$id:ID!,$since:Gi
   }
 }`
 
-// GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process.
-// endpoint, tokens, and client are fields so tests can drive it against an
-// httptest.Server with a static token.
+// GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process —
+// and, for the maintenance reduction's issue-events stream, the REST API.
+// endpoint, restEndpoint, tokens, and client are fields so tests can drive it
+// against an httptest.Server with a static token; the two endpoints are separate
+// because GraphQL and REST live at different base paths.
 type GraphQLFetcher struct {
-	endpoint string
-	tokens   TokenSource
-	client   *http.Client
+	endpoint     string
+	restEndpoint string
+	tokens       TokenSource
+	client       *http.Client
 }
 
-// NewGraphQLFetcher builds the production fetcher: GitHub.com's GraphQL
-// endpoint, credentials from the operator's gh CLI, and a timeout-bounded HTTP
+// NewGraphQLFetcher builds the production fetcher: GitHub.com's GraphQL and REST
+// endpoints, credentials from the operator's gh CLI, and a timeout-bounded HTTP
 // client. The token is acquired lazily on first fetch, so construction is
 // side-effect-free.
 func NewGraphQLFetcher() *GraphQLFetcher {
 	return &GraphQLFetcher{
-		endpoint: defaultEndpoint,
-		tokens:   &GHTokenSource{},
-		client:   &http.Client{Timeout: httpTimeout},
+		endpoint:     defaultEndpoint,
+		restEndpoint: defaultRESTEndpoint,
+		tokens:       &GHTokenSource{},
+		client:       &http.Client{Timeout: httpTimeout},
 	}
 }
 
@@ -662,6 +674,225 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 	}, nil
 }
 
+// ListIssueEvents fetches the repository's issue and pull-request state-mutation
+// events, newest-first, back to the `since` floor (up to fetchLimit), for the
+// maintenance reduction. The REST endpoint has no since/until parameter and no
+// GraphQL cursor, so it pages by following the response Link header's rel="next"
+// and stops on the first event older than `since` (the floor, past which the
+// newest-first stream holds nothing in-window), the fetch cap, or exhaustion.
+// Events are deduplicated by GitHub's monotonic event id across pages, so a write
+// that shifts the offset window between page fetches cannot skip or double-count
+// at a boundary. Truncated is reported floor/exhaustion-driven, not
+// stop-reason-driven: true unless the scan proved coverage (crossed the floor or
+// drained the stream), so the maintenance facts are never reported as complete
+// when they are a lower bound.
+//
+// The window's upper bound is not applied here — the reduction discards events
+// newer than its `until`. For a window ending near now (both real consumers) that
+// over-read is empty; for a far-past `until` the fetch reads from HEAD and can
+// exhaust fetchLimit on post-`until` events, yielding Truncated with no in-window
+// events, an accepted inefficiency documented on the tool.
+func (f *GraphQLFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueEventsResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return IssueEventsResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return IssueEventsResult{}, err
+	}
+
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/events?per_page=%d", f.restEndpoint, owner, name, restPageSize)
+	var (
+		events []IssueEvent
+		seen   = make(map[int64]struct{})
+		budget *RateLimit
+		// crossedFloor: saw an event older than `since`, so the newest-first stream
+		// holds nothing more in-window. exhausted: the Link chain ended, the stream is
+		// drained. Either proves coverage; every other exit leaves Truncated true.
+		crossedFloor bool
+		exhausted    bool
+	)
+	maxPages := fetchLimit/restPageSize + 2 // loop guard against an endless Link chain
+	for range maxPages {
+		if len(events) >= fetchLimit {
+			break
+		}
+		body, hdr, pageBudget, qerr := f.doREST(ctx, token, url, owner, name)
+		if qerr != nil {
+			return IssueEventsResult{}, qerr
+		}
+		budget = pageBudget // last page wins (REST always returns headers, so non-nil)
+		var nodes []issueEventNode
+		if derr := json.Unmarshal(body, &nodes); derr != nil {
+			return IssueEventsResult{}, fmt.Errorf("decoding GitHub issue events for %s/%s: %w", owner, name, derr)
+		}
+		for _, nd := range nodes {
+			e := nd.toIssueEvent()
+			if e.CreatedAt.Before(since) {
+				crossedFloor = true
+				break
+			}
+			if _, dup := seen[e.EventID]; dup {
+				continue
+			}
+			seen[e.EventID] = struct{}{}
+			events = append(events, e)
+			if len(events) >= fetchLimit {
+				break
+			}
+		}
+		if crossedFloor || len(events) >= fetchLimit {
+			break
+		}
+		next := nextLink(hdr)
+		if next == "" {
+			exhausted = true // Link chain ended: the stream is drained, coverage proven
+			break
+		}
+		url = next
+	}
+	return IssueEventsResult{
+		Events:    events,
+		Truncated: !crossedFloor && !exhausted,
+		RateLimit: budget,
+	}, nil
+}
+
+// doREST executes one REST GET and returns the raw body, the response headers
+// (for Link pagination and budget), and the REST core-pool budget, after
+// REST-specific status classification. Unlike do/doRaw it decodes no GraphQL
+// envelope: a REST endpoint returns a bare JSON array with the budget in headers
+// only. The body is read before classification so a 403/429 secondary-rate-limit
+// message in the body can be inspected.
+func (f *GraphQLFetcher) doREST(ctx context.Context, token, url, owner, name string) (body []byte, hdr http.Header, budget *RateLimit, err error) {
+	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if rerr != nil {
+		return nil, nil, nil, fmt.Errorf("building request: %w", rerr)
+	}
+	req.Header.Set("Authorization", "bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, doErr := f.client.Do(req)
+	if doErr != nil {
+		return nil, nil, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("closing GitHub response body: %w", cerr)
+		}
+	}()
+
+	raw, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, nil, nil, fmt.Errorf("reading GitHub response for %s/%s: %w", owner, name, readErr)
+	}
+	if statusErr := classifyRESTStatus(resp.StatusCode, resp.Header, raw, owner, name); statusErr != nil {
+		return nil, nil, nil, statusErr
+	}
+	return raw, resp.Header, parseRESTBudget(resp.Header), nil
+}
+
+// classifyRESTStatus maps a REST response to a sentinel. It deliberately differs
+// from classifyStatus on 403: GraphQL returns 403 only for rate limits, but REST
+// returns 403 for permissions/secondary-abuse refusals too. A 403 is treated as
+// rate-limited only when a rate signal is present (else it degrades to a
+// not-found/access error, never a RateLimitedError that would trip batch
+// backpressure); a 429 is always rate-limited (it means too-many-requests
+// regardless of headers). A forbidden and a nonexistent repo both surface as
+// ErrRepoNotFound — GitHub returns 404 for a private repo the token can't see, so
+// the two are already indistinguishable at the API.
+func classifyRESTStatus(code int, hdr http.Header, body []byte, owner, name string) error {
+	switch {
+	case code >= 200 && code < 300:
+		return nil
+	case code == http.StatusUnauthorized:
+		return ErrGHNotAuthed
+	case code == http.StatusTooManyRequests:
+		return parseRateLimited(hdr)
+	case code == http.StatusForbidden:
+		if restRateSignal(hdr, body) {
+			return parseRateLimited(hdr)
+		}
+		return fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
+	case code == http.StatusNotFound:
+		return fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
+	default:
+		return fmt.Errorf("GitHub API returned status %d for %s/%s", code, owner, name)
+	}
+}
+
+// restRateSignal reports whether a 403 carries any signal that it is a rate limit
+// rather than a permissions refusal: a depleted X-RateLimit-Remaining, a
+// Retry-After header, or a secondary-rate-limit message in the body. The body
+// check exists for the one case the headers miss — a secondary rate limit that
+// signals only in the body — and matches the specific phrase GitHub uses for it
+// rather than the bare "rate limit" substring: a primary limit always carries the
+// depleted-remaining header (caught above), so the body match need only catch the
+// secondary case, and the narrow phrase can't misread a permissions 403 whose
+// prose happens to mention rate limits as a throttle.
+func restRateSignal(hdr http.Header, body []byte) bool {
+	if strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")) == "0" {
+		return true
+	}
+	if strings.TrimSpace(hdr.Get("Retry-After")) != "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(string(body)), "secondary rate limit")
+}
+
+// parseRESTBudget reads the REST core-pool budget from the response headers:
+// X-RateLimit-Remaining (requests left this hour) and X-RateLimit-Reset (a unix
+// epoch). The remaining count is the pacing signal and the budget's reason to
+// exist, so a budget is reported only when it parses — a missing or malformed
+// remaining yields nil (no budget observed) rather than a fabricated Remaining 0,
+// which the batch aggregator would otherwise read as the tightest budget and
+// surface as a false "0 requests left" with no throttle. The reset is optional
+// recovery detail layered on once a remaining is known. REST responses normally
+// carry both, so a maintenance fetch's budget is essentially never nil (unlike a
+// GraphQL response, which can omit the rateLimit block).
+func parseRESTBudget(hdr http.Header) *RateLimit {
+	n, err := strconv.Atoi(strings.TrimSpace(hdr.Get("X-RateLimit-Remaining")))
+	if err != nil {
+		return nil
+	}
+	rl := RateLimit{Remaining: n}
+	if v := strings.TrimSpace(hdr.Get("X-RateLimit-Reset")); v != "" {
+		if r, rerr := strconv.ParseInt(v, 10, 64); rerr == nil && r > 0 {
+			rl.ResetAt = time.Unix(r, 0).UTC()
+		}
+	}
+	return &rl
+}
+
+// nextLink extracts the rel="next" URL from the response Link header (RFC 5988),
+// or "" when there is no next page. GitHub paginates the issue-events stream with
+// this header rather than a page count, so following it — instead of incrementing
+// a page number blind — stops cleanly at the last page.
+func nextLink(hdr http.Header) string {
+	for _, link := range hdr.Values("Link") {
+		for _, part := range strings.Split(link, ",") {
+			segs := strings.Split(part, ";")
+			if len(segs) < 2 {
+				continue
+			}
+			urlPart := strings.TrimSpace(segs[0])
+			if !strings.HasPrefix(urlPart, "<") || !strings.HasSuffix(urlPart, ">") {
+				continue
+			}
+			for _, p := range segs[1:] {
+				if p = strings.TrimSpace(p); strings.HasPrefix(p, "rel=") {
+					if strings.Trim(strings.TrimPrefix(p, "rel="), `"`) == "next" {
+						return urlPart[1 : len(urlPart)-1]
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // authoredSearchQueries assembles the five GitHub search query strings in the
 // order the authoredSearchQuery aliases consume them (s0..s4). Issues/PRs opened
 // filter on created date (the authored event); reviews and the two engagement
@@ -806,6 +1037,74 @@ type commitHistoryData struct {
 type gqlError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// issueEventNode decodes one REST issue-event into the flattened IssueEvent.
+// actor, issue, label, milestone, assignee, and rename are pointers because each
+// is null/absent for events (or items) that don't carry it: a null actor (a
+// deleted user) leaves Actor empty, and performedViaGithubApp is a presence flag —
+// non-null only when GitHub attributes the event to an app. issue.pull_request is
+// likewise a presence flag distinguishing a PR from an issue. The small payload
+// structs decode only the one field the maintenance reduction reads from each.
+type issueEventNode struct {
+	ID        int64     `json:"id"`
+	Event     string    `json:"event"`
+	CreatedAt time.Time `json:"created_at"`
+	Actor     *struct {
+		Login string `json:"login"`
+	} `json:"actor"`
+	Issue *struct {
+		Number      int                   `json:"number"`
+		Title       string                `json:"title"`
+		PullRequest *struct{ URL string } `json:"pull_request"`
+	} `json:"issue"`
+	PerformedViaGitHubApp *struct {
+		ID int64 `json:"id"`
+	} `json:"performed_via_github_app"`
+	Label *struct {
+		Name string `json:"name"`
+	} `json:"label"`
+	Milestone *struct {
+		Title string `json:"title"`
+	} `json:"milestone"`
+	Assignee *struct {
+		Login string `json:"login"`
+	} `json:"assignee"`
+	Rename *struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	} `json:"rename"`
+}
+
+func (n issueEventNode) toIssueEvent() IssueEvent {
+	e := IssueEvent{
+		EventID:       n.ID,
+		Type:          n.Event,
+		CreatedAt:     n.CreatedAt.UTC(),
+		ViaAutomation: n.PerformedViaGitHubApp != nil,
+	}
+	if n.Actor != nil {
+		e.Actor = n.Actor.Login
+	}
+	if n.Issue != nil {
+		e.IssueNumber = n.Issue.Number
+		e.IssueTitle = n.Issue.Title
+		e.IssueIsPR = n.Issue.PullRequest != nil
+	}
+	if n.Label != nil {
+		e.Label = n.Label.Name
+	}
+	if n.Milestone != nil {
+		e.Milestone = n.Milestone.Title
+	}
+	if n.Assignee != nil {
+		e.Assignee = n.Assignee.Login
+	}
+	if n.Rename != nil {
+		e.RenameFrom = n.Rename.From
+		e.RenameTo = n.Rename.To
+	}
+	return e
 }
 
 type issuesConnection struct {

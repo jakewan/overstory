@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -590,5 +591,251 @@ func TestListIssuesUpdatedSinceTruncatesOnUnusableCursor(t *testing.T) {
 	}
 	if !res.Truncated {
 		t.Error("Truncated = false, want true (hasNextPage with no cursor is unproven coverage)")
+	}
+}
+
+// restFetcherTo builds a fetcher whose REST base points at a test server — the
+// GraphQL endpoint is left unused, since the issue-events fetch is REST-only.
+func restFetcherTo(url, token string) *GraphQLFetcher {
+	return &GraphQLFetcher{restEndpoint: url, tokens: staticToken{token: token}, client: &http.Client{}}
+}
+
+// writeBody writes a response body from a multi-page test handler, failing the
+// test on a write error (errcheck's check-blank bars discarding it to _).
+func writeBody(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := io.WriteString(w, body); err != nil {
+		t.Errorf("write response: %v", err)
+	}
+}
+
+// eventsBudgetHeaders is the REST core-pool budget headers a real events response
+// carries, so the budget-decode and rate-signal cases share one fixture.
+func eventsBudgetHeaders(remaining string, resetEpoch int64) map[string]string {
+	return map[string]string{
+		"X-RateLimit-Remaining": remaining,
+		"X-RateLimit-Reset":     strconv.FormatInt(resetEpoch, 10),
+		"Content-Type":          "application/json",
+	}
+}
+
+// TestListIssueEventsDecodesPayloadPerType pins the REST decode: a bare JSON array
+// of mixed event types flattens into IssueEvent with each type's payload mapped,
+// the actor/issue/PR fields populated, and performed_via_github_app read as the
+// automation flag.
+func TestListIssueEventsDecodesPayloadPerType(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	body := `[
+		{"id":10,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"jakewan"},
+		 "issue":{"number":100,"title":"an issue","pull_request":null},"label":{"name":"reductions"},"performed_via_github_app":null},
+		{"id":11,"event":"milestoned","created_at":"2026-06-10T01:00:00Z","actor":{"login":"jakewan"},
+		 "issue":{"number":100,"title":"an issue"},"milestone":{"title":"Round 6"}},
+		{"id":12,"event":"assigned","created_at":"2026-06-10T02:00:00Z","actor":{"login":"jakewan"},
+		 "issue":{"number":100,"title":"an issue"},"assignee":{"login":"jakewan"}},
+		{"id":13,"event":"renamed","created_at":"2026-06-10T03:00:00Z","actor":{"login":"jakewan"},
+		 "issue":{"number":100,"title":"an issue"},"rename":{"from":"old","to":"new"},"performed_via_github_app":{"id":42}},
+		{"id":14,"event":"closed","created_at":"2026-06-10T04:00:00Z","actor":{"login":"jakewan"},
+		 "issue":{"number":200,"title":"a pr","pull_request":{"url":"u"}}}
+	]`
+	srv := jsonServerWithHeaders(t, http.StatusOK, eventsBudgetHeaders("4990", 1750000000), body)
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(res.Events) != 5 {
+		t.Fatalf("len(Events) = %d, want 5", len(res.Events))
+	}
+	byID := map[int64]IssueEvent{}
+	for _, e := range res.Events {
+		byID[e.EventID] = e
+	}
+	if e := byID[10]; e.Type != "labeled" || e.Label != "reductions" || e.Actor != "jakewan" || e.IssueNumber != 100 || e.IssueIsPR || e.ViaAutomation {
+		t.Errorf("labeled event = %+v", e)
+	}
+	if e := byID[11]; e.Milestone != "Round 6" {
+		t.Errorf("milestoned.Milestone = %q, want Round 6", e.Milestone)
+	}
+	if e := byID[12]; e.Assignee != "jakewan" {
+		t.Errorf("assigned.Assignee = %q, want jakewan", e.Assignee)
+	}
+	if e := byID[13]; e.RenameFrom != "old" || e.RenameTo != "new" || !e.ViaAutomation {
+		t.Errorf("renamed event = %+v, want from/to set and ViaAutomation true", e)
+	}
+	if e := byID[14]; !e.IssueIsPR {
+		t.Errorf("closed PR event IsPullRequest = false, want true")
+	}
+	// Header-only budget decodes.
+	if res.RateLimit == nil || res.RateLimit.Remaining != 4990 {
+		t.Errorf("RateLimit = %+v, want Remaining 4990", res.RateLimit)
+	}
+}
+
+// TestListIssueEventsNullActor pins that a null actor (a deleted user) decodes to
+// an empty Actor without panicking, so it simply won't match a measured login.
+func TestListIssueEventsNullActor(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	body := `[{"id":1,"event":"closed","created_at":"2026-06-10T00:00:00Z","actor":null,"issue":{"number":1,"title":"x"}}]`
+	srv := jsonServerWithHeaders(t, http.StatusOK, eventsBudgetHeaders("5000", 1750000000), body)
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Actor != "" {
+		t.Errorf("events = %+v, want one event with empty actor", res.Events)
+	}
+}
+
+// TestListIssueEventsFloorCrossingStopsAndProvesCoverage pins multi-page
+// pagination via the Link header and the floor-crossing stop: page 1 is all
+// in-window with a rel="next", page 2 carries an event older than `since`, so the
+// scan crosses the floor and reports Truncated false (coverage proven).
+func TestListIssueEventsFloorCrossingStopsAndProvesCoverage(t *testing.T) {
+	since := time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range eventsBudgetHeaders("4000", 1750000000) {
+			w.Header().Set(k, v)
+		}
+		page := r.URL.Query().Get("page")
+		if page == "" || page == "1" {
+			w.Header().Set("Link", "<http://"+r.Host+r.URL.Path+"?page=2>; rel=\"next\"")
+			w.WriteHeader(http.StatusOK)
+			writeBody(t, w, `[{"id":20,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}]`)
+			return
+		}
+		// Page 2: an event before the floor — the scan must stop here.
+		w.WriteHeader(http.StatusOK)
+		writeBody(t, w, `[{"id":10,"event":"labeled","created_at":"2026-06-01T00:00:00Z","actor":{"login":"a"},"issue":{"number":2,"title":"y"}}]`)
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	// Only the in-window event survives; the pre-floor one is dropped.
+	if len(res.Events) != 1 || res.Events[0].EventID != 20 {
+		t.Fatalf("events = %+v, want only id 20 (in-window)", res.Events)
+	}
+	if res.Truncated {
+		t.Error("Truncated = true, want false (the floor was crossed)")
+	}
+}
+
+// TestListIssueEventsDedupesAcrossPages pins cross-page dedup by event id: a write
+// that shifts the offset window can resurface an event on the next page, and the
+// monotonic id is what keeps it from being double-counted.
+func TestListIssueEventsDedupesAcrossPages(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range eventsBudgetHeaders("4000", 1750000000) {
+			w.Header().Set(k, v)
+		}
+		if p := r.URL.Query().Get("page"); p == "" || p == "1" {
+			w.Header().Set("Link", "<http://"+r.Host+r.URL.Path+"?page=2>; rel=\"next\"")
+			w.WriteHeader(http.StatusOK)
+			writeBody(t, w, `[
+				{"id":30,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}},
+				{"id":29,"event":"labeled","created_at":"2026-06-09T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}
+			]`)
+			return
+		}
+		// Page 2 repeats id 29 (offset shift) then a fresh id 28; no Link → exhausted.
+		w.WriteHeader(http.StatusOK)
+		writeBody(t, w, `[
+			{"id":29,"event":"labeled","created_at":"2026-06-09T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}},
+			{"id":28,"event":"labeled","created_at":"2026-06-08T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}
+		]`)
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(res.Events) != 3 {
+		t.Fatalf("len(Events) = %d, want 3 (id 29 deduped across pages)", len(res.Events))
+	}
+	if res.Truncated {
+		t.Error("Truncated = true, want false (stream exhausted, no rel=next)")
+	}
+}
+
+// TestListIssueEventsTruncatesOnFetchCap pins the cap-driven truncation: when the
+// fetch limit is reached before the floor is crossed or the stream drained,
+// Truncated is true so the lower-bound coverage is never reported as complete.
+func TestListIssueEventsTruncatesOnFetchCap(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	srv := jsonServerWithHeaders(t, http.StatusOK, map[string]string{
+		"X-RateLimit-Remaining": "4000", "X-RateLimit-Reset": "1750000000",
+		"Link": "", // set below per request is unnecessary; a present Link keeps coverage unproven
+	}, `[
+		{"id":2,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}},
+		{"id":1,"event":"labeled","created_at":"2026-06-09T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}
+	]`)
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 1)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if len(res.Events) != 1 {
+		t.Fatalf("len(Events) = %d, want 1 (capped at fetchLimit)", len(res.Events))
+	}
+	if !res.Truncated {
+		t.Error("Truncated = false, want true (fetch cap hit before coverage proven)")
+	}
+}
+
+// TestListIssueEventsBudgetRequiresRemaining pins that a response carrying a reset
+// header but no remaining count yields a nil budget rather than a fabricated
+// Remaining 0 — the aggregator must never read an unknown budget as "0 left".
+func TestListIssueEventsBudgetRequiresRemaining(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	srv := jsonServerWithHeaders(t, http.StatusOK, map[string]string{
+		"X-RateLimit-Reset": "1750000000", // reset present, remaining absent
+		"Content-Type":      "application/json",
+	}, `[{"id":1,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}]`)
+	res, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssueEvents: %v", err)
+	}
+	if res.RateLimit != nil {
+		t.Errorf("RateLimit = %+v, want nil (no remaining count means no usable budget)", res.RateLimit)
+	}
+}
+
+// TestListIssueEventsClassifiesStatus pins the REST-specific status mapping that
+// deliberately differs from the GraphQL classifier: a 404 and a 403 without any
+// rate signal both surface as ErrRepoNotFound (never a RateLimitedError that would
+// trip batch backpressure), while a 429 and a 403 carrying a rate signal surface
+// as ErrRateLimited.
+func TestListIssueEventsClassifiesStatus(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name        string
+		status      int
+		headers     map[string]string
+		body        string
+		wantNotFnd  bool
+		wantLimited bool
+	}{
+		{"404 not found", http.StatusNotFound, nil, `{"message":"Not Found"}`, true, false},
+		{"403 no rate signal is access error", http.StatusForbidden, nil, `{"message":"Must have admin rights"}`, true, false},
+		{"403 prose mentioning rate limit is not a throttle", http.StatusForbidden, nil, `{"message":"Resource not accessible; see the rate limit docs"}`, true, false},
+		{"403 with depleted remaining is rate limited", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1750000000"}, `{"message":"API rate limit exceeded"}`, false, true},
+		{"403 secondary-limit body is rate limited", http.StatusForbidden, nil, `{"message":"You have exceeded a secondary rate limit"}`, false, true},
+		{"429 is always rate limited", http.StatusTooManyRequests, nil, `{"message":"Too Many Requests"}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := jsonServerWithHeaders(t, tc.status, tc.headers, tc.body)
+			_, err := restFetcherTo(srv.URL, "tok").ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+			if err == nil {
+				t.Fatal("err = nil, want a classified error")
+			}
+			if got := errors.Is(err, ErrRepoNotFound); got != tc.wantNotFnd {
+				t.Errorf("errors.Is(ErrRepoNotFound) = %v, want %v (err: %v)", got, tc.wantNotFnd, err)
+			}
+			if got := errors.Is(err, ErrRateLimited); got != tc.wantLimited {
+				t.Errorf("errors.Is(ErrRateLimited) = %v, want %v (err: %v)", got, tc.wantLimited, err)
+			}
+		})
 	}
 }
