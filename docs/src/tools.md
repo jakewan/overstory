@@ -45,6 +45,7 @@ The **grooming** read: what in the backlog needs maintenance attention. Composit
 | `crossRef`    | Groups of open issues that reference one another — candidate consolidation. | `crossref.go` |
 | `trajectory`  | Per lookback window, issues created, closed, and net — the growing/shrinking signal. Aggregate (unaffected by `limit`); degradable. | `trajectory.go` |
 | `criticalPath`| When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
+| `openIssueSet` | The ascending, distinct open issue `numbers` in the fetched window — the surface a caller resolves a deferred issue's `bodyRefs` against. Same-repo, open, issues-only; the full window, never `limit`-capped (`fetchTruncated` marks a floor). Presence names a live open issue; absence is not proof of resolution. | `reduce.OpenIssueSetFacts` (in `internal/reduce/`) |
 
 Plus the optional top-level `rateLimit`.
 
@@ -60,6 +61,7 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 | `openPRs`         | Each open PR's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count. Degradable. | `pullrequests.go` |
 | `recommendations` | Per-issue inputs (bug-labeled, milestone, age, inactivity) a caller ranks "what next" from. The ranking judgment stays caller-side. | `recommendations.go` |
 | `criticalPath`    | When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
+| `openIssueSet`    | The ascending, distinct open issue `numbers` in the fetched window — the surface a caller resolves a recommendation candidate's `bodyRefs` against, so an age-driven ranking can demote a candidate gated behind an open sibling. Same-repo, open, issues-only; the full window, never `limit`-capped (`fetchTruncated` marks a floor). Presence names a live open issue; absence is not proof of resolution. | `reduce.OpenIssueSetFacts` (in `internal/reduce/`) |
 
 Plus the optional top-level `rateLimit`.
 

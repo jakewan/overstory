@@ -30,12 +30,16 @@ type RecommendationFacts struct {
 //
 // BodyRefs are the distinct #N references parsed from the issue body, ascending,
 // with pull-request references and the issue's own number excluded — the issue's
-// stated dependencies, so a caller's "what to start next" ranking can tell a ready
-// issue from one gated behind open siblings. It is parsed from GitHub's rendered
-// plaintext body (bodyText), not raw markdown, so only references surviving
-// plaintext rendering appear; these are a heuristic proxy for stated
-// cross-references, not GitHub's native blocked-by/sub-issue edges. Non-nil even
-// when empty, so it serializes as [] rather than null.
+// stated dependencies. A caller resolves them against the composite's open-issue-set
+// block: a ref present there names a live open issue in this repo, so the caller can
+// rank a candidate gated behind one after ready work; but absence is not proof of
+// resolution — the ref may be a closed issue, an open PR (PRs share the number
+// space), a cross-repo reference, or, on a truncated window, an open issue the fetch
+// missed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
+// markdown, so only references surviving plaintext rendering appear; these are a
+// heuristic proxy for stated cross-references, not GitHub's native
+// blocked-by/sub-issue edges. Non-nil even when empty, so it serializes as []
+// rather than null.
 type RecommendationCandidate struct {
 	Number       int     `json:"number"`
 	Title        string  `json:"title"`

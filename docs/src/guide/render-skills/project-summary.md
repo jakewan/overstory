@@ -53,7 +53,7 @@ Report which check failed and stop. This skill has **no `gh` fallback** by desig
 
 ## Step 2: Render the report
 
-The tool returns a composite object: `repo`, `generatedAt`, and one block per section — `milestones`, `areaInventory`, `hygiene`, `openPRs`, `recommendations`, `criticalPath`, and an optional `rateLimit`. Render the five factual sections below from their blocks, in order; synthesize What's Next from `recommendations` last (Step 3).
+The tool returns a composite object: `repo`, `generatedAt`, and one block per section — `milestones`, `areaInventory`, `hygiene`, `openPRs`, `recommendations`, `criticalPath`, `openIssueSet`, and an optional `rateLimit`. Render the five factual sections below from their blocks, in order; synthesize What's Next from `recommendations` last (Step 3). `openIssueSet` has no section of its own — it is the open-issue lookup that Step 3 resolves each candidate's stated dependencies against.
 
 **Truncation is load-bearing.** Blocks carry `fetchTruncated` (the scan window didn't cover every open issue), `listTruncated` (more matches exist than were listed), and — on milestones — `membershipTruncated` (a milestone's listed members are a floor relative to its open count). When any is true, render an explicit "lower bound" note for that section: the result is a floor, not a complete picture. Never present a truncated run as exhaustive.
 
@@ -134,13 +134,27 @@ The `rateLimit` block is present only when the GraphQL points budget ran low dur
 
 Header: `## What's Next`
 
-From the `recommendations` block. The server supplies per-issue candidate inputs and a neutral pre-sort; **the ranking judgment is this skill's** — the server reduces, the caller ranks. Each candidate carries `number`, `title`, `isBug`, `milestone` (the milestone *title*, or absent — there is no open/closed join, so a present `milestone` tells you only that the issue has one), `ageDays`, and `inactiveDays`. Rank 3–5 concrete next steps over these inputs, in priority order:
+From the `recommendations` block. The server supplies per-issue candidate inputs and a neutral pre-sort; **the ranking judgment is this skill's** — the server reduces, the caller ranks. Each candidate carries `number`, `title`, `isBug`, `milestone` (the milestone *title*, or absent — there is no open/closed join, so a present `milestone` tells you only that the issue has one), `bodyRefs` (its stated `#N` dependencies, ascending — PR references and the issue's own number excluded), `ageDays`, and `inactiveDays`. Rank 3–5 concrete next steps over these inputs, in priority order:
 
 1. **Bugs** (`isBug` true) — friction that compounds.
 2. **Active-milestone work** (`milestone` present) — the current planning unit has open work.
 3. **Aged backlog** (high `ageDays`, no `milestone`) — candidates for the next planning unit.
 
-Every recommendation names specific issue numbers — no meta-process suggestions. If `listTruncated`, note the candidate pool was capped. Then close with the read-only transition:
+**Ready before gated — a cross-cutting demotion, not a fourth tier.** Within whatever tier a candidate lands in, demote it when it is gated behind unfinished work. Resolve each candidate's `bodyRefs` against `openIssueSet.numbers`:
+
+- **Ref ∈ `openIssueSet.numbers`** — the ref names a live open issue in this repo, so treat the candidate as **gated**: rank it *after* ready work in its tier and name the open gate. The relationship is a candidate to verify, not a proven blocker — a stated `#N` can be "related to" or "supersedes", not "blocked by" — so present it as "gated behind open #N", not "blocked".
+- **Ref ∉ `numbers`** — **no live open-issue gate detected here; do not promote the candidate to "ready" on this basis.** Absence is not resolution: the ref may be a closed issue (resolved), an open PR (PRs share the number space and are not in this set), a cross-repo reference (a bare number), or — when `openIssueSet.fetchTruncated` — an open issue beyond the fetched window. Verify by hand before treating it as clear.
+
+So a freshly-aged capstone whose `bodyRefs` include an open sibling ranks below a same-tier candidate whose refs are all absent (or which states none) — ready work first. For example, given `openIssueSet.numbers` that contains `51`, an aged capstone `#58` whose `bodyRefs` are `[51]`, and a same-tier `#72` that states no dependency:
+
+```markdown
+- #72 - refactor: extract the parser — ready (states no open-issue dependency)
+- #58 - feat: end-to-end synthesis — **gated**: stated dep #51 is a live open issue (verify the relationship)
+```
+
+`#72` leads despite `#58` being older, because `#58`'s stated dep `#51` is in the open-issue set and `#72`'s isn't gated at all. Keep the three-tier structure above intact; gating only reorders *within* a tier.
+
+Every recommendation names specific issue numbers — no meta-process suggestions. If `listTruncated`, note the candidate pool was capped (and the `openIssueSet` lookup may also be a floor when `fetchTruncated`). Then close with the read-only transition:
 
 > This is a read-only orientation — no issues were modified. Which would you like to start on?
 
