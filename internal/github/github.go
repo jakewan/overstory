@@ -36,20 +36,41 @@ import (
 // flag that a graph edge may be missing rather than report incomplete data as
 // complete.
 //
+// BlockedBy is GitHub's authoritative native blocked-by edges for this issue —
+// each a same-repository issue this one is declared to depend on, with its open/
+// closed state. Cross-repository blockers are dropped (same collision reasoning as
+// ReferencedBy: a foreign repo's issue number would otherwise read as a local one);
+// a blocker is always an issue, never a PR, because the edge type is an issue
+// connection. BlockedByTruncated is set when the issue had more native edges than
+// the fetch cap, so a consumer flags that absence past the window is not proof of
+// readiness. This is the trustworthy counterpart to the heuristic body-text
+// dependency proxy the reductions derive from BodyText.
+//
 // Milestone is the issue's milestone association (number and title), or nil when
 // the issue is unmilestoned — the orientation reduction reads it both to group
 // issues under their milestone and to flag the unmilestoned ones.
 type Issue struct {
-	Number             int           `json:"number"`
-	Title              string        `json:"title"`
-	URL                string        `json:"url"`
-	CreatedAt          time.Time     `json:"createdAt"`
-	LastActivityAt     time.Time     `json:"lastActivityAt"`
-	Labels             []string      `json:"labels"`
-	BodyText           string        `json:"bodyText"`
-	ReferencedBy       []int         `json:"referencedBy"`
-	CrossRefsTruncated bool          `json:"crossRefsTruncated"`
-	Milestone          *MilestoneRef `json:"milestone,omitempty"`
+	Number             int            `json:"number"`
+	Title              string         `json:"title"`
+	URL                string         `json:"url"`
+	CreatedAt          time.Time      `json:"createdAt"`
+	LastActivityAt     time.Time      `json:"lastActivityAt"`
+	Labels             []string       `json:"labels"`
+	BodyText           string         `json:"bodyText"`
+	ReferencedBy       []int          `json:"referencedBy"`
+	CrossRefsTruncated bool           `json:"crossRefsTruncated"`
+	BlockedBy          []BlockedByRef `json:"blockedBy"`
+	BlockedByTruncated bool           `json:"blockedByTruncated"`
+	Milestone          *MilestoneRef  `json:"milestone,omitempty"`
+}
+
+// BlockedByRef is one native blocked-by edge: the blocking issue's Number and
+// whether it is still Open. The reductions surface only the open blockers (a
+// closed blocker no longer gates), so Open is what lets a reduction filter without
+// a second fetch — the edge carries the state authoritatively.
+type BlockedByRef struct {
+	Number int  `json:"number"`
+	Open   bool `json:"open"`
 }
 
 // MilestoneRef is an issue's milestone association: enough to group the issue and

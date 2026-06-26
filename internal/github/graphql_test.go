@@ -248,6 +248,80 @@ func TestListOpenIssuesParsesCrossReferences(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
+	// The fake-injected reduction specs set Issue.BlockedBy directly, so they never
+	// exercise toIssue's wire→domain mapping — the enum-casing (state=="OPEN"), the
+	// cross-repository drop, and the totalCount>nodes truncation arithmetic. This
+	// drives that mapping against a fake GraphQL server: (a) the query must request
+	// the blockedBy connection — a selection typo would silently ship and the
+	// dependency signal would see no edges; (b) the edges decode onto
+	// Issue.BlockedBy with the same-repo filter and open-state mapping applied,
+	// preserving closed blockers (the open-only projection is the reduction's job).
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		// Issue 1: totalCount 4 but only 3 nodes returned → truncated. Same-repo #11
+		// OPEN and #9 CLOSED are kept (closed retained at this layer); cross-repo #7
+		// (other/repo) is dropped even though OPEN — its number would collide locally.
+		// Issue 2: blockedBy is null. Issue 3: the field is absent entirely.
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":3,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "blockedBy":{"totalCount":4,"nodes":[
+					{"number":11,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":9,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":7,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+				 ]}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "blockedBy":null},
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "blockedBy") {
+		t.Errorf("query does not request the native blockedBy connection; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("got %d issues, want 3", len(res.Issues))
+	}
+
+	// Issue 1: cross-repo #7 dropped; same-repo #11 (open) and #9 (closed) kept,
+	// order preserved, open state mapped from the enum.
+	want := []BlockedByRef{{Number: 11, Open: true}, {Number: 9, Open: false}}
+	if got := res.Issues[0].BlockedBy; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("issue 1 BlockedBy = %v, want %v", got, want)
+	}
+	if !res.Issues[0].BlockedByTruncated {
+		t.Error("issue 1 BlockedByTruncated = false, want true (totalCount 4 > 3 nodes)")
+	}
+	// Issues 2 (null) and 3 (absent): no blockers, not truncated, no panic.
+	for _, i := range []int{1, 2} {
+		if got := res.Issues[i].BlockedBy; len(got) != 0 {
+			t.Errorf("issue %d BlockedBy = %v, want empty", res.Issues[i].Number, got)
+		}
+		if res.Issues[i].BlockedByTruncated {
+			t.Errorf("issue %d BlockedByTruncated = true, want false", res.Issues[i].Number)
+		}
+	}
+}
+
 func TestListOpenIssuesPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

@@ -37,18 +37,28 @@ type RecommendationFacts struct {
 // space), a cross-repo reference, or, on a truncated window, an open issue the fetch
 // missed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
 // markdown, so only references surviving plaintext rendering appear; these are a
-// heuristic proxy for stated cross-references, not GitHub's native
-// blocked-by/sub-issue edges. Non-nil even when empty, so it serializes as []
-// rather than null.
+// heuristic proxy for stated cross-references, complementary to the authoritative
+// BlockedBy below. Non-nil even when empty, so it serializes as [] rather than null.
+//
+// BlockedBy are the ascending, distinct numbers of the candidate's still-open
+// native GitHub blocked-by edges — the authoritative dependency signal a caller
+// ranks readiness from. Closed blockers are omitted (they no longer gate), and a PR
+// can never appear (the edge is issue-to-issue). Unlike BodyRefs, the open/closed
+// state is read straight from the edge, so it needs no open-issue-set resolution and
+// carries no "absence is a closed issue or PR" ambiguity. Non-nil even when empty.
+// BlockedByTruncated is true when the candidate has more native edges than the fetch
+// window read — there, an empty BlockedBy is not proof the candidate is ready.
 type RecommendationCandidate struct {
-	Number       int     `json:"number"`
-	Title        string  `json:"title"`
-	URL          string  `json:"url"`
-	IsBug        bool    `json:"isBug"`
-	Milestone    *string `json:"milestone,omitempty"`
-	BodyRefs     []int   `json:"bodyRefs"`
-	AgeDays      int     `json:"ageDays"`
-	InactiveDays int     `json:"inactiveDays"`
+	Number             int     `json:"number"`
+	Title              string  `json:"title"`
+	URL                string  `json:"url"`
+	IsBug              bool    `json:"isBug"`
+	Milestone          *string `json:"milestone,omitempty"`
+	BodyRefs           []int   `json:"bodyRefs"`
+	BlockedBy          []int   `json:"blockedBy"`
+	BlockedByTruncated bool    `json:"blockedByTruncated"`
+	AgeDays            int     `json:"ageDays"`
+	InactiveDays       int     `json:"inactiveDays"`
 }
 
 // ReduceRecommendations reduces the fetched open issues to ranking-input
@@ -76,14 +86,16 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			milestone = &title
 		}
 		candidates = append(candidates, RecommendationCandidate{
-			Number:       is.Number,
-			Title:        is.Title,
-			URL:          is.URL,
-			IsBug:        anyMatch(bugMatcher, is.Labels),
-			Milestone:    milestone,
-			BodyRefs:     reduce.IssueRefsExcluding(is.BodyText, is.Number),
-			AgeDays:      reduce.DaysSince(now, is.CreatedAt),
-			InactiveDays: reduce.DaysSince(now, is.LastActivityAt),
+			Number:             is.Number,
+			Title:              is.Title,
+			URL:                is.URL,
+			IsBug:              anyMatch(bugMatcher, is.Labels),
+			Milestone:          milestone,
+			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BlockedBy:          reduce.OpenBlockerNumbers(is.BlockedBy),
+			BlockedByTruncated: is.BlockedByTruncated,
+			AgeDays:            reduce.DaysSince(now, is.CreatedAt),
+			InactiveDays:       reduce.DaysSince(now, is.LastActivityAt),
 		})
 	}
 

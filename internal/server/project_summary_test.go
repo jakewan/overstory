@@ -300,6 +300,59 @@ func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T
 	}
 }
 
+// TestProjectSummaryRecommendationSurfacesNativeBlockedBy pins the authoritative
+// dependency signal (#60): each candidate carries the OPEN native blocked-by edge
+// numbers — ascending, closed blockers omitted — so a caller ranking "what to start
+// next" can trust whether a candidate is actually blocked, distinct from the
+// heuristic bodyRefs. A window-truncated edge set sets blockedByTruncated.
+func TestProjectSummaryRecommendationSurfacesNativeBlockedBy(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	blocked := summaryIssue(1, nil)
+	blocked.BlockedBy = []github.BlockedByRef{
+		{Number: 11, Open: true},
+		{Number: 7, Open: true},
+		{Number: 9, Open: false}, // closed blocker no longer gates — excluded
+	}
+	blocked.BlockedByTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{blocked},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	c := facts.Recommendations.Candidates[0]
+	if len(c.BlockedBy) != 2 || c.BlockedBy[0] != 7 || c.BlockedBy[1] != 11 {
+		t.Errorf("BlockedBy = %v, want [7 11] (open only, ascending)", c.BlockedBy)
+	}
+	if !c.BlockedByTruncated {
+		t.Error("BlockedByTruncated = false, want true (edge set exceeded the fetch window)")
+	}
+}
+
+// TestProjectSummaryRecommendationBlockedByEmptySerializesAsArray pins the non-nil
+// convention for the native signal through the JSON round-trip, mirroring bodyRefs.
+func TestProjectSummaryRecommendationBlockedByEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	noBlockers := summaryIssue(1, nil)
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noBlockers},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	if facts.Recommendations.Candidates[0].BlockedBy == nil {
+		t.Error("BlockedBy = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestProjectSummaryRequiresOwnerRepo pins the input validation.
 func TestProjectSummaryRequiresOwnerRepo(t *testing.T) {
 	srv := New(WithFetcher(fakeFetcher{}), WithClock(func() time.Time { return fixedClock }))
