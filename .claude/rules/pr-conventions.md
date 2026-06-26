@@ -26,7 +26,7 @@ Avoid:
 Conventional Commits: `type(scope): subject`.
 
 - **Types**: `feat`, `fix`, `refactor`, `docs`, `build`, `ci`, `test`, `chore`.
-- **Scopes** (this project's areas): `mcp`, `manifest`, `backlog`, `gh`, `ci`, `build`, `docs`, `rules`, `dx`, `deps`. `mcp` covers the server and tool contract; `manifest` the declarative convention resolution; `backlog` the issue-reduction logic; `gh` the GitHub-CLI fetch layer; `dx` developer-experience work (tooling, justfile, hooks); `deps` dependency updates (e.g., Dependabot bumps).
+- **Scopes** (this project's areas): `mcp`, `manifest`, `backlog`, `gh`, `ci`, `build`, `docs`, `rules`, `dx`, `deps`. `mcp` covers the server and tool contract; `manifest` the declarative convention resolution; `backlog` the issue-reduction logic; `gh` the GitHub-CLI fetch layer; `dx` developer-experience work (tooling, justfile, hooks); `deps` dependency updates (e.g., Dependabot bumps). A changelog-only commit — notably the post-PR-creation commit that anchors an entry to its PR number — belongs to no code area; scope it `docs` with no scope (`docs: ...`).
 - **Body**: short prose stating *why* — the motivation, constraint, or problem solved — sized to the change, not its diff. A small change may need a one-line body or none. Don't restate the diff, don't narrate the journey ("the review surfaced...", "earlier this did X"), and don't re-derive rationale a durable doc (a design decision in `CLAUDE.md`, a doc comment) already records — point to it or omit it. State the durable *why* once, concisely.
 - **Issue references**: `Closes #N` (or `Related to #N`); repeat the keyword per issue.
 
