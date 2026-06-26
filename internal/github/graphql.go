@@ -51,6 +51,18 @@ const (
 // decode flag a per-issue truncation rather than drop edges silently. The event
 // sits on the *referenced* issue's timeline, so source is the issue/PR that
 // referenced this one — an incoming edge.
+//
+// blockedBy(first:50) is the authoritative native dependency signal — the issues
+// this one is declared to depend on. The connection type is IssueConnection, so a
+// blocker is always an issue, never a PR. first:50 matches GitHub's documented
+// dependency-edge limit per relationship, so in practice the window covers the full
+// set; correctness does not rest on that number, though — blockedByTruncated flags
+// any issue whose totalCount exceeds the fetched nodes, so a bounded set is never
+// reported as complete regardless of the real cap. repository{ nameWithOwner }
+// discriminates cross-repository blockers, which toIssue drops (a foreign repo's
+// issue number would collide with a local one — the same hazard referencedBy
+// guards). state is the IssueState enum (OPEN/CLOSED), read so the reduction can
+// surface only the blockers still open without a second fetch.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -68,6 +80,10 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
             isCrossRepository
             source{ __typename ... on Issue { number } }
           } }
+        }
+        blockedBy(first:50){
+          totalCount
+          nodes{ number state repository{ nameWithOwner } }
         }
       }
     }
@@ -260,7 +276,7 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		budget = pageBudget
 		totalOpen = conn.TotalCount
 		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue())
+			issues = append(issues, n.toIssue(owner+"/"+name))
 		}
 		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
 			break
@@ -1396,6 +1412,22 @@ type issueNode struct {
 		TotalCount int                 `json:"totalCount"`
 		Nodes      []crossRefEventNode `json:"nodes"`
 	} `json:"timelineItems"`
+	BlockedBy struct {
+		TotalCount int             `json:"totalCount"`
+		Nodes      []blockedByNode `json:"nodes"`
+	} `json:"blockedBy"`
+}
+
+// blockedByNode decodes one native blocked-by edge. The edge type is an issue
+// connection, so the node is always an Issue (no PR can appear); State is the
+// IssueState enum (OPEN/CLOSED) and Repository.NameWithOwner discriminates a
+// cross-repository blocker, which blockedByEdges drops.
+type blockedByNode struct {
+	Number     int    `json:"number"`
+	State      string `json:"state"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
 }
 
 type commentNode struct {
@@ -1419,7 +1451,12 @@ type crossRefEventNode struct {
 	} `json:"source"`
 }
 
-func (n issueNode) toIssue() Issue {
+// toIssue converts a decoded node to the domain Issue. repoFullName is the queried
+// "owner/name", needed to drop cross-repository blocked-by edges — unlike the
+// cross-reference timeline, whose CrossReferencedEvent carries an isCrossRepository
+// flag, a blocked-by Issue node has no parent-relative flag, so the foreign-repo
+// test is a nameWithOwner comparison.
+func (n issueNode) toIssue(repoFullName string) Issue {
 	labels := make([]string, 0, len(n.Labels.Nodes))
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
@@ -1438,8 +1475,32 @@ func (n issueNode) toIssue() Issue {
 		BodyText:           n.BodyText,
 		ReferencedBy:       n.referencedBy(),
 		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),
+		BlockedBy:          n.blockedByEdges(repoFullName),
+		BlockedByTruncated: n.BlockedBy.TotalCount > len(n.BlockedBy.Nodes),
 		Milestone:          milestone,
 	}
+}
+
+// blockedByEdges projects the native blocked-by connection to same-repository
+// blockers with their open state. A cross-repository blocker is dropped: its
+// foreign issue number would collide with a local one, the same hazard referencedBy
+// guards. The edge type guarantees every node is an issue, so no PR can appear.
+// repoFullName ("owner/name") is compared case-insensitively against each blocker's
+// nameWithOwner. Order is GitHub's; the reduction sorts and dedups when it projects
+// to the open numbers. Returns nil when empty (the reduction's projection is the
+// non-nil-serialization point).
+func (n issueNode) blockedByEdges(repoFullName string) []BlockedByRef {
+	out := make([]BlockedByRef, 0, len(n.BlockedBy.Nodes))
+	for _, b := range n.BlockedBy.Nodes {
+		if !strings.EqualFold(b.Repository.NameWithOwner, repoFullName) {
+			continue // cross-repository blocker — its number would collide locally
+		}
+		out = append(out, BlockedByRef{Number: b.Number, Open: b.State == "OPEN"})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // referencedBy projects the cross-reference timeline to the same-repository issue

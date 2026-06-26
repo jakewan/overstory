@@ -58,13 +58,24 @@ type DeferredFacts struct {
 // issue's stated dependencies, so a client can tell whether a blocker has since
 // closed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
 // markdown, so only references surviving plaintext rendering appear. Non-nil even
-// when empty, so it serializes as [] rather than null.
+// when empty, so it serializes as [] rather than null. It is a heuristic proxy for
+// stated cross-references, complementary to the authoritative BlockedBy below.
+//
+// BlockedBy are the ascending, distinct numbers of the issue's still-open native
+// GitHub blocked-by edges — the authoritative dependency signal: a closed blocker
+// is omitted (it no longer gates), and a PR can never appear (the edge is
+// issue-to-issue). Unlike BodyRefs, the open/closed determination needs no
+// open-issue-set resolution — the edge carries the state. Non-nil even when empty.
+// BlockedByTruncated is true when the issue has more native edges than the fetch
+// window read, so absence past the window is not proof the issue is unblocked.
 type DeferredIssue struct {
 	Number              int       `json:"number"`
 	Title               string    `json:"title"`
 	URL                 string    `json:"url"`
 	MatchedLabels       []string  `json:"matchedLabels"`
 	BodyRefs            []int     `json:"bodyRefs"`
+	BlockedBy           []int     `json:"blockedBy"`
+	BlockedByTruncated  bool      `json:"blockedByTruncated"`
 	InactiveDays        int       `json:"inactiveDays"`
 	AgeDays             int       `json:"ageDays"`
 	LastHumanActivityAt time.Time `json:"lastHumanActivityAt"`
@@ -113,6 +124,8 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			URL:                 is.URL,
 			MatchedLabels:       matched,
 			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BlockedBy:           reduce.OpenBlockerNumbers(is.BlockedBy),
+			BlockedByTruncated:  is.BlockedByTruncated,
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,
