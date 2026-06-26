@@ -46,29 +46,44 @@ import (
 // readiness. This is the trustworthy counterpart to the heuristic body-text
 // dependency proxy the reductions derive from BodyText.
 //
+// Blocking is the reverse direction: the native edges to same-repository issues
+// this one is declared to block, with each downstream issue's open/closed state.
+// Same shape and same cross-repository drop as BlockedBy — a blocked issue is
+// always an issue, never a PR — but the directional meaning is mirrored: Open here
+// means the *downstream* issue is still open, so this issue is one of the gates
+// standing in front of it. It is a gate this issue contributes, not necessarily the
+// sole one — a downstream issue several issues block stays blocked until all of them
+// close, so closing this issue is necessary but not always sufficient to free it.
+// BlockingTruncated is set when the issue had more native blocking edges than the
+// fetch cap.
+//
 // Milestone is the issue's milestone association (number and title), or nil when
 // the issue is unmilestoned — the orientation reduction reads it both to group
 // issues under their milestone and to flag the unmilestoned ones.
 type Issue struct {
-	Number             int            `json:"number"`
-	Title              string         `json:"title"`
-	URL                string         `json:"url"`
-	CreatedAt          time.Time      `json:"createdAt"`
-	LastActivityAt     time.Time      `json:"lastActivityAt"`
-	Labels             []string       `json:"labels"`
-	BodyText           string         `json:"bodyText"`
-	ReferencedBy       []int          `json:"referencedBy"`
-	CrossRefsTruncated bool           `json:"crossRefsTruncated"`
-	BlockedBy          []BlockedByRef `json:"blockedBy"`
-	BlockedByTruncated bool           `json:"blockedByTruncated"`
-	Milestone          *MilestoneRef  `json:"milestone,omitempty"`
+	Number             int             `json:"number"`
+	Title              string          `json:"title"`
+	URL                string          `json:"url"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	LastActivityAt     time.Time       `json:"lastActivityAt"`
+	Labels             []string        `json:"labels"`
+	BodyText           string          `json:"bodyText"`
+	ReferencedBy       []int           `json:"referencedBy"`
+	CrossRefsTruncated bool            `json:"crossRefsTruncated"`
+	BlockedBy          []DependencyRef `json:"blockedBy"`
+	BlockedByTruncated bool            `json:"blockedByTruncated"`
+	Blocking           []DependencyRef `json:"blocking"`
+	BlockingTruncated  bool            `json:"blockingTruncated"`
+	Milestone          *MilestoneRef   `json:"milestone,omitempty"`
 }
 
-// BlockedByRef is one native blocked-by edge: the blocking issue's Number and
-// whether it is still Open. The reductions surface only the open blockers (a
-// closed blocker no longer gates), so Open is what lets a reduction filter without
-// a second fetch — the edge carries the state authoritatively.
-type BlockedByRef struct {
+// DependencyRef is one native dependency edge in either direction: the referenced
+// issue's Number and whether it is still Open. It is direction-neutral by design —
+// a blocked-by edge and a blocking edge have the identical shape, so both share this
+// type. The reductions surface only the open edges (a closed issue no longer gates
+// in either direction), so Open is what lets a reduction filter without a second
+// fetch — the edge carries the state authoritatively.
+type DependencyRef struct {
 	Number int  `json:"number"`
 	Open   bool `json:"open"`
 }

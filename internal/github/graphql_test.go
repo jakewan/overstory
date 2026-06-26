@@ -304,7 +304,7 @@ func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
 
 	// Issue 1: cross-repo #7 dropped; same-repo #11 (open) and #9 (closed) kept,
 	// order preserved, open state mapped from the enum.
-	want := []BlockedByRef{{Number: 11, Open: true}, {Number: 9, Open: false}}
+	want := []DependencyRef{{Number: 11, Open: true}, {Number: 9, Open: false}}
 	if got := res.Issues[0].BlockedBy; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("issue 1 BlockedBy = %v, want %v", got, want)
 	}
@@ -318,6 +318,81 @@ func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
 		}
 		if res.Issues[i].BlockedByTruncated {
 			t.Errorf("issue %d BlockedByTruncated = true, want false", res.Issues[i].Number)
+		}
+	}
+}
+
+func TestListOpenIssuesParsesNativeBlocking(t *testing.T) {
+	// The reverse-direction mirror of TestListOpenIssuesParsesNativeBlockedBy, and the
+	// sole real guard for the blocking sub-selection: the query-decode contract test
+	// flattens the whole query into one token set, so the sibling blockedBy block
+	// already supplies state/repository/nameWithOwner — a blocking block that dropped
+	// those would pass it green. Only a wire-decode test exercising blocking's own
+	// edges catches it. (a) the query must request the blocking connection; (b) the
+	// edges decode onto Issue.Blocking with the same-repo filter and open-state mapping
+	// applied, preserving closed edges (the open-only projection is the reduction's
+	// job); (c) a totalCount exceeding the nodes sets BlockingTruncated.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		// Issue 1: totalCount 4 but only 3 nodes returned → truncated. Same-repo #21
+		// OPEN and #19 CLOSED are kept (closed retained at this layer); cross-repo #17
+		// (other/repo) is dropped even though OPEN — its number would collide locally.
+		// Issue 2: blocking is null. Issue 3: the field is absent entirely.
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":3,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "blocking":{"totalCount":4,"nodes":[
+					{"number":21,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":19,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":17,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+				 ]}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "blocking":null},
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "blocking") {
+		t.Errorf("query does not request the native blocking connection; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("got %d issues, want 3", len(res.Issues))
+	}
+
+	// Issue 1: cross-repo #17 dropped; same-repo #21 (open) and #19 (closed) kept,
+	// order preserved, open state mapped from the enum.
+	want := []DependencyRef{{Number: 21, Open: true}, {Number: 19, Open: false}}
+	if got := res.Issues[0].Blocking; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("issue 1 Blocking = %v, want %v", got, want)
+	}
+	if !res.Issues[0].BlockingTruncated {
+		t.Error("issue 1 BlockingTruncated = false, want true (totalCount 4 > 3 nodes)")
+	}
+	// Issues 2 (null) and 3 (absent): no blocking edges, not truncated, no panic.
+	for _, i := range []int{1, 2} {
+		if got := res.Issues[i].Blocking; len(got) != 0 {
+			t.Errorf("issue %d Blocking = %v, want empty", res.Issues[i].Number, got)
+		}
+		if res.Issues[i].BlockingTruncated {
+			t.Errorf("issue %d BlockingTruncated = true, want false", res.Issues[i].Number)
 		}
 	}
 }

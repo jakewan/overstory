@@ -6,18 +6,19 @@ import (
 	"github.com/jakewan/overstory/internal/github"
 )
 
-// OpenBlockerNumbers projects an issue's native blocked-by edges to the ascending,
-// distinct numbers of the blockers still open — the authoritative "what still gates
-// this issue" signal. Closed blockers are dropped (a closed blocker no longer
-// blocks); the cross-repository drop already happened in the fetch layer, so every
-// ref here is a same-repo issue. The result is non-nil even when empty, so a
-// reduction embedding it serializes [] rather than null — matching the bodyRefs
-// convention the two dependency signals share.
+// OpenDependencyNumbers projects an issue's native dependency edges — in either
+// direction — to the ascending, distinct numbers of the referenced issues still
+// open. For a blocked-by set it is "what still gates this issue"; for a blocking
+// set it is "which still-open issues this one gates". Closed edges are dropped (a
+// closed issue no longer gates either way); the cross-repository drop already
+// happened in the fetch layer, so every ref here is a same-repo issue. The result
+// is non-nil even when empty, so a reduction embedding it serializes [] rather than
+// null — matching the bodyRefs convention the dependency signals share.
 //
-// This is the single open-blocker projection both the backlog and summary
-// reductions call, so the authoritative dependency signal reads identically on
-// both tools.
-func OpenBlockerNumbers(refs []github.BlockedByRef) []int {
+// This is the single open-edge projection both the backlog and summary reductions
+// call for both directions, so the authoritative dependency signal reads identically
+// on both tools.
+func OpenDependencyNumbers(refs []github.DependencyRef) []int {
 	seen := make(map[int]bool, len(refs))
 	out := make([]int, 0, len(refs))
 	for _, r := range refs {

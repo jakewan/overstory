@@ -48,6 +48,15 @@ type RecommendationFacts struct {
 // carries no "absence is a closed issue or PR" ambiguity. Non-nil even when empty.
 // BlockedByTruncated is true when the candidate has more native edges than the fetch
 // window read — there, an empty BlockedBy is not proof the candidate is ready.
+//
+// Blocking is the reverse direction: the ascending, distinct numbers of the
+// still-open downstream issues this candidate gates — what picking it up would help
+// unblock. Same authoritative-edge semantics, mirrored: it lets a caller weigh how
+// much downstream work a candidate stands in front of, not just whether the
+// candidate is itself ready. It is a gate this issue contributes, not necessarily
+// the only one — a downstream issue several issues block stays blocked until they
+// all close. Non-nil even when empty; BlockingTruncated marks more native blocking
+// edges than the fetch window read.
 type RecommendationCandidate struct {
 	Number             int     `json:"number"`
 	Title              string  `json:"title"`
@@ -57,6 +66,8 @@ type RecommendationCandidate struct {
 	BodyRefs           []int   `json:"bodyRefs"`
 	BlockedBy          []int   `json:"blockedBy"`
 	BlockedByTruncated bool    `json:"blockedByTruncated"`
+	Blocking           []int   `json:"blocking"`
+	BlockingTruncated  bool    `json:"blockingTruncated"`
 	AgeDays            int     `json:"ageDays"`
 	InactiveDays       int     `json:"inactiveDays"`
 }
@@ -92,8 +103,10 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			IsBug:              anyMatch(bugMatcher, is.Labels),
 			Milestone:          milestone,
 			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
-			BlockedBy:          reduce.OpenBlockerNumbers(is.BlockedBy),
+			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByTruncated: is.BlockedByTruncated,
+			Blocking:           reduce.OpenDependencyNumbers(is.Blocking),
+			BlockingTruncated:  is.BlockingTruncated,
 			AgeDays:            reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays:       reduce.DaysSince(now, is.LastActivityAt),
 		})

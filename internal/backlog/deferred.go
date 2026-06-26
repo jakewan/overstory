@@ -62,12 +62,21 @@ type DeferredFacts struct {
 // stated cross-references, complementary to the authoritative BlockedBy below.
 //
 // BlockedBy are the ascending, distinct numbers of the issue's still-open native
-// GitHub blocked-by edges — the authoritative dependency signal: a closed blocker
-// is omitted (it no longer gates), and a PR can never appear (the edge is
-// issue-to-issue). Unlike BodyRefs, the open/closed determination needs no
-// open-issue-set resolution — the edge carries the state. Non-nil even when empty.
+// GitHub blocked-by edges — the authoritative dependency signal for what gates this
+// issue: a closed blocker is omitted (it no longer gates), and a PR can never appear
+// (the edge is issue-to-issue). Unlike BodyRefs, the open/closed determination needs
+// no open-issue-set resolution — the edge carries the state. Non-nil even when empty.
 // BlockedByTruncated is true when the issue has more native edges than the fetch
 // window read, so absence past the window is not proof the issue is unblocked.
+//
+// Blocking is the reverse direction: the ascending, distinct numbers of the
+// still-open downstream issues this one gates — what closing it would help unblock.
+// Same authoritative-edge semantics as BlockedBy, mirrored: it tells a maintainer
+// how much downstream work a parked issue stands in front of, not just whether the
+// parked issue is itself blocked. It is a gate this issue contributes, not
+// necessarily the only one, so a downstream issue stays blocked until every issue
+// blocking it closes. Non-nil even when empty; BlockingTruncated marks more native
+// blocking edges than the fetch window read.
 type DeferredIssue struct {
 	Number              int       `json:"number"`
 	Title               string    `json:"title"`
@@ -76,6 +85,8 @@ type DeferredIssue struct {
 	BodyRefs            []int     `json:"bodyRefs"`
 	BlockedBy           []int     `json:"blockedBy"`
 	BlockedByTruncated  bool      `json:"blockedByTruncated"`
+	Blocking            []int     `json:"blocking"`
+	BlockingTruncated   bool      `json:"blockingTruncated"`
 	InactiveDays        int       `json:"inactiveDays"`
 	AgeDays             int       `json:"ageDays"`
 	LastHumanActivityAt time.Time `json:"lastHumanActivityAt"`
@@ -124,8 +135,10 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			URL:                 is.URL,
 			MatchedLabels:       matched,
 			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
-			BlockedBy:           reduce.OpenBlockerNumbers(is.BlockedBy),
+			BlockedBy:           reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByTruncated:  is.BlockedByTruncated,
+			Blocking:            reduce.OpenDependencyNumbers(is.Blocking),
+			BlockingTruncated:   is.BlockingTruncated,
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,

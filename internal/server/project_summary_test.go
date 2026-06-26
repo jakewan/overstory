@@ -308,7 +308,7 @@ func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T
 func TestProjectSummaryRecommendationSurfacesNativeBlockedBy(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
 	blocked := summaryIssue(1, nil)
-	blocked.BlockedBy = []github.BlockedByRef{
+	blocked.BlockedBy = []github.DependencyRef{
 		{Number: 11, Open: true},
 		{Number: 7, Open: true},
 		{Number: 9, Open: false}, // closed blocker no longer gates — excluded
@@ -350,6 +350,61 @@ func TestProjectSummaryRecommendationBlockedByEmptySerializesAsArray(t *testing.
 	}
 	if facts.Recommendations.Candidates[0].BlockedBy == nil {
 		t.Error("BlockedBy = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
+// TestProjectSummaryRecommendationSurfacesNativeBlocking pins the reverse-direction
+// authoritative signal (#60): each candidate carries the OPEN native blocking edge
+// numbers — ascending, closed downstream issues omitted — so a caller weighing "what
+// to start next" sees how much downstream work a candidate gates, distinct from
+// blockedBy (whether the candidate is itself blocked). A window-truncated edge set
+// sets blockingTruncated.
+func TestProjectSummaryRecommendationSurfacesNativeBlocking(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	blocked := summaryIssue(1, nil)
+	blocked.Blocking = []github.DependencyRef{
+		{Number: 21, Open: true},
+		{Number: 17, Open: true},
+		{Number: 19, Open: false}, // closed downstream issue no longer gated — excluded
+	}
+	blocked.BlockingTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{blocked},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	c := facts.Recommendations.Candidates[0]
+	if len(c.Blocking) != 2 || c.Blocking[0] != 17 || c.Blocking[1] != 21 {
+		t.Errorf("Blocking = %v, want [17 21] (open only, ascending)", c.Blocking)
+	}
+	if !c.BlockingTruncated {
+		t.Error("BlockingTruncated = false, want true (edge set exceeded the fetch window)")
+	}
+}
+
+// TestProjectSummaryRecommendationBlockingEmptySerializesAsArray pins the non-nil
+// convention for the reverse-direction signal through the JSON round-trip, mirroring
+// blockedBy.
+func TestProjectSummaryRecommendationBlockingEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	noBlocking := summaryIssue(1, nil)
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noBlocking},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	if facts.Recommendations.Candidates[0].Blocking == nil {
+		t.Error("Blocking = nil (serialized as null), want non-nil empty slice (serialized as [])")
 	}
 }
 
