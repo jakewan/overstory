@@ -724,7 +724,7 @@ func TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray(t *testing.T) {
 func TestBacklogReviewDeferredSurfacesNativeBlockedBy(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
 	blocked := deferredIssue(1, daysAgo(100), "deferred")
-	blocked.BlockedBy = []github.BlockedByRef{
+	blocked.BlockedBy = []github.DependencyRef{
 		{Number: 11, Open: true},
 		{Number: 7, Open: true},
 		{Number: 9, Open: false}, // closed blocker no longer gates — excluded
@@ -767,6 +767,61 @@ func TestBacklogReviewDeferredBlockedByEmptySerializesAsArray(t *testing.T) {
 	}
 	if facts.Deferred.DeferredIssues[0].BlockedBy == nil {
 		t.Error("BlockedBy = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
+// TestBacklogReviewDeferredSurfacesNativeBlocking pins the reverse-direction
+// authoritative signal (#60): each deferred issue carries the OPEN native blocking
+// edge numbers — ascending, with closed downstream issues omitted (a closed issue is
+// no longer gated) — so a maintainer sees how much still-open downstream work a
+// parked issue stands in front of, distinct from blockedBy (what gates the parked
+// issue itself). A window-truncated edge set sets blockingTruncated.
+func TestBacklogReviewDeferredSurfacesNativeBlocking(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	blocked := deferredIssue(1, daysAgo(100), "deferred")
+	blocked.Blocking = []github.DependencyRef{
+		{Number: 21, Open: true},
+		{Number: 17, Open: true},
+		{Number: 19, Open: false}, // closed downstream issue no longer gated — excluded
+	}
+	blocked.BlockingTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{blocked},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	di := facts.Deferred.DeferredIssues[0]
+	if len(di.Blocking) != 2 || di.Blocking[0] != 17 || di.Blocking[1] != 21 {
+		t.Errorf("Blocking = %v, want [17 21] (open only, ascending)", di.Blocking)
+	}
+	if !di.BlockingTruncated {
+		t.Error("BlockingTruncated = false, want true (edge set exceeded the fetch window)")
+	}
+}
+
+// TestBacklogReviewDeferredBlockingEmptySerializesAsArray pins the non-nil
+// convention through the JSON round-trip: a deferred issue gating nothing must
+// serialize blocking as [], not null, mirroring blockedBy.
+func TestBacklogReviewDeferredBlockingEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	noBlocking := deferredIssue(1, daysAgo(100), "deferred")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noBlocking},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	if facts.Deferred.DeferredIssues[0].Blocking == nil {
+		t.Error("Blocking = nil (serialized as null), want non-nil empty slice (serialized as [])")
 	}
 }
 

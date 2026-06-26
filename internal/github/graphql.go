@@ -63,6 +63,12 @@ const (
 // issue number would collide with a local one — the same hazard referencedBy
 // guards). state is the IssueState enum (OPEN/CLOSED), read so the reduction can
 // surface only the blockers still open without a second fetch.
+//
+// blocking(first:50) is the reverse direction — the issues this one is declared to
+// block. Same IssueConnection (so always an issue, never a PR), same first:50 cap
+// and blockingTruncated truncation flag, and the same state/repository sub-fields
+// for open-state filtering and the cross-repository drop. The two directions decode
+// through one shared edge node and one shared edge projection.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -82,6 +88,10 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
           } }
         }
         blockedBy(first:50){
+          totalCount
+          nodes{ number state repository{ nameWithOwner } }
+        }
+        blocking(first:50){
           totalCount
           nodes{ number state repository{ nameWithOwner } }
         }
@@ -1413,16 +1423,21 @@ type issueNode struct {
 		Nodes      []crossRefEventNode `json:"nodes"`
 	} `json:"timelineItems"`
 	BlockedBy struct {
-		TotalCount int             `json:"totalCount"`
-		Nodes      []blockedByNode `json:"nodes"`
+		TotalCount int                  `json:"totalCount"`
+		Nodes      []dependencyEdgeNode `json:"nodes"`
 	} `json:"blockedBy"`
+	Blocking struct {
+		TotalCount int                  `json:"totalCount"`
+		Nodes      []dependencyEdgeNode `json:"nodes"`
+	} `json:"blocking"`
 }
 
-// blockedByNode decodes one native blocked-by edge. The edge type is an issue
-// connection, so the node is always an Issue (no PR can appear); State is the
-// IssueState enum (OPEN/CLOSED) and Repository.NameWithOwner discriminates a
-// cross-repository blocker, which blockedByEdges drops.
-type blockedByNode struct {
+// dependencyEdgeNode decodes one native dependency edge in either direction
+// (blocked-by or blocking). The edge type is an issue connection, so the node is
+// always an Issue (no PR can appear); State is the IssueState enum (OPEN/CLOSED) and
+// Repository.NameWithOwner discriminates a cross-repository edge, which
+// dependencyEdges drops.
+type dependencyEdgeNode struct {
 	Number     int    `json:"number"`
 	State      string `json:"state"`
 	Repository struct {
@@ -1475,27 +1490,30 @@ func (n issueNode) toIssue(repoFullName string) Issue {
 		BodyText:           n.BodyText,
 		ReferencedBy:       n.referencedBy(),
 		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),
-		BlockedBy:          n.blockedByEdges(repoFullName),
+		BlockedBy:          dependencyEdges(n.BlockedBy.Nodes, repoFullName),
 		BlockedByTruncated: n.BlockedBy.TotalCount > len(n.BlockedBy.Nodes),
+		Blocking:           dependencyEdges(n.Blocking.Nodes, repoFullName),
+		BlockingTruncated:  n.Blocking.TotalCount > len(n.Blocking.Nodes),
 		Milestone:          milestone,
 	}
 }
 
-// blockedByEdges projects the native blocked-by connection to same-repository
-// blockers with their open state. A cross-repository blocker is dropped: its
-// foreign issue number would collide with a local one, the same hazard referencedBy
-// guards. The edge type guarantees every node is an issue, so no PR can appear.
-// repoFullName ("owner/name") is compared case-insensitively against each blocker's
-// nameWithOwner. Order is GitHub's; the reduction sorts and dedups when it projects
-// to the open numbers. Returns nil when empty (the reduction's projection is the
-// non-nil-serialization point).
-func (n issueNode) blockedByEdges(repoFullName string) []BlockedByRef {
-	out := make([]BlockedByRef, 0, len(n.BlockedBy.Nodes))
-	for _, b := range n.BlockedBy.Nodes {
+// dependencyEdges projects a native dependency connection — blocked-by or blocking —
+// to same-repository edges with their open state. A cross-repository edge is dropped:
+// its foreign issue number would collide with a local one, the same hazard
+// referencedBy guards. The edge type guarantees every node is an issue, so no PR can
+// appear. repoFullName ("owner/name") is compared case-insensitively against each
+// edge's nameWithOwner. Order is GitHub's; the reduction sorts and dedups when it
+// projects to the open numbers. Returns nil when empty (the reduction's projection is
+// the non-nil-serialization point). It takes the connection's nodes as an argument so
+// both directions share one projection.
+func dependencyEdges(nodes []dependencyEdgeNode, repoFullName string) []DependencyRef {
+	out := make([]DependencyRef, 0, len(nodes))
+	for _, b := range nodes {
 		if !strings.EqualFold(b.Repository.NameWithOwner, repoFullName) {
-			continue // cross-repository blocker — its number would collide locally
+			continue // cross-repository edge — its number would collide locally
 		}
-		out = append(out, BlockedByRef{Number: b.Number, Open: b.State == "OPEN"})
+		out = append(out, DependencyRef{Number: b.Number, Open: b.State == "OPEN"})
 	}
 	if len(out) == 0 {
 		return nil
