@@ -54,14 +54,15 @@ const (
 //
 // blockedBy(first:50) is the authoritative native dependency signal — the issues
 // this one is declared to depend on. The connection type is IssueConnection, so a
-// blocker is always an issue, never a PR. first:50 matches GitHub's hard cap on
-// dependency edges per relationship, so totalCount can only exceed it in a future
-// where that cap rises — the decode still flags it via blockedByTruncated rather
-// than report a bounded set as complete. repository{ nameWithOwner } discriminates
-// cross-repository blockers, which toIssue drops (a foreign repo's issue number
-// would collide with a local one — the same hazard referencedBy guards). state is
-// the IssueState enum (OPEN/CLOSED), read so the reduction can surface only the
-// blockers still open without a second fetch.
+// blocker is always an issue, never a PR. first:50 matches GitHub's documented
+// dependency-edge limit per relationship, so in practice the window covers the full
+// set; correctness does not rest on that number, though — blockedByTruncated flags
+// any issue whose totalCount exceeds the fetched nodes, so a bounded set is never
+// reported as complete regardless of the real cap. repository{ nameWithOwner }
+// discriminates cross-repository blockers, which toIssue drops (a foreign repo's
+// issue number would collide with a local one — the same hazard referencedBy
+// guards). state is the IssueState enum (OPEN/CLOSED), read so the reduction can
+// surface only the blockers still open without a second fetch.
 const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
