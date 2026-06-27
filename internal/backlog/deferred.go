@@ -77,6 +77,22 @@ type DeferredFacts struct {
 // necessarily the only one, so a downstream issue stays blocked until every issue
 // blocking it closes. Non-nil even when empty; BlockingTruncated marks more native
 // blocking edges than the fetch window read.
+//
+// SubIssues are the ascending, distinct numbers of the parked issue's still-open
+// same-repository child issues — the hierarchy form of the same gate: a parent with
+// open children is not startable, however quiet it looks. Same authoritative-edge
+// semantics (closed children omitted, a PR can never appear, cross-repository
+// children dropped). Non-nil even when empty; SubIssuesTruncated marks more native
+// children than the fetch window read.
+//
+// SubIssuesTotal and SubIssuesCompleted are GitHub's authoritative subIssuesSummary
+// counts over *all* children — every repository, never capped — so SubIssuesTotal
+// minus SubIssuesCompleted is an upper bound on the open children and may exceed
+// len(SubIssues) when children are cross-repository or beyond the window. That gap is
+// the only signal exposing a parent gated entirely by hidden children: an empty
+// SubIssues with a positive gap is a hidden gate, not readiness. It is a bound, not
+// an equality (a not-planned closure can leave the gap one high), but it errs only
+// toward over-reporting the gate, so it never reads a gated parent as ready.
 type DeferredIssue struct {
 	Number              int       `json:"number"`
 	Title               string    `json:"title"`
@@ -87,6 +103,10 @@ type DeferredIssue struct {
 	BlockedByTruncated  bool      `json:"blockedByTruncated"`
 	Blocking            []int     `json:"blocking"`
 	BlockingTruncated   bool      `json:"blockingTruncated"`
+	SubIssues           []int     `json:"subIssues"`
+	SubIssuesTruncated  bool      `json:"subIssuesTruncated"`
+	SubIssuesTotal      int       `json:"subIssuesTotal"`
+	SubIssuesCompleted  int       `json:"subIssuesCompleted"`
 	InactiveDays        int       `json:"inactiveDays"`
 	AgeDays             int       `json:"ageDays"`
 	LastHumanActivityAt time.Time `json:"lastHumanActivityAt"`
@@ -139,6 +159,10 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			BlockedByTruncated:  is.BlockedByTruncated,
 			Blocking:            reduce.OpenDependencyNumbers(is.Blocking),
 			BlockingTruncated:   is.BlockingTruncated,
+			SubIssues:           reduce.OpenDependencyNumbers(is.SubIssues),
+			SubIssuesTruncated:  is.SubIssuesTruncated,
+			SubIssuesTotal:      is.SubIssuesTotal,
+			SubIssuesCompleted:  is.SubIssuesCompleted,
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,

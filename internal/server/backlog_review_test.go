@@ -825,6 +825,63 @@ func TestBacklogReviewDeferredBlockingEmptySerializesAsArray(t *testing.T) {
 	}
 }
 
+func TestBacklogReviewDeferredSurfacesNativeSubIssues(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	parent := deferredIssue(1, daysAgo(100), "deferred")
+	parent.SubIssues = []github.DependencyRef{
+		{Number: 27, Open: true},
+		{Number: 23, Open: true},
+		{Number: 25, Open: false}, // completed child no longer gates — excluded
+	}
+	parent.SubIssuesTruncated = true
+	// The summary is the untruncated authoritative pair, counted over all children
+	// (cross-repo and beyond-window alike), so total minus completed can exceed the
+	// listed open count — here 6-3=3 against 2 listed.
+	parent.SubIssuesTotal = 6
+	parent.SubIssuesCompleted = 3
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{parent},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	di := facts.Deferred.DeferredIssues[0]
+	if len(di.SubIssues) != 2 || di.SubIssues[0] != 23 || di.SubIssues[1] != 27 {
+		t.Errorf("SubIssues = %v, want [23 27] (open only, ascending)", di.SubIssues)
+	}
+	if !di.SubIssuesTruncated {
+		t.Error("SubIssuesTruncated = false, want true (child set exceeded the fetch window)")
+	}
+	if di.SubIssuesTotal != 6 || di.SubIssuesCompleted != 3 {
+		t.Errorf("completion = %d/%d, want 3/6 (completed/total)", di.SubIssuesCompleted, di.SubIssuesTotal)
+	}
+}
+
+// TestBacklogReviewDeferredSubIssuesEmptySerializesAsArray pins the non-nil
+// convention through the JSON round-trip: a deferred issue with no children must
+// serialize subIssues as [], not null, mirroring blockedBy/blocking.
+func TestBacklogReviewDeferredSubIssuesEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	noChildren := deferredIssue(1, daysAgo(100), "deferred")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noChildren},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	if facts.Deferred.DeferredIssues[0].SubIssues == nil {
+		t.Error("SubIssues = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestBacklogReviewSurfacesOpenIssueSet pins the resolvable open-issue set on the
 // grooming read: the fetched open numbers (the surface a caller resolves a deferred
 // issue's bodyRefs against), ascending and complete on a non-truncated fetch.

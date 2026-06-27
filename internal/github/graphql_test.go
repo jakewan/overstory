@@ -397,6 +397,97 @@ func TestListOpenIssuesParsesNativeBlocking(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesParsesNativeSubIssues(t *testing.T) {
+	// The sub-issue hierarchy mirror of the blocking test, and the sole real guard for
+	// the subIssues sub-selection: the query-decode contract test flattens the whole
+	// query into one token set, so the sibling blockedBy/blocking blocks already supply
+	// state/repository/nameWithOwner — a subIssues block that dropped one would pass it
+	// green. Only a wire-decode test exercising subIssues' own edges catches it.
+	// (a) the query must request the subIssues connection and the subIssuesSummary; (b)
+	// the edges decode onto Issue.SubIssues with the same-repo filter and open-state
+	// mapping applied, preserving closed children (the open-only projection is the
+	// reduction's job); (c) a totalCount exceeding the nodes sets SubIssuesTruncated;
+	// (d) the summary's total/completed decode independently of the connection (the
+	// untruncated authoritative counts), with a null summary reading as 0/0.
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query string `json:"query"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		// Issue 1: subIssues totalCount 4 but only 3 nodes returned → truncated. Same-repo
+		// #21 OPEN and #19 CLOSED are kept (closed retained at this layer); cross-repo #17
+		// (other/repo) is dropped even though OPEN — its number would collide locally. The
+		// summary (total 5, completed 2) is the untruncated authoritative pair and decodes
+		// independently. Issue 2: subIssues and summary are null. Issue 3: fields absent.
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":3,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "subIssues":{"totalCount":4,"nodes":[
+					{"number":21,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":19,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
+					{"number":17,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+				 ]},
+				 "subIssuesSummary":{"total":5,"completed":2}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "subIssues":null,"subIssuesSummary":null},
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if !strings.Contains(gotQuery, "subIssues") {
+		t.Errorf("query does not request the native subIssues connection; got:\n%s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "subIssuesSummary") {
+		t.Errorf("query does not request subIssuesSummary; got:\n%s", gotQuery)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("got %d issues, want 3", len(res.Issues))
+	}
+
+	// Issue 1: cross-repo #17 dropped; same-repo #21 (open) and #19 (closed) kept,
+	// order preserved, open state mapped from the enum.
+	want := []DependencyRef{{Number: 21, Open: true}, {Number: 19, Open: false}}
+	if got := res.Issues[0].SubIssues; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("issue 1 SubIssues = %v, want %v", got, want)
+	}
+	if !res.Issues[0].SubIssuesTruncated {
+		t.Error("issue 1 SubIssuesTruncated = false, want true (totalCount 4 > 3 nodes)")
+	}
+	// The summary is independent of the connection and untruncated.
+	if res.Issues[0].SubIssuesTotal != 5 || res.Issues[0].SubIssuesCompleted != 2 {
+		t.Errorf("issue 1 summary = %d/%d, want 5/2 (total/completed)",
+			res.Issues[0].SubIssuesTotal, res.Issues[0].SubIssuesCompleted)
+	}
+	// Issues 2 (null) and 3 (absent): no children, not truncated, summary 0/0, no panic.
+	for _, i := range []int{1, 2} {
+		if got := res.Issues[i].SubIssues; len(got) != 0 {
+			t.Errorf("issue %d SubIssues = %v, want empty", res.Issues[i].Number, got)
+		}
+		if res.Issues[i].SubIssuesTruncated {
+			t.Errorf("issue %d SubIssuesTruncated = true, want false", res.Issues[i].Number)
+		}
+		if res.Issues[i].SubIssuesTotal != 0 || res.Issues[i].SubIssuesCompleted != 0 {
+			t.Errorf("issue %d summary = %d/%d, want 0/0 (total/completed)", res.Issues[i].Number,
+				res.Issues[i].SubIssuesTotal, res.Issues[i].SubIssuesCompleted)
+		}
+	}
+}
+
 func TestListOpenIssuesPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
