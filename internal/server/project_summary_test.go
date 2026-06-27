@@ -408,6 +408,62 @@ func TestProjectSummaryRecommendationBlockingEmptySerializesAsArray(t *testing.T
 	}
 }
 
+func TestProjectSummaryRecommendationSurfacesNativeSubIssues(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	parent := summaryIssue(1, nil)
+	parent.SubIssues = []github.DependencyRef{
+		{Number: 27, Open: true},
+		{Number: 23, Open: true},
+		{Number: 25, Open: false}, // completed child no longer gates — excluded
+	}
+	parent.SubIssuesTruncated = true
+	// total minus completed (6-3=3) exceeds the 2 listed open children — the
+	// authoritative pair counts cross-repo and beyond-window children the list drops.
+	parent.SubIssuesTotal = 6
+	parent.SubIssuesCompleted = 3
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{parent},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	c := facts.Recommendations.Candidates[0]
+	if len(c.SubIssues) != 2 || c.SubIssues[0] != 23 || c.SubIssues[1] != 27 {
+		t.Errorf("SubIssues = %v, want [23 27] (open only, ascending)", c.SubIssues)
+	}
+	if !c.SubIssuesTruncated {
+		t.Error("SubIssuesTruncated = false, want true (child set exceeded the fetch window)")
+	}
+	if c.SubIssuesTotal != 6 || c.SubIssuesCompleted != 3 {
+		t.Errorf("completion = %d/%d, want 3/6 (completed/total)", c.SubIssuesCompleted, c.SubIssuesTotal)
+	}
+}
+
+// TestProjectSummaryRecommendationSubIssuesEmptySerializesAsArray pins the non-nil
+// convention for the hierarchy signal through the JSON round-trip, mirroring
+// blockedBy/blocking.
+func TestProjectSummaryRecommendationSubIssuesEmptySerializesAsArray(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	noChildren := summaryIssue(1, nil)
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noChildren},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	if facts.Recommendations.Candidates[0].SubIssues == nil {
+		t.Error("SubIssues = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestProjectSummaryRequiresOwnerRepo pins the input validation.
 func TestProjectSummaryRequiresOwnerRepo(t *testing.T) {
 	srv := New(WithFetcher(fakeFetcher{}), WithClock(func() time.Time { return fixedClock }))

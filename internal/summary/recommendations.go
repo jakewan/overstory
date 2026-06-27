@@ -57,6 +57,23 @@ type RecommendationFacts struct {
 // the only one — a downstream issue several issues block stays blocked until they
 // all close. Non-nil even when empty; BlockingTruncated marks more native blocking
 // edges than the fetch window read.
+//
+// SubIssues are the ascending, distinct numbers of the candidate's still-open
+// same-repository child issues — the hierarchy form of the same readiness gate: a
+// parent with open children is not startable, however old or quiet it looks, so a
+// caller demotes it rather than floating it to the top. Same authoritative-edge
+// semantics (closed children omitted, never a PR, cross-repository children dropped).
+// Non-nil even when empty; SubIssuesTruncated marks more native children than the
+// fetch window read.
+//
+// SubIssuesTotal and SubIssuesCompleted are GitHub's authoritative subIssuesSummary
+// counts over *all* children — every repository, never capped — so SubIssuesTotal
+// minus SubIssuesCompleted is an upper bound on the open children and may exceed
+// len(SubIssues) when children are cross-repository or beyond the window. That gap is
+// what exposes a candidate gated entirely by hidden children: an empty SubIssues with
+// a positive gap is a hidden gate, not readiness. It is a bound, not an equality (a
+// not-planned closure can leave it one high), erring only toward over-reporting the
+// gate — so it never reads a gated candidate as ready.
 type RecommendationCandidate struct {
 	Number             int     `json:"number"`
 	Title              string  `json:"title"`
@@ -68,6 +85,10 @@ type RecommendationCandidate struct {
 	BlockedByTruncated bool    `json:"blockedByTruncated"`
 	Blocking           []int   `json:"blocking"`
 	BlockingTruncated  bool    `json:"blockingTruncated"`
+	SubIssues          []int   `json:"subIssues"`
+	SubIssuesTruncated bool    `json:"subIssuesTruncated"`
+	SubIssuesTotal     int     `json:"subIssuesTotal"`
+	SubIssuesCompleted int     `json:"subIssuesCompleted"`
 	AgeDays            int     `json:"ageDays"`
 	InactiveDays       int     `json:"inactiveDays"`
 }
@@ -107,6 +128,10 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			BlockedByTruncated: is.BlockedByTruncated,
 			Blocking:           reduce.OpenDependencyNumbers(is.Blocking),
 			BlockingTruncated:  is.BlockingTruncated,
+			SubIssues:          reduce.OpenDependencyNumbers(is.SubIssues),
+			SubIssuesTruncated: is.SubIssuesTruncated,
+			SubIssuesTotal:     is.SubIssuesTotal,
+			SubIssuesCompleted: is.SubIssuesCompleted,
 			AgeDays:            reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays:       reduce.DaysSince(now, is.LastActivityAt),
 		})

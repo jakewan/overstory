@@ -57,6 +57,22 @@ import (
 // BlockingTruncated is set when the issue had more native blocking edges than the
 // fetch cap.
 //
+// SubIssues is the third native dependency relationship: the same-repository child
+// issues of this parent, each with its open/closed state — same shape and same
+// cross-repository drop as the dependency edges (a sub-issue is always an issue,
+// never a PR). A parent with open children is gated on them, so this is the
+// hierarchy form of the same false-ready gate. SubIssuesTruncated marks more native
+// children than the fetch cap read.
+//
+// SubIssuesTotal and SubIssuesCompleted are GitHub's authoritative subIssuesSummary
+// pair — counted over *all* children (every repository, never capped), unlike the
+// SubIssues list which is same-repo and truncatable. So SubIssuesTotal minus
+// SubIssuesCompleted is an upper bound on the open children, and may exceed
+// len(SubIssues) when children are cross-repository or beyond the fetch window. It is
+// a bound, not an equality: completed counts completed-closures, so a child closed as
+// not-planned can leave the gap one over the true open count — which only ever
+// over-reports the gate, never under, so it never mis-reads a gated parent as ready.
+//
 // Milestone is the issue's milestone association (number and title), or nil when
 // the issue is unmilestoned — the orientation reduction reads it both to group
 // issues under their milestone and to flag the unmilestoned ones.
@@ -74,6 +90,10 @@ type Issue struct {
 	BlockedByTruncated bool            `json:"blockedByTruncated"`
 	Blocking           []DependencyRef `json:"blocking"`
 	BlockingTruncated  bool            `json:"blockingTruncated"`
+	SubIssues          []DependencyRef `json:"subIssues"`
+	SubIssuesTruncated bool            `json:"subIssuesTruncated"`
+	SubIssuesTotal     int             `json:"subIssuesTotal"`
+	SubIssuesCompleted int             `json:"subIssuesCompleted"`
 	Milestone          *MilestoneRef   `json:"milestone,omitempty"`
 }
 

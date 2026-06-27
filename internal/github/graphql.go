@@ -95,10 +95,21 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
           totalCount
           nodes{ number state repository{ nameWithOwner } }
         }
+        subIssues(first:50){
+          totalCount
+          nodes{ number state repository{ nameWithOwner } }
+        }
+        subIssuesSummary{ total completed }
       }
     }
   }
 }`
+
+// Node-cost headroom: each issue node now carries blockedBy(50) + blocking(50) +
+// subIssues(50) + timelineItems(25) + comments(25) + labels(25). At issues(first:100)
+// the query scores ~100 + 100×225 ≈ 22.6k nodes — far under GitHub's ~500k ceiling,
+// with a small points cost. A future fourth per-issue connection should re-check this
+// before assuming the same slack.
 
 // activityQuery fetches a page of issues — open AND closed — ordered by most
 // recent update first, for the creation-vs-closure trajectory. The DESC-by-
@@ -1430,6 +1441,14 @@ type issueNode struct {
 		TotalCount int                  `json:"totalCount"`
 		Nodes      []dependencyEdgeNode `json:"nodes"`
 	} `json:"blocking"`
+	SubIssues struct {
+		TotalCount int                  `json:"totalCount"`
+		Nodes      []dependencyEdgeNode `json:"nodes"`
+	} `json:"subIssues"`
+	SubIssuesSummary struct {
+		Total     int `json:"total"`
+		Completed int `json:"completed"`
+	} `json:"subIssuesSummary"`
 }
 
 // dependencyEdgeNode decodes one native dependency edge in either direction
@@ -1494,6 +1513,10 @@ func (n issueNode) toIssue(repoFullName string) Issue {
 		BlockedByTruncated: n.BlockedBy.TotalCount > len(n.BlockedBy.Nodes),
 		Blocking:           dependencyEdges(n.Blocking.Nodes, repoFullName),
 		BlockingTruncated:  n.Blocking.TotalCount > len(n.Blocking.Nodes),
+		SubIssues:          dependencyEdges(n.SubIssues.Nodes, repoFullName),
+		SubIssuesTruncated: n.SubIssues.TotalCount > len(n.SubIssues.Nodes),
+		SubIssuesTotal:     n.SubIssuesSummary.Total,
+		SubIssuesCompleted: n.SubIssuesSummary.Completed,
 		Milestone:          milestone,
 	}
 }
