@@ -97,6 +97,22 @@ func TestResolveRejectsResponseMaxBytesBelowFloor(t *testing.T) {
 	}
 }
 
+// TestResolveResponseMaxBytesFloorBoundary pins the floor as inclusive: the floor
+// value itself is accepted and one below is rejected, so a future `<=`-for-`<` slip
+// in validate (which would reject the documented floor) fails here.
+func TestResolveResponseMaxBytesFloorBoundary(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/atfloor:\n  response:\n    maxBytes: 4096\nacme/belowfloor:\n  response:\n    maxBytes: 4095\n")
+	if cfg, _, err := NewResolver(dir, nil).Resolve("acme/atfloor"); err != nil {
+		t.Errorf("maxBytes at floor (4096) rejected: %v", err)
+	} else if cfg.Response.MaxBytes != 4096 {
+		t.Errorf("Response.MaxBytes = %d, want 4096", cfg.Response.MaxBytes)
+	}
+	if _, _, err := NewResolver(dir, nil).Resolve("acme/belowfloor"); err == nil {
+		t.Error("maxBytes one below floor (4095) accepted, want rejection")
+	}
+}
+
 func TestResolveMergesDeferredLabels(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n  deferred:\n    labels: [deferred, blocked]\n")
