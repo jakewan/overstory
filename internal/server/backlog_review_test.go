@@ -62,6 +62,14 @@ type fakeFetcher struct {
 	eventsErr    error
 	eventsByRepo map[string]eventsCanned
 	eventsCalls  *atomic.Int64
+	// Secondary-fetch call counters for projection's fetch-skip tests. Each is a
+	// pointer for the same copy-by-value reason as authoredCalls: fakeFetcher is
+	// held in the interface by value and copied on every value-receiver call, so a
+	// plain counter would be mutated on a copy and stay invisible. Nil = untracked.
+	activityCalls    *atomic.Int64
+	prActivityCalls  *atomic.Int64
+	milestoneCalls   *atomic.Int64
+	pullRequestCalls *atomic.Int64
 }
 
 // eventsCanned is one repo's canned ListIssueEvents outcome for the batch fake.
@@ -93,18 +101,30 @@ func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.
 }
 
 func (f fakeFetcher) ListIssuesUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.IssueActivityResult, error) {
+	if f.activityCalls != nil {
+		f.activityCalls.Add(1)
+	}
 	return f.activityResult, f.activityErr
 }
 
 func (f fakeFetcher) ListPullRequestsUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.PullRequestActivityResult, error) {
+	if f.prActivityCalls != nil {
+		f.prActivityCalls.Add(1)
+	}
 	return f.prActivityResult, f.prActivityErr
 }
 
 func (f fakeFetcher) ListOpenMilestones(_ context.Context, _ string, _ int) (github.MilestoneListResult, error) {
+	if f.milestoneCalls != nil {
+		f.milestoneCalls.Add(1)
+	}
 	return f.milestones, f.milestonesErr
 }
 
 func (f fakeFetcher) ListOpenPullRequests(_ context.Context, _ string, _ int) (github.PullRequestListResult, error) {
+	if f.pullRequestCalls != nil {
+		f.pullRequestCalls.Add(1)
+	}
 	return f.pullRequests, f.pullRequestErr
 }
 

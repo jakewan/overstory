@@ -15,17 +15,24 @@ import (
 // block carries its own counts and truncation seams so a caller renders them
 // independently.
 type Facts struct {
-	Repo         string                   `json:"repo"`
-	GeneratedAt  time.Time                `json:"generatedAt"`
-	Staleness    StalenessFacts           `json:"staleness"`
-	Deferred     DeferredFacts            `json:"deferred"`
-	AreaBalance  AreaBalanceFacts         `json:"areaBalance"`
-	Quality      QualityFacts             `json:"quality"`
-	Overlap      OverlapFacts             `json:"overlap"`
-	CrossRef     CrossRefFacts            `json:"crossRef"`
-	Trajectory   TrajectoryFacts          `json:"trajectory"`
-	PRTrajectory PRTrajectoryFacts        `json:"prTrajectory"`
-	CriticalPath criticalpath.Facts       `json:"criticalPath"`
+	Repo        string    `json:"repo"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	// The grooming-signal blocks are pointers with omitempty so block projection can
+	// omit an unrequested one from the response entirely (a nil pointer drops its
+	// key, unlike a value that would serialize as an empty block). A full-composite
+	// response sets every pointer, so its wire bytes are identical to the pre-
+	// projection value-typed shape. A requested block whose own fetch failed is still
+	// non-nil — it carries its Available:false marker — so the caller can tell "asked
+	// and unavailable" from "not asked".
+	Staleness    *StalenessFacts          `json:"staleness,omitempty"`
+	Deferred     *DeferredFacts           `json:"deferred,omitempty"`
+	AreaBalance  *AreaBalanceFacts        `json:"areaBalance,omitempty"`
+	Quality      *QualityFacts            `json:"quality,omitempty"`
+	Overlap      *OverlapFacts            `json:"overlap,omitempty"`
+	CrossRef     *CrossRefFacts           `json:"crossRef,omitempty"`
+	Trajectory   *TrajectoryFacts         `json:"trajectory,omitempty"`
+	PRTrajectory *PRTrajectoryFacts       `json:"prTrajectory,omitempty"`
+	CriticalPath *criticalpath.Facts      `json:"criticalPath,omitempty"`
 	OpenIssueSet reduce.OpenIssueSetFacts `json:"openIssueSet"`
 	RateLimit    *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
 	// SizeBound is set only when the response had to be trimmed to fit the

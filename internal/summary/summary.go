@@ -21,14 +21,18 @@ import (
 // so each can degrade to an unavailable block (see their Available fields)
 // without failing the whole summary.
 type Facts struct {
-	Repo            string                   `json:"repo"`
-	GeneratedAt     time.Time                `json:"generatedAt"`
-	Milestones      MilestoneFacts           `json:"milestones"`
-	AreaInventory   AreaInventoryFacts       `json:"areaInventory"`
-	Hygiene         HygieneFacts             `json:"hygiene"`
-	OpenPRs         PullRequestFacts         `json:"openPRs"`
-	Recommendations RecommendationFacts      `json:"recommendations"`
-	CriticalPath    criticalpath.Facts       `json:"criticalPath"`
+	Repo        string    `json:"repo"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	// The orientation-signal blocks are pointers with omitempty so block projection
+	// can omit an unrequested one entirely; see backlog.Facts for the full rationale
+	// (full-composite bytes unchanged; a requested-but-unavailable block stays non-
+	// nil with its Available:false marker).
+	Milestones      *MilestoneFacts          `json:"milestones,omitempty"`
+	AreaInventory   *AreaInventoryFacts      `json:"areaInventory,omitempty"`
+	Hygiene         *HygieneFacts            `json:"hygiene,omitempty"`
+	OpenPRs         *PullRequestFacts        `json:"openPRs,omitempty"`
+	Recommendations *RecommendationFacts     `json:"recommendations,omitempty"`
+	CriticalPath    *criticalpath.Facts      `json:"criticalPath,omitempty"`
 	OpenIssueSet    reduce.OpenIssueSetFacts `json:"openIssueSet"`
 	RateLimit       *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
 	// SizeBound is set only when the response had to be trimmed to fit the
