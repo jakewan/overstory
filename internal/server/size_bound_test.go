@@ -154,3 +154,52 @@ func TestProjectSummaryBoundsResponseSize(t *testing.T) {
 		t.Errorf("Recommendations.OpenIssueCount = %d, want 80 (counts never trimmed)", facts.Recommendations.OpenIssueCount)
 	}
 }
+
+// TestProjectSummaryBoundKeepsMilestoneEntriesTrimsMembers pins the milestone trim
+// shape: the bound sheds milestone *members* (the bytes) while every milestone's
+// headline progress entry survives — never a whole-milestone drop, which (since
+// progress sorts by number ascending) would shed the newest/active milestone first.
+func TestProjectSummaryBoundKeepsMilestoneEntriesTrimsMembers(t *testing.T) {
+	const maxBytes = 6000
+	const milestones, perMilestone = 8, 50
+	root := writeManifestDir(t, fmt.Sprintf("acme/widgets:\n  response:\n    maxBytes: %d\n", maxBytes))
+
+	var issues []github.Issue
+	var ms []github.Milestone
+	num := 0
+	for m := 1; m <= milestones; m++ {
+		title := fmt.Sprintf("milestone %d", m)
+		ms = append(ms, github.Milestone{Number: m, Title: title, URL: "u", OpenIssues: perMilestone})
+		for range perMilestone {
+			num++
+			issues = append(issues, summaryIssue(num, &github.MilestoneRef{Number: m, Title: title}))
+		}
+	}
+	fetcher := fakeFetcher{
+		result:     github.IssueListResult{Issues: issues, TotalOpen: len(issues)},
+		milestones: github.MilestoneListResult{Milestones: ms, TotalOpen: milestones},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 100}))
+
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a bounded response")
+	}
+	// Every milestone entry survives — the headline orientation signal is preserved.
+	if len(facts.Milestones.Milestones) != milestones {
+		t.Errorf("milestone entries = %d, want all %d to survive the bound", len(facts.Milestones.Milestones), milestones)
+	}
+	if facts.Milestones.OpenMilestones != milestones {
+		t.Errorf("OpenMilestones = %d, want %d (count intact)", facts.Milestones.OpenMilestones, milestones)
+	}
+	// Members carried the bytes, so they were trimmed — far fewer listed than the
+	// full membership, which cannot fit the budget.
+	listed := 0
+	for _, m := range facts.Milestones.Milestones {
+		listed += len(m.Members)
+	}
+	if listed >= milestones*perMilestone {
+		t.Errorf("listed members = %d, want < %d (members trimmed to fit)", listed, milestones*perMilestone)
+	}
+}

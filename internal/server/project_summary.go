@@ -133,17 +133,26 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		}
 
 		// Bound the total response (see backlogReviewHandler). Trim the flat detail
-		// lists and whole milestones; a milestone's nested members are left intact, and
-		// criticalPath members and counts/openIssueSet are preserved.
-		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, []reduce.Trimmable{
+		// lists; criticalPath members and counts/openIssueSet are preserved.
+		units := []reduce.Trimmable{
 			trimUnit("hygiene.missingArea", &facts.Hygiene.MissingArea.Issues, &facts.Hygiene.MissingArea.ListTruncated),
 			trimUnit("hygiene.unmilestonedAged", &facts.Hygiene.UnmilestonedAged.Issues, &facts.Hygiene.UnmilestonedAged.ListTruncated),
 			trimUnit("hygiene.stale", &facts.Hygiene.Stale.Issues, &facts.Hygiene.Stale.ListTruncated),
 			trimUnit("hygiene.deferredWithoutContext", &facts.Hygiene.DeferredWithoutContext.Issues, &facts.Hygiene.DeferredWithoutContext.ListTruncated),
 			trimUnit("openPRs", &facts.OpenPRs.PullRequests, &facts.OpenPRs.ListTruncated),
 			trimUnit("recommendations", &facts.Recommendations.Candidates, &facts.Recommendations.ListTruncated),
-			trimUnit("milestones", &facts.Milestones.Milestones, &facts.Milestones.ListTruncated),
-		}); err != nil {
+		}
+		// Trim milestone members, not whole milestones. Each milestone's progress entry
+		// (title, open/closed counts) is the headline orientation signal; the nested
+		// member lists carry the bytes. Per-milestone units keep every entry and shed
+		// only detail, surfaced via the existing membershipTruncated. Dropping whole
+		// milestones would shed the newest first (progress is sorted by number
+		// ascending), gutting the active milestone exactly when the bound fires.
+		for i := range facts.Milestones.Milestones {
+			m := &facts.Milestones.Milestones[i]
+			units = append(units, trimUnit(fmt.Sprintf("milestones[#%d].members", m.Number), &m.Members, &m.MembershipTruncated))
+		}
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
 			return nil, summary.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
 		}
 		return nil, facts, nil
