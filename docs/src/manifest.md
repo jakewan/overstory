@@ -158,6 +158,16 @@ Conventions the critical-path / gate block (surfaced by `project_summary` and `b
 
 Both fields are declared together or not at all: setting one without the other — including an explicit empty `streams: []` alongside a `label` — is a configuration error, not a silent no-op. Stream names are trimmed, must be non-empty, and must be unique (case-insensitively).
 
+### `response`
+
+The byte budget the composite reductions (`project_summary`, `backlog_review`) trim their detail lists to fit, so a large repository's response degrades gracefully instead of exceeding the MCP client's tool-result token cap and failing. This is an operational knob, not a repo-taxonomy convention — like the per-block `fetchLimit`s, it has a generic default and a per-repo override.
+
+| Field      | Type | Default | Notes                                                              |
+| ---------- | ---- | ------- | ----------------------------------------------------------------- |
+| `maxBytes` | int  | `20000` | Byte budget per serialization. Must be `>= 4096`. See note below. |
+
+The default is deliberately conservative: the MCP SDK serializes the facts twice on the wire (once as structured content, once as a back-compat text block), so the wire payload is roughly twice `maxBytes`, and the default leaves headroom below a typical ~25k-token cap across plausible bytes-per-token ratios. A normal-sized response is never trimmed and is byte-identical to an unbounded server; only an over-budget response is bounded, and it then carries a top-level `sizeBound` marker (see [Tools](./tools.md)).
+
 ## Validation
 
 A manifest that is unreadable, unparseable, or declares an invalid value is a hard error that names the offending file and repository. Unknown fields are tolerated — a manifest may carry config for reductions a given build doesn't yet implement.

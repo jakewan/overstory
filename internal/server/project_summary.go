@@ -113,7 +113,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
 
-		return nil, summary.Facts{
+		facts := summary.Facts{
 			Repo:            ownerRepo,
 			GeneratedAt:     n,
 			Milestones:      milestones,
@@ -130,7 +130,32 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			// see the lowest remaining ceiling, and a throttle's zero-remaining signal
 			// (from a degraded sub-fetch) wins so the caller learns it is throttled.
 			RateLimit: mapRateLimit(tightestBudget(result.RateLimit, msBudget, prBudget)),
-		}, nil
+		}
+
+		// Bound the total response (see backlogReviewHandler). Trim the flat detail
+		// lists; criticalPath members and counts/openIssueSet are preserved.
+		units := []reduce.Trimmable{
+			trimUnit("hygiene.missingArea", &facts.Hygiene.MissingArea.Issues, &facts.Hygiene.MissingArea.ListTruncated),
+			trimUnit("hygiene.unmilestonedAged", &facts.Hygiene.UnmilestonedAged.Issues, &facts.Hygiene.UnmilestonedAged.ListTruncated),
+			trimUnit("hygiene.stale", &facts.Hygiene.Stale.Issues, &facts.Hygiene.Stale.ListTruncated),
+			trimUnit("hygiene.deferredWithoutContext", &facts.Hygiene.DeferredWithoutContext.Issues, &facts.Hygiene.DeferredWithoutContext.ListTruncated),
+			trimUnit("openPRs", &facts.OpenPRs.PullRequests, &facts.OpenPRs.ListTruncated),
+			trimUnit("recommendations", &facts.Recommendations.Candidates, &facts.Recommendations.ListTruncated),
+		}
+		// Trim milestone members, not whole milestones. Each milestone's progress entry
+		// (title, open/closed counts) is the headline orientation signal; the nested
+		// member lists carry the bytes. Per-milestone units keep every entry and shed
+		// only detail, surfaced via the existing membershipTruncated. Dropping whole
+		// milestones would shed the newest first (progress is sorted by number
+		// ascending), gutting the active milestone exactly when the bound fires.
+		for i := range facts.Milestones.Milestones {
+			m := &facts.Milestones.Milestones[i]
+			units = append(units, trimUnit(fmt.Sprintf("milestones[#%d].members", m.Number), &m.Members, &m.MembershipTruncated))
+		}
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
+			return nil, summary.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
+		}
+		return nil, facts, nil
 	}
 }
 
