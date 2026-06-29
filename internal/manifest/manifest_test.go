@@ -55,6 +55,48 @@ func TestResolveMergesEntryOverDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultsResponseMaxBytes(t *testing.T) {
+	if d := Defaults(); d.Response.MaxBytes != 20000 {
+		t.Errorf("Defaults().Response.MaxBytes = %d, want 20000", d.Response.MaxBytes)
+	}
+}
+
+func TestResolveMergesResponseMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  response:\n    maxBytes: 50000\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Response.MaxBytes != 50000 {
+		t.Errorf("Response.MaxBytes = %d, want 50000 (from manifest)", cfg.Response.MaxBytes)
+	}
+}
+
+func TestResolveResponseMaxBytesOmittedInheritsDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cfg.Response.MaxBytes != 20000 {
+		t.Errorf("Response.MaxBytes = %d, want 20000 (inherited default)", cfg.Response.MaxBytes)
+	}
+}
+
+func TestResolveRejectsResponseMaxBytesBelowFloor(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  response:\n    maxBytes: 100\n")
+	_, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err == nil {
+		t.Fatal("Resolve err = nil, want a below-floor rejection")
+	}
+	if !strings.Contains(err.Error(), "response.maxBytes") {
+		t.Errorf("error = %q, want it to name response.maxBytes", err)
+	}
+}
+
 func TestResolveMergesDeferredLabels(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n  deferred:\n    labels: [deferred, blocked]\n")

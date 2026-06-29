@@ -247,7 +247,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		trajectory, trajBudget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
 		prTrajectory, prTrajBudget := reducePRTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
 
-		return nil, backlog.Facts{
+		facts := backlog.Facts{
 			Repo:         ownerRepo,
 			GeneratedAt:  n,
 			Staleness:    staleness,
@@ -264,8 +264,57 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			// blocker beyond any list cap must still appear here.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
 			RateLimit:    mapRateLimit(tightestBudget(result.RateLimit, trajBudget, prTrajBudget)),
-		}, nil
+		}
+
+		// Bound the total response so a large backlog degrades gracefully instead of
+		// breaching the client's token cap. Trim the flat detail lists and whole
+		// overlap/cross-ref groups; criticalPath members are excluded (no member-count
+		// field, and the gate signal is load-bearing), and counts/openIssueSet are
+		// preserved.
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, []reduce.Trimmable{
+			trimUnit("staleness", &facts.Staleness.StaleIssues, &facts.Staleness.ListTruncated),
+			trimUnit("deferred", &facts.Deferred.DeferredIssues, &facts.Deferred.ListTruncated),
+			trimUnit("quality", &facts.Quality.FlaggedIssues, &facts.Quality.ListTruncated),
+			trimUnit("overlap", &facts.Overlap.Groups, &facts.Overlap.ListTruncated),
+			trimUnit("crossRef", &facts.CrossRef.Groups, &facts.CrossRef.ListTruncated),
+		}); err != nil {
+			return nil, backlog.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
+		}
+		return nil, facts, nil
 	}
+}
+
+// trimUnit builds a size-bound Trimmable over one block's detail list: a pointer to
+// the slice field and to the block's ListTruncated flag. Drop removes one tail unit
+// (a whole item, group, or milestone, per the slice's element type) and marks the
+// block truncated, so the block's count fields stay authoritative while the shown
+// list shrinks.
+func trimUnit[T any](block string, list *[]T, truncated *bool) reduce.Trimmable {
+	return reduce.Trimmable{
+		Block:     block,
+		Size:      func() int { return reduce.JSONLen(*list) },
+		Remaining: func() int { return len(*list) },
+		Drop: func() {
+			if len(*list) == 0 {
+				return
+			}
+			*list = (*list)[:len(*list)-1]
+			*truncated = true
+		},
+	}
+}
+
+// boundResponse applies the byte budget to facts, installing the size-bound marker
+// at markerField when trimming was needed. marshal closes over the live facts so the
+// measurement always reflects the current (and marker-carrying) state.
+func boundResponse[F any](facts *F, markerField **reduce.SizeBoundFacts, maxBytes int, units []reduce.Trimmable) error {
+	_, err := reduce.ApplyByteBudget(
+		func() ([]byte, error) { return json.Marshal(*facts) },
+		func(m *reduce.SizeBoundFacts) { *markerField = m },
+		maxBytes,
+		units,
+	)
+	return err
 }
 
 // reduceTrajectory runs the trajectory reduction's own fetch — issues updated

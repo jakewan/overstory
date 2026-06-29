@@ -29,6 +29,19 @@ type Config struct {
 	Summary         SummaryConfig
 	MilestoneTracks MilestoneTracksConfig
 	CriticalPath    CriticalPathConfig
+	Response        ResponseConfig
+}
+
+// ResponseConfig holds the resolved response-size convention. MaxBytes is the byte
+// budget a composite reduction (backlog_review, project_summary) trims its detail
+// lists to fit, so a large repo's response degrades gracefully instead of exceeding
+// the MCP client's tool-result token cap and failing. It is an operational knob, not
+// a repo-taxonomy convention — like the per-block FetchLimits, it has a generic
+// default and a per-repo override. The default is deliberately conservative: the
+// SDK serializes the facts twice (structured + back-compat text), so the wire
+// payload is ~2x MaxBytes, and it leaves headroom below a typical ~25k-token cap.
+type ResponseConfig struct {
+	MaxBytes int
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
@@ -205,8 +218,18 @@ func Defaults() Config {
 				"Overview", "Summary", "Ikigai", "History", "Completion", "Out of scope",
 			},
 		},
+		// 20000 bytes per serialization keeps the ~2x wire payload comfortably under a
+		// typical 25k-token cap across plausible bytes-per-token ratios, while leaving
+		// the common (small) response untouched. Tunable per repo.
+		Response: ResponseConfig{MaxBytes: 20000},
 	}
 }
+
+// responseMinBytes is the floor a configured MaxBytes must clear. Below it a budget
+// cannot hold even an empty composite skeleton (the preserved counts, summaries,
+// open-issue set, and the size-bound marker), so the bound could never be achieved
+// — reject such a value rather than silently emit an over-budget "bounded" response.
+const responseMinBytes = 4096
 
 // Resolver resolves merged Configs from on-disk manifests. root is the
 // drop-in directory to glob; files, when non-empty, is an explicit ordered
@@ -309,6 +332,13 @@ type fileConfig struct {
 	Summary         *summaryFile         `yaml:"summary"`
 	MilestoneTracks *milestoneTracksFile `yaml:"milestoneTracks"`
 	CriticalPath    *criticalPathFile    `yaml:"criticalPath"`
+	Response        *responseFile        `yaml:"response"`
+}
+
+// responseFile decodes the response block. MaxBytes is a pointer so an omitted value
+// inherits the default rather than overwriting it with a zero.
+type responseFile struct {
+	MaxBytes *int `yaml:"maxBytes"`
 }
 
 type stalenessFile struct {
@@ -533,6 +563,9 @@ func mergeConfig(base Config, o fileConfig) Config {
 			base.CriticalPath.Label = strings.TrimSpace(*o.CriticalPath.Label)
 		}
 	}
+	if o.Response != nil && o.Response.MaxBytes != nil {
+		base.Response.MaxBytes = *o.Response.MaxBytes
+	}
 	return base
 }
 
@@ -626,6 +659,12 @@ func validate(c Config, ownerRepo, file string) error {
 	}
 	if err := validateCriticalPath(c.CriticalPath, ownerRepo, file); err != nil {
 		return err
+	}
+	// A budget below the floor can't hold even an empty composite skeleton, so the
+	// bound would be unachievable — reject it rather than emit a falsely-"bounded"
+	// over-budget response.
+	if c.Response.MaxBytes < responseMinBytes {
+		return fmt.Errorf("manifest %q for %q: response.maxBytes must be >= %d, got %d", file, ownerRepo, responseMinBytes, c.Response.MaxBytes)
 	}
 	return nil
 }

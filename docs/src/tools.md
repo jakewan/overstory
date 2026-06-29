@@ -29,7 +29,8 @@ These hold across every block of both composites:
   - `membershipTruncated` (milestones) — a milestone's listed members are a floor relative to its open count.
   - `refsTruncated` (cross-reference) — not all references were retrieved.
 - **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`; the whole of `milestone_tracks`, which is a single milestone-fetch reduction) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure on a tool's **primary** fetch — the open-issue fetch `backlog_review` and `project_summary` lead with — surfaces as a tool-call error rather than a degraded block. `milestone_tracks` has no primary fetch: its single milestone fetch degrades like the blocks above, so it never fails the call on a rate limit.
-- **`omitempty` fields.** `rateLimit` (top level) appears only when the GraphQL points budget ran low; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
+- **Total-size bound (`sizeBound`).** On a large repository the assembled composite could exceed the MCP client's tool-result token cap and fail the call. To prevent that, each composite trims its detail item-lists to fit the [`response.maxBytes`](./manifest.md#response) budget — flat lists by item, overlap/cross-reference by whole group, milestones by whole milestone, balanced largest-contributor-first so no single block is gutted before the others. Counts, `openIssueSet`, the critical-path gate signal, and summary fields are never trimmed; a trimmed block sets its `listTruncated`, so under a bound a block's `limit` no longer predicts its listed count. A bounded response carries a top-level `sizeBound` (`maxBytes`, `finalBytes`, and per-block `{ block, dropped, remaining }`); `finalBytes` is one serialization (the wire carries roughly twice that) and is an upper bound, so when even the irreducible content exceeds the budget it reports the overflow rather than falsely claiming success. Struct: `reduce.SizeBoundFacts` in `internal/reduce/`.
+- **`omitempty` fields.** `rateLimit` and `sizeBound` (top level) appear only when relevant — the GraphQL points budget ran low, or the response had to be trimmed; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
 
 ## `backlog_review`
 
@@ -47,7 +48,7 @@ The **grooming** read: what in the backlog needs maintenance attention. Composit
 | `criticalPath`| When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
 | `openIssueSet` | The ascending, distinct open issue `numbers` in the fetched window — the surface a caller resolves a deferred issue's `bodyRefs` against. Same-repo, open, issues-only; the full window, never `limit`-capped (`fetchTruncated` marks a floor). Presence names a live open issue; absence is not proof of resolution. | `reduce.OpenIssueSetFacts` (in `internal/reduce/`) |
 
-Plus the optional top-level `rateLimit`.
+Plus the optional top-level `rateLimit` and `sizeBound`.
 
 ## `project_summary`
 
@@ -63,7 +64,7 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 | `criticalPath`    | When the manifest declares a critical path: each declared stream in order, its open critical-path issue members, and a per-stream `gateCleared` signal (provisional under `fetchTruncated`); off-path/unareaed counts for misplaced issues. Not configured ⇒ `configured: false` no-op. | `criticalpath.Facts` (in `internal/criticalpath/`) |
 | `openIssueSet`    | The ascending, distinct open issue `numbers` in the fetched window — the surface a caller resolves a recommendation candidate's `bodyRefs` against, so an age-driven ranking can demote a candidate gated behind an open sibling. Same-repo, open, issues-only; the full window, never `limit`-capped (`fetchTruncated` marks a floor). Presence names a live open issue; absence is not proof of resolution. | `reduce.OpenIssueSetFacts` (in `internal/reduce/`) |
 
-Plus the optional top-level `rateLimit`.
+Plus the optional top-level `rateLimit` and `sizeBound`.
 
 > **The server reduces; the caller ranks and renders.** `recommendations` supplies neutral per-issue inputs, not a verdict — ordering them into "what to do next" is the caller's judgment. Likewise every block returns facts, never narrative.
 

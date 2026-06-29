@@ -113,7 +113,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
 
-		return nil, summary.Facts{
+		facts := summary.Facts{
 			Repo:            ownerRepo,
 			GeneratedAt:     n,
 			Milestones:      milestones,
@@ -130,7 +130,23 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			// see the lowest remaining ceiling, and a throttle's zero-remaining signal
 			// (from a degraded sub-fetch) wins so the caller learns it is throttled.
 			RateLimit: mapRateLimit(tightestBudget(result.RateLimit, msBudget, prBudget)),
-		}, nil
+		}
+
+		// Bound the total response (see backlogReviewHandler). Trim the flat detail
+		// lists and whole milestones; a milestone's nested members are left intact, and
+		// criticalPath members and counts/openIssueSet are preserved.
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, []reduce.Trimmable{
+			trimUnit("hygiene.missingArea", &facts.Hygiene.MissingArea.Issues, &facts.Hygiene.MissingArea.ListTruncated),
+			trimUnit("hygiene.unmilestonedAged", &facts.Hygiene.UnmilestonedAged.Issues, &facts.Hygiene.UnmilestonedAged.ListTruncated),
+			trimUnit("hygiene.stale", &facts.Hygiene.Stale.Issues, &facts.Hygiene.Stale.ListTruncated),
+			trimUnit("hygiene.deferredWithoutContext", &facts.Hygiene.DeferredWithoutContext.Issues, &facts.Hygiene.DeferredWithoutContext.ListTruncated),
+			trimUnit("openPRs", &facts.OpenPRs.PullRequests, &facts.OpenPRs.ListTruncated),
+			trimUnit("recommendations", &facts.Recommendations.Candidates, &facts.Recommendations.ListTruncated),
+			trimUnit("milestones", &facts.Milestones.Milestones, &facts.Milestones.ListTruncated),
+		}); err != nil {
+			return nil, summary.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
+		}
+		return nil, facts, nil
 	}
 }
 

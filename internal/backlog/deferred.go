@@ -28,6 +28,9 @@ type Facts struct {
 	CriticalPath criticalpath.Facts       `json:"criticalPath"`
 	OpenIssueSet reduce.OpenIssueSetFacts `json:"openIssueSet"`
 	RateLimit    *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
+	// SizeBound is set only when the response had to be trimmed to fit the
+	// configured byte budget; absent (nil) on a response that fit untouched.
+	SizeBound *reduce.SizeBoundFacts `json:"sizeBound,omitempty"`
 }
 
 // DeferredFacts is the compact result of the deferred-issue reduction: open
