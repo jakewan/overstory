@@ -6,17 +6,24 @@ This page documents the *shape and semantics* of what the tools return — the t
 
 ## Common parameters
 
-The manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (The author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)
+The manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — share the `owner`, `repo`, and `limit` inputs below. The `blocks` projection parameter is accepted only by the two composite reads (`backlog_review` and `project_summary`); `milestone_tracks` has no projectable blocks and ignores it. (The author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)
 
-| Parameter | Type    | Required | Default | Bounds  | Meaning                          |
-| --------- | ------- | -------- | ------- | ------- | -------------------------------- |
-| `owner`   | string  | yes      | —       | —       | Repository owner (user or org).  |
-| `repo`    | string  | yes      | —       | —       | Repository name.                 |
-| `limit`   | integer | no       | `20`    | `1`–`100` | Max items listed per reduction.  |
+| Parameter | Type     | Required | Default | Bounds    | Meaning                          |
+| --------- | -------- | -------- | ------- | --------- | -------------------------------- |
+| `owner`   | string   | yes      | —       | —         | Repository owner (user or org).  |
+| `repo`    | string   | yes      | —       | —         | Repository name.                 |
+| `limit`   | integer  | no       | `20`    | `1`–`100` | Max items listed per reduction.  |
+| `blocks`  | string[] | no       | —       | —         | Allowlist of blocks to return (`backlog_review` and `project_summary` only; not `milestone_tracks`). Omit for the full composite. |
 
 Repo targeting is explicit — there is no ambient default repository. The conventions applied come from the manifest entry for `owner/repo` (see [Manifests](./manifest.md)).
 
 `limit` caps how many items each block *lists*; it does **not** govern how many issues are *examined* — that's the manifest's per-reduction fetch limits, independent of `limit`. A list capped by `limit` sets its `listTruncated` flag (below).
+
+### Block projection (`blocks`)
+
+`backlog_review` and `project_summary` accept an optional `blocks` allowlist naming which blocks to return. Omitting it (or passing `[]`) returns the full composite — the default, so existing callers are unaffected. Projecting a subset does two things: it omits every unrequested block from the response, and it **skips the secondary GitHub fetch** backing any block not requested — `trajectory`/`prTrajectory` for `backlog_review`, `milestones`/`openPRs` for `project_summary`. So a digest fanning out across many repositories to read one block per repo stops paying the full multi-block serialization and secondary-fetch (rate-limit) cost on every call. Valid block names are the block keys listed in each tool's section below; an unrecognized name is a tool-call error, not a silent near-empty success. The meta blocks (`repo`, `generatedAt`, `openIssueSet`) are always returned, so they are not part of `blocks`.
+
+Two consequences worth noting. Because a projectable block can now be absent, those fields are **optional in each tool's output schema** (a full-composite response is byte-identical on the wire to before — see [`omitempty` fields](#omitempty-fields)). And because the `rateLimit` budget reflects only the fetches that actually ran, skipping a secondary fetch drops that fetch's early throttle warning from the budget — correct (a skipped fetch consumes nothing), but a fan-out caller pacing on `rateLimit` no longer sees it.
 
 ## Cross-cutting conventions
 
@@ -30,7 +37,7 @@ These hold across every block of both composites:
   - `refsTruncated` (cross-reference) — not all references were retrieved.
 - **Degradation is per-block, not fatal.** Blocks needing their own fetch (`trajectory` in `backlog_review`; `milestones` and `openPRs` in `project_summary`; the whole of `milestone_tracks`, which is a single milestone-fetch reduction) carry `available`; when a fetch fails they set `available: false` and an `unavailable` reason (`rate_limited` or `fetch_failed`) instead of failing the whole call. A *hard* rate-limit failure on a tool's **primary** fetch — the open-issue fetch `backlog_review` and `project_summary` lead with — surfaces as a tool-call error rather than a degraded block. `milestone_tracks` has no primary fetch: its single milestone fetch degrades like the blocks above, so it never fails the call on a rate limit.
 - **Total-size bound (`sizeBound`).** On a large repository the assembled composite could exceed the MCP client's tool-result token cap and fail the call. To prevent that, each composite trims its detail item-lists to fit the [`response.maxBytes`](./manifest.md#response) budget — flat lists by item, overlap/cross-reference by whole group, milestone member-lists within each milestone (the milestone entries themselves are kept), balanced largest-contributor-first so no single block is gutted before the others. Counts, `openIssueSet`, the critical-path gate signal, and summary fields are never trimmed; a trimmed block sets its `listTruncated`, so under a bound a block's `limit` no longer predicts its listed count. A bounded response carries a top-level `sizeBound` (`maxBytes`, `finalBytes`, and per-block `{ block, dropped, remaining }`); `finalBytes` is one serialization (the wire carries roughly twice that) and is an upper bound, so when even the irreducible content exceeds the budget it reports the overflow rather than falsely claiming success. Struct: `reduce.SizeBoundFacts` in `internal/reduce/`.
-- **`omitempty` fields.** `rateLimit` and `sizeBound` (top level) appear only when relevant — the GraphQL points budget ran low, or the response had to be trimmed; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned.
+- **`omitempty` fields.** `rateLimit` and `sizeBound` (top level) appear only when relevant — the GraphQL points budget ran low, or the response had to be trimmed; `unavailable` appears only on a degraded block; a recommendation candidate's `milestone` is absent when the issue is unmilestoned. The projectable blocks (everything except the always-present `repo`, `generatedAt`, and `openIssueSet`) are likewise `omitempty`: present in a full-composite response, absent when [block projection](#block-projection-blocks) excludes them.
 
 ## `backlog_review`
 

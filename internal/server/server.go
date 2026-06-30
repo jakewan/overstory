@@ -147,9 +147,20 @@ func defaultManifestRoot() string {
 // backlogReviewInput is the tool's decoded input. Constraints (required fields,
 // limit default and bounds) live in the published schema, not here.
 type backlogReviewInput struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
-	Limit int    `json:"limit"`
+	Owner  string   `json:"owner"`
+	Repo   string   `json:"repo"`
+	Limit  int      `json:"limit"`
+	Blocks []string `json:"blocks"`
+}
+
+// backlogBlockNames are the projectable backlog_review blocks, in schema/enum
+// order. This is the single source of truth for the blocks parameter's enum and
+// the handler's projection set; it excludes the always-present meta blocks (repo,
+// generatedAt, openIssueSet, rateLimit, sizeBound), which are returned regardless
+// of projection and so carry no projection name.
+var backlogBlockNames = []string{
+	"staleness", "deferred", "areaBalance", "quality", "overlap", "crossRef",
+	"trajectory", "prTrajectory", "criticalPath",
 }
 
 // backlogReviewTool publishes the input contract via a hand-written schema. The
@@ -161,7 +172,7 @@ func backlogReviewTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
-		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels, each with its dependency signals — the heuristic bodyRefs plus the authoritative native blockedBy, blocking, and open sub-issue children with their completion counts), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), a pull-request-trajectory block (for each of the same lookback windows, the pull requests opened, closed, and net opened-minus-closed — the change-request closure-ratio signal for whether the project keeps pace with incoming PRs — over a dedicated open-and-closed/merged PR fetch reusing the trajectory windows; closed counts both merged and closed-without-merge, and the block returns these counts rather than a computed ratio for the caller to derive; like the issue trajectory it is aggregate, not affected by limit, and marks itself unavailable if its fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window).",
+		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels, each with its dependency signals — the heuristic bodyRefs plus the authoritative native blockedBy, blocking, and open sub-issue children with their completion counts), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), a pull-request-trajectory block (for each of the same lookback windows, the pull requests opened, closed, and net opened-minus-closed — the change-request closure-ratio signal for whether the project keeps pace with incoming PRs — over a dedicated open-and-closed/merged PR fetch reusing the trajectory windows; closed counts both merged and closed-without-merge, and the block returns these counts rather than a computed ratio for the caller to derive; like the issue trajectory it is aggregate, not affected by limit, and marks itself unavailable if its fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window). The optional blocks parameter projects a subset: pass an allowlist of block names to return only those (omit it for the full composite), which also skips the secondary fetch backing any unrequested trajectory/prTrajectory block; repo, generatedAt, and openIssueSet are always returned.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -173,6 +184,11 @@ func backlogReviewTool() *mcp.Tool {
 					Default:     json.RawMessage("20"),
 					Minimum:     &minLimit,
 					Maximum:     &maxLimit,
+				},
+				"blocks": {
+					Type:        "array",
+					Description: "optional allowlist of block names to return; omit it (or pass an empty array) for the full composite. Projecting a subset omits the other blocks from the response and skips the secondary GitHub fetch backing any block not requested (trajectory, prTrajectory), saving rate-limit budget when fanning out across many repos. The meta blocks (repo, generatedAt, openIssueSet) are always returned.",
+					Items:       &jsonschema.Schema{Type: "string", Enum: blockEnum(backlogBlockNames)},
 				},
 			},
 			Required: []string{"owner", "repo"},
@@ -195,6 +211,13 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			return nil, backlog.Facts{}, fmt.Errorf("owner and repo are required")
 		}
 		ownerRepo := owner + "/" + repo
+
+		// Resolve the projection request before any fetch, so an invalid block name
+		// fails fast with no wasted GitHub call. An empty request means full composite.
+		want, err := requestedBlocks(in.Blocks, backlogBlockNames, "backlog_review")
+		if err != nil {
+			return nil, backlog.Facts{}, err
+		}
 
 		cfg, matched, err := resolver.Resolve(ownerRepo)
 		if err != nil {
@@ -237,47 +260,83 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
 
-		// Trajectory and PR-trajectory each need their own second fetch (closed/merged
-		// items too); a failure in either degrades only its own block rather than
-		// failing the whole review, since the open-issue blocks already reduced the
-		// successful open fetch. Each returns its own fetch's budget so the handler can
-		// pick the tightest across all three — a degraded fetch's zero-remaining throttle
-		// wins, so a self-pacing caller is never told it has budget at the moment it was
-		// throttled.
-		trajectory, trajBudget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
-		prTrajectory, prTrajBudget := reducePRTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
-
 		facts := backlog.Facts{
-			Repo:         ownerRepo,
-			GeneratedAt:  n,
-			Staleness:    staleness,
-			Deferred:     deferred,
-			AreaBalance:  area,
-			Quality:      quality,
-			Overlap:      overlap,
-			CrossRef:     crossref,
-			Trajectory:   trajectory,
-			PRTrajectory: prTrajectory,
-			CriticalPath: criticalPath,
+			Repo:        ownerRepo,
+			GeneratedAt: n,
 			// The full fetched open-issue window, never capped by in.Limit: a caller
 			// resolves a deferred issue's bodyRefs against this set, so a real open
-			// blocker beyond any list cap must still appear here.
+			// blocker beyond any list cap must still appear here. Always present.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
-			RateLimit:    mapRateLimit(tightestBudget(result.RateLimit, trajBudget, prTrajBudget)),
 		}
+		// Projection sets a block's pointer only when requested; an unset (nil) block
+		// is omitted from the response. The reductions above ran unconditionally —
+		// they are cheap and several share intermediates (deferredNums feeds
+		// staleness), so gating them would risk corrupting a block whose dependency
+		// was skipped. Projection gates serialization (here) and the secondary fetches
+		// (below), never the primary reductions.
+		if want["staleness"] {
+			facts.Staleness = &staleness
+		}
+		if want["deferred"] {
+			facts.Deferred = &deferred
+		}
+		if want["areaBalance"] {
+			facts.AreaBalance = &area
+		}
+		if want["quality"] {
+			facts.Quality = &quality
+		}
+		if want["overlap"] {
+			facts.Overlap = &overlap
+		}
+		if want["crossRef"] {
+			facts.CrossRef = &crossref
+		}
+		if want["criticalPath"] {
+			facts.CriticalPath = &criticalPath
+		}
+
+		// Trajectory and PR-trajectory each need their own second fetch (closed/merged
+		// items too) and run only when their block is requested — the fan-out
+		// rate-limit win, since an unrequested block costs no fetch. A failure in
+		// either degrades only its own block (a non-nil unavailable marker). Each
+		// returns its own fetch's budget; tightestBudget picks the tightest across the
+		// fetches that ran, so a degraded fetch's zero-remaining throttle still wins.
+		budgets := []*github.RateLimit{result.RateLimit}
+		if want["trajectory"] {
+			trajectory, trajBudget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
+			facts.Trajectory = &trajectory
+			budgets = append(budgets, trajBudget)
+		}
+		if want["prTrajectory"] {
+			prTrajectory, prTrajBudget := reducePRTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
+			facts.PRTrajectory = &prTrajectory
+			budgets = append(budgets, prTrajBudget)
+		}
+		facts.RateLimit = mapRateLimit(tightestBudget(budgets...))
 
 		// Bound the total response so a large backlog degrades gracefully instead of
 		// breaching the client's token cap. Trim the flat detail lists and whole
-		// overlap/cross-ref groups; criticalPath members are excluded (no member-count
-		// field, and the gate signal is load-bearing), and counts/openIssueSet are
-		// preserved.
-		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, []reduce.Trimmable{
-			trimUnit("staleness", &facts.Staleness.StaleIssues, &facts.Staleness.ListTruncated),
-			trimUnit("deferred", &facts.Deferred.DeferredIssues, &facts.Deferred.ListTruncated),
-			trimUnit("quality", &facts.Quality.FlaggedIssues, &facts.Quality.ListTruncated),
-			trimUnit("overlap", &facts.Overlap.Groups, &facts.Overlap.ListTruncated),
-			trimUnit("crossRef", &facts.CrossRef.Groups, &facts.CrossRef.ListTruncated),
-		}); err != nil {
+		// overlap/cross-ref groups of the present blocks only; criticalPath members are
+		// excluded (no member-count field, and the gate signal is load-bearing), and
+		// counts/openIssueSet are preserved.
+		var units []reduce.Trimmable
+		if facts.Staleness != nil {
+			units = append(units, trimUnit("staleness", &facts.Staleness.StaleIssues, &facts.Staleness.ListTruncated))
+		}
+		if facts.Deferred != nil {
+			units = append(units, trimUnit("deferred", &facts.Deferred.DeferredIssues, &facts.Deferred.ListTruncated))
+		}
+		if facts.Quality != nil {
+			units = append(units, trimUnit("quality", &facts.Quality.FlaggedIssues, &facts.Quality.ListTruncated))
+		}
+		if facts.Overlap != nil {
+			units = append(units, trimUnit("overlap", &facts.Overlap.Groups, &facts.Overlap.ListTruncated))
+		}
+		if facts.CrossRef != nil {
+			units = append(units, trimUnit("crossRef", &facts.CrossRef.Groups, &facts.CrossRef.ListTruncated))
+		}
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
 			return nil, backlog.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
 		}
 		return nil, facts, nil
@@ -302,6 +361,41 @@ func trimUnit[T any](block string, list *[]T, truncated *bool) reduce.Trimmable 
 			*truncated = true
 		},
 	}
+}
+
+// blockEnum lifts an ordered block-name list into the []any the JSON-schema enum
+// field wants, so the published schema constrains the blocks array to known names.
+func blockEnum(names []string) []any {
+	e := make([]any, len(names))
+	for i, n := range names {
+		e[i] = n
+	}
+	return e
+}
+
+// requestedBlocks resolves a projection request to the set of blocks to include.
+// An empty request (absent parameter or empty array) means the full composite, so
+// every existing caller is unaffected. An unknown name is an actionable error
+// rather than a silent near-empty success — the schema enum is the published
+// contract, but the handler enforces it independently so the failure mode does not
+// rest on whether the SDK validates enum members of an array. valid is the ordered
+// name list, so the error message lists blocks deterministically.
+func requestedBlocks(requested, valid []string, tool string) (map[string]bool, error) {
+	validSet := make(map[string]bool, len(valid))
+	for _, n := range valid {
+		validSet[n] = true
+	}
+	if len(requested) == 0 {
+		return validSet, nil
+	}
+	want := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		if !validSet[name] {
+			return nil, fmt.Errorf("unknown block %q for %s; valid blocks are %s", name, tool, strings.Join(valid, ", "))
+		}
+		want[name] = true
+	}
+	return want, nil
 }
 
 // boundResponse applies the byte budget to facts, installing the size-bound marker
