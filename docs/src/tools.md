@@ -6,7 +6,7 @@ This page documents the *shape and semantics* of what the tools return — the t
 
 ## Common parameters
 
-The manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — take the same inputs. (The author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)
+The manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — share the `owner`, `repo`, and `limit` inputs below. The `blocks` projection parameter is accepted only by the two composite reads (`backlog_review` and `project_summary`); `milestone_tracks` has no projectable blocks and ignores it. (The author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)
 
 | Parameter | Type     | Required | Default | Bounds    | Meaning                          |
 | --------- | -------- | -------- | ------- | --------- | -------------------------------- |

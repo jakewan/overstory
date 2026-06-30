@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,59 @@ import (
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// TestRequestedBlocks exercises the handler-side projection guard directly,
+// decoupled from the SDK's schema-enum validation. The end-to-end RejectsUnknownBlock
+// tests can pass via the SDK rejecting an out-of-enum name before the handler runs,
+// so they do not prove this branch fires; this test does. The guard is the
+// authoritative defense (it does not depend on whether the installed jsonschema-go
+// validates array-item enums), so its unknown-name rejection and full-composite
+// default are pinned here.
+func TestRequestedBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requested []string
+		valid     []string
+		tool      string
+		wantAll   bool     // result is the full valid set
+		wantSet   []string // exact set expected when not wantAll
+		wantErr   string   // substring required in the error; empty means no error
+	}{
+		{name: "nil is full composite", requested: nil, valid: backlogBlockNames, tool: "backlog_review", wantAll: true},
+		{name: "empty is full composite", requested: []string{}, valid: backlogBlockNames, tool: "backlog_review", wantAll: true},
+		{name: "valid subset", requested: []string{"deferred", "staleness"}, valid: backlogBlockNames, tool: "backlog_review", wantSet: []string{"deferred", "staleness"}},
+		{name: "unknown name errors", requested: []string{"nope"}, valid: backlogBlockNames, tool: "backlog_review", wantErr: `unknown block "nope" for backlog_review`},
+		{name: "one unknown among valid errors", requested: []string{"hygiene", "bogus"}, valid: summaryBlockNames, tool: "project_summary", wantErr: `unknown block "bogus" for project_summary`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := requestedBlocks(tc.requested, tc.valid, tc.tool)
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("requestedBlocks(%v) = no error, want error containing %q", tc.requested, tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("requestedBlocks(%v) unexpected error: %v", tc.requested, err)
+			}
+			want := tc.wantSet
+			if tc.wantAll {
+				want = tc.valid
+			}
+			if len(got) != len(want) {
+				t.Fatalf("got %d blocks %v, want %d %v", len(got), got, len(want), want)
+			}
+			for _, n := range want {
+				if !got[n] {
+					t.Errorf("block %q missing from result %v", n, got)
+				}
+			}
+		})
+	}
+}
 
 // topLevelKeys decodes the tool's structured content into the set of top-level
 // JSON keys actually on the wire, so a projection test asserts a block's
