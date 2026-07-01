@@ -393,6 +393,37 @@ func TestBacklogReviewSurfacesDependencyStructureWithoutDeferredConvention(t *te
 	}
 }
 
+// TestBacklogReviewDependencyProvisionalUnderTruncation pins the truncation
+// contract on the MCP path (not only the unit level): a truncated fetch window
+// sets fetchTruncated, and an issue whose blocked-by edge list was capped is
+// classified provisional — never ready — so a capped edge list never reads as
+// readiness after serialization.
+func TestBacklogReviewDependencyProvisionalUnderTruncation(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	capped := issue(1, daysAgo(1))
+	capped.BlockedByTruncated = true // edge list capped: readiness unconfirmable
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, issue(2, daysAgo(1))},
+		TotalOpen: 500, // fetched window is a floor
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if !dep.FetchTruncated {
+		t.Error("FetchTruncated = false, want true (2 fetched of 500)")
+	}
+	if dep.ProvisionalCount != 1 {
+		t.Errorf("ProvisionalCount = %d, want 1 (the truncated-edge issue)", dep.ProvisionalCount)
+	}
+	if dep.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (#2 only; the truncated issue is not ready)", dep.ReadyCount)
+	}
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area

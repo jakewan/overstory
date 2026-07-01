@@ -11,7 +11,9 @@
 // (backlog) and recommendation (summary) blocks already list per-issue edges; what
 // neither computes is the ready/blocked split and the gate set — the open issues
 // that block others but are themselves unblocked, the highest-leverage work to do
-// first. That classification is the new signal here.
+// first. That classification is the new signal here. (The package is named for the
+// edge domain it reads, like the sibling block key "dependencies"; the signal it
+// derives is the gate-readiness classification.)
 package dependency
 
 import (
@@ -25,8 +27,19 @@ import (
 // Configured field — like crossRef and overlap the reduction always applies,
 // since native edges need no convention. OpenIssueCount is the repository-wide
 // open total and stays exact when the fetch window truncates (FetchTruncated);
-// the ready/blocked/gate classification is over the fetched window only, the same
-// windowed posture criticalPath takes.
+// the ready/blocked/gate classification is over the fetched window only.
+//
+// FetchTruncated bounds coverage but never misclassifies a fetched issue, so —
+// unlike criticalPath's gate — the classification is not blanket-degraded under it.
+// criticalPath's gate is absence-based ("no open critical-path issue remains in the
+// stream"), which a truncated window can falsely clear, so it degrades to
+// provisional. Here readiness reads each issue's own blocked-by edges, which carry
+// authoritative open/closed state on the issue regardless of whether the blocker was
+// fetched — a blocker outside the window still demotes its dependent out of ready.
+// So the only truncation that can hide a gate is the per-issue edge cap
+// (BlockedByTruncated), which the provisional class guards; FetchTruncated leaves
+// the counts a floor (more issues may exist unclassified) without making any
+// classified issue wrong.
 //
 // ReadyCount, BlockedCount, and ProvisionalCount partition the fetched open
 // issues. Provisional is the truncation-safety class: an issue that presents no
