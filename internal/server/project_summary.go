@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/jakewan/overstory/internal/criticalpath"
+	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/jakewan/overstory/internal/reduce"
@@ -32,7 +33,7 @@ type projectSummaryInput struct {
 // handler's projection set. Excludes the always-present meta blocks (repo,
 // generatedAt, openIssueSet, rateLimit, sizeBound).
 var summaryBlockNames = []string{
-	"milestones", "areaInventory", "hygiene", "openPRs", "recommendations", "criticalPath",
+	"milestones", "areaInventory", "hygiene", "openPRs", "recommendations", "criticalPath", "dependencies",
 }
 
 // projectSummaryTool publishes the input contract via a hand-written schema, the
@@ -133,6 +134,10 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			AreaLabels:   cfg.AreaBalance.Labels,
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
+		// The classification-only projection: recommendations already ships every
+		// candidate's raw blocked-by/blocking edges, so the summary adds the graph-level
+		// ready/blocked split and the gate set, not a second copy of the edges.
+		dependencies := dependency.Reduce(issues, totalOpen, in.Limit).Classification()
 
 		facts := summary.Facts{
 			Repo:        ownerRepo,
@@ -154,6 +159,9 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		}
 		if want["criticalPath"] {
 			facts.CriticalPath = &criticalPath
+		}
+		if want["dependencies"] {
+			facts.Dependencies = &dependencies
 		}
 
 		// Milestones and PRs each need their own fetch and run only when requested.
@@ -190,6 +198,9 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		}
 		if facts.Recommendations != nil {
 			units = append(units, trimUnit("recommendations", &facts.Recommendations.Candidates, &facts.Recommendations.ListTruncated))
+		}
+		if facts.Dependencies != nil {
+			units = append(units, trimUnit("dependencies:gates", &facts.Dependencies.Gates, &facts.Dependencies.GatesTruncated))
 		}
 		// Trim milestone members, not whole milestones. Each milestone's progress entry
 		// (title, open/closed counts) is the headline orientation signal; the nested

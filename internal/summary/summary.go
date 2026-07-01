@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/criticalpath"
+	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/reduce"
 )
 
@@ -27,14 +28,15 @@ type Facts struct {
 	// can omit an unrequested one entirely; see backlog.Facts for the full rationale
 	// (full-composite bytes unchanged; a requested-but-unavailable block stays non-
 	// nil with its Available:false marker).
-	Milestones      *MilestoneFacts          `json:"milestones,omitempty"`
-	AreaInventory   *AreaInventoryFacts      `json:"areaInventory,omitempty"`
-	Hygiene         *HygieneFacts            `json:"hygiene,omitempty"`
-	OpenPRs         *PullRequestFacts        `json:"openPRs,omitempty"`
-	Recommendations *RecommendationFacts     `json:"recommendations,omitempty"`
-	CriticalPath    *criticalpath.Facts      `json:"criticalPath,omitempty"`
-	OpenIssueSet    reduce.OpenIssueSetFacts `json:"openIssueSet"`
-	RateLimit       *reduce.RateLimitFacts   `json:"rateLimit,omitempty"`
+	Milestones      *MilestoneFacts            `json:"milestones,omitempty"`
+	AreaInventory   *AreaInventoryFacts        `json:"areaInventory,omitempty"`
+	Hygiene         *HygieneFacts              `json:"hygiene,omitempty"`
+	OpenPRs         *PullRequestFacts          `json:"openPRs,omitempty"`
+	Recommendations *RecommendationFacts       `json:"recommendations,omitempty"`
+	CriticalPath    *criticalpath.Facts        `json:"criticalPath,omitempty"`
+	Dependencies    *dependency.Classification `json:"dependencies,omitempty"`
+	OpenIssueSet    reduce.OpenIssueSetFacts   `json:"openIssueSet"`
+	RateLimit       *reduce.RateLimitFacts     `json:"rateLimit,omitempty"`
 	// SizeBound is set only when the response had to be trimmed to fit the
 	// configured byte budget; absent (nil) on a response that fit untouched.
 	SizeBound *reduce.SizeBoundFacts `json:"sizeBound,omitempty"`

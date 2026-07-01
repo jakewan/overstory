@@ -35,12 +35,15 @@ import (
 // an empty edge list is not proof of readiness. Gates and Blocked are the two
 // actionable lists (capped at Limit, counts never capped).
 type Facts struct {
-	OpenIssueCount   int     `json:"openIssueCount"`
-	FetchedCount     int     `json:"fetchedCount"`
-	FetchTruncated   bool    `json:"fetchTruncated"`
-	ReadyCount       int     `json:"readyCount"`
-	BlockedCount     int     `json:"blockedCount"`
-	ProvisionalCount int     `json:"provisionalCount"`
+	OpenIssueCount   int  `json:"openIssueCount"`
+	FetchedCount     int  `json:"fetchedCount"`
+	FetchTruncated   bool `json:"fetchTruncated"`
+	ReadyCount       int  `json:"readyCount"`
+	BlockedCount     int  `json:"blockedCount"`
+	ProvisionalCount int  `json:"provisionalCount"`
+	// GateCount is the total number of gates before the Gates list is capped, so a
+	// caller can tell how many do-first roots exist when GatesTruncated is set.
+	GateCount        int     `json:"gateCount"`
 	Gates            []Issue `json:"gates"`
 	GatesTruncated   bool    `json:"gatesTruncated"`
 	Blocked          []Issue `json:"blocked"`
@@ -137,9 +140,61 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		return facts.Blocked[i].Number < facts.Blocked[j].Number
 	})
 
+	// Counts are taken before the list caps, so they stay authoritative.
+	facts.GateCount = len(facts.Gates)
 	facts.Gates, facts.GatesTruncated = capList(facts.Gates, listLimit)
 	facts.Blocked, facts.BlockedTruncated = capList(facts.Blocked, listLimit)
 	return facts
+}
+
+// Classification is the summary-side projection of Facts: the ready/blocked/gate
+// classification without the per-issue blocked-by/blocking edge lists and without
+// the blocked list — both derivable from the recommendation block, which already
+// ships every open issue's edges. It is the signal project_summary adds over
+// recommendations: the graph-level split and the gate set.
+type Classification struct {
+	OpenIssueCount   int    `json:"openIssueCount"`
+	FetchedCount     int    `json:"fetchedCount"`
+	FetchTruncated   bool   `json:"fetchTruncated"`
+	ReadyCount       int    `json:"readyCount"`
+	BlockedCount     int    `json:"blockedCount"`
+	ProvisionalCount int    `json:"provisionalCount"`
+	GateCount        int    `json:"gateCount"`
+	Gates            []Gate `json:"gates"`
+	GatesTruncated   bool   `json:"gatesTruncated"`
+	Limit            int    `json:"limit"`
+}
+
+// Gate is one do-first root in the summary projection: an issue that is itself
+// ready and unblocks open downstream work. BlockingCount is how many open
+// downstream issues it unblocks — the classification metadata a caller ranks by,
+// not the raw edge list (that lives in the recommendation block).
+type Gate struct {
+	Number        int    `json:"number"`
+	Title         string `json:"title"`
+	BlockingCount int    `json:"blockingCount"`
+}
+
+// Classification projects the full facts to the summary-side view: it keeps the
+// counts and the gate set (inheriting Facts' cap and order) and drops the per-issue
+// edge lists and the blocked list.
+func (f Facts) Classification() Classification {
+	gates := make([]Gate, 0, len(f.Gates))
+	for _, g := range f.Gates {
+		gates = append(gates, Gate{Number: g.Number, Title: g.Title, BlockingCount: len(g.Blocking)})
+	}
+	return Classification{
+		OpenIssueCount:   f.OpenIssueCount,
+		FetchedCount:     f.FetchedCount,
+		FetchTruncated:   f.FetchTruncated,
+		ReadyCount:       f.ReadyCount,
+		BlockedCount:     f.BlockedCount,
+		ProvisionalCount: f.ProvisionalCount,
+		GateCount:        f.GateCount,
+		Gates:            gates,
+		GatesTruncated:   f.GatesTruncated,
+		Limit:            f.Limit,
+	}
 }
 
 // capList caps a list at listLimit (a negative limit means uncapped), reporting

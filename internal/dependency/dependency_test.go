@@ -48,13 +48,39 @@ func TestReduceClassifiesBlockedAndGates(t *testing.T) {
 	if len(got) != 5 || got[0] != 42 || got[4] != 46 {
 		t.Errorf("#7 BlockedBy = %v, want [42 43 44 45 46]", got)
 	}
-	if len(facts.Gates) != 5 {
-		t.Fatalf("Gates = %d, want 5", len(facts.Gates))
+	if len(facts.Gates) != 5 || facts.GateCount != 5 {
+		t.Fatalf("Gates listed=%d GateCount=%d, want 5/5", len(facts.Gates), facts.GateCount)
 	}
 	for _, g := range facts.Gates {
 		if len(g.Blocking) != 1 || g.Blocking[0] != 7 {
 			t.Errorf("gate #%d Blocking = %v, want [7]", g.Number, g.Blocking)
 		}
+	}
+}
+
+// TestClassificationDropsPerIssueEdges pins the summary-side projection: it carries
+// the counts and the gate set (with how many each gate unblocks) but not the raw
+// per-issue edge lists — the recommendation block already ships those.
+func TestClassificationDropsPerIssueEdges(t *testing.T) {
+	capstone := issue(7)
+	capstone.BlockedBy = edges(42, 43)
+	g := issue(42)
+	g.Blocking = edges(7, 8) // ready, unblocks two
+	facts := Reduce([]github.Issue{capstone, g, issue(8)}, 3, 20)
+
+	c := facts.Classification()
+	if c.ReadyCount != facts.ReadyCount || c.BlockedCount != facts.BlockedCount || c.GateCount != facts.GateCount {
+		t.Errorf("counts not carried: %+v vs ready=%d blocked=%d gate=%d",
+			c, facts.ReadyCount, facts.BlockedCount, facts.GateCount)
+	}
+	if len(c.Gates) != 1 || c.Gates[0].Number != 42 {
+		t.Fatalf("Gates = %+v, want [#42]", c.Gates)
+	}
+	if c.Gates[0].BlockingCount != 2 {
+		t.Errorf("BlockingCount = %d, want 2 (unblocks #7 and #8)", c.Gates[0].BlockingCount)
+	}
+	if c.Gates == nil {
+		t.Error("Gates nil; want non-nil empty slice")
 	}
 }
 
