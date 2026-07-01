@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/criticalpath"
+	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/reduce"
 )
@@ -30,6 +31,7 @@ type Facts struct {
 	Quality      *QualityFacts            `json:"quality,omitempty"`
 	Overlap      *OverlapFacts            `json:"overlap,omitempty"`
 	CrossRef     *CrossRefFacts           `json:"crossRef,omitempty"`
+	Dependencies *dependency.Facts        `json:"dependencies,omitempty"`
 	Trajectory   *TrajectoryFacts         `json:"trajectory,omitempty"`
 	PRTrajectory *PRTrajectoryFacts       `json:"prTrajectory,omitempty"`
 	CriticalPath *criticalpath.Facts      `json:"criticalPath,omitempty"`

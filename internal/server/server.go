@@ -24,6 +24,7 @@ import (
 	"github.com/jakewan/overstory/internal/authored"
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/criticalpath"
+	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/maintenance"
 	"github.com/jakewan/overstory/internal/manifest"
@@ -160,7 +161,7 @@ type backlogReviewInput struct {
 // of projection and so carry no projection name.
 var backlogBlockNames = []string{
 	"staleness", "deferred", "areaBalance", "quality", "overlap", "crossRef",
-	"trajectory", "prTrajectory", "criticalPath",
+	"dependencies", "trajectory", "prTrajectory", "criticalPath",
 }
 
 // backlogReviewTool publishes the input contract via a hand-written schema. The
@@ -253,6 +254,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
 		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		crossref := backlog.ReduceCrossRef(result.Issues, result.TotalOpen, in.Limit)
+		dependencies := dependency.Reduce(result.Issues, result.TotalOpen, in.Limit)
 		criticalPath := criticalpath.Reduce(result.Issues, result.TotalOpen, criticalpath.Params{
 			Streams:      cfg.CriticalPath.Streams,
 			Label:        cfg.CriticalPath.Label,
@@ -291,6 +293,9 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		}
 		if want["crossRef"] {
 			facts.CrossRef = &crossref
+		}
+		if want["dependencies"] {
+			facts.Dependencies = &dependencies
 		}
 		if want["criticalPath"] {
 			facts.CriticalPath = &criticalPath
@@ -335,6 +340,11 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		}
 		if facts.CrossRef != nil {
 			units = append(units, trimUnit("crossRef", &facts.CrossRef.Groups, &facts.CrossRef.ListTruncated))
+		}
+		if facts.Dependencies != nil {
+			units = append(units,
+				trimUnit("dependencies:gates", &facts.Dependencies.Gates, &facts.Dependencies.GatesTruncated),
+				trimUnit("dependencies:blocked", &facts.Dependencies.Blocked, &facts.Dependencies.BlockedTruncated))
 		}
 		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
 			return nil, backlog.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
