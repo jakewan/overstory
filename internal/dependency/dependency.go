@@ -72,13 +72,21 @@ type Facts struct {
 // its Blocking (the work it unblocks); a Blocked issue carries its BlockedBy (why
 // it waits) — but both slices are populated on every listed issue so a caller has
 // the full local structure regardless of which list the issue is in.
+//
+// BlockedByTruncated / BlockingTruncated mark an edge list the fetch capped, so the
+// corresponding slice is a lower bound — the same per-issue honesty the deferred and
+// recommendation blocks carry. It matters for a listed issue: a blocked issue's
+// BlockedBy may omit further blockers, and a gate's Blocking (hence its ordering and
+// the summary blockingCount) may understate how much it unblocks.
 type Issue struct {
-	Number       int    `json:"number"`
-	Title        string `json:"title"`
-	URL          string `json:"url"`
-	BlockedBy    []int  `json:"blockedBy"`
-	Blocking     []int  `json:"blocking"`
-	SubIssueGate bool   `json:"subIssueGate"`
+	Number             int    `json:"number"`
+	Title              string `json:"title"`
+	URL                string `json:"url"`
+	BlockedBy          []int  `json:"blockedBy"`
+	BlockedByTruncated bool   `json:"blockedByTruncated"`
+	Blocking           []int  `json:"blocking"`
+	BlockingTruncated  bool   `json:"blockingTruncated"`
+	SubIssueGate       bool   `json:"subIssueGate"`
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
@@ -112,12 +120,14 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		subGate := is.SubIssuesTotal-is.SubIssuesCompleted > 0
 
 		item := Issue{
-			Number:       is.Number,
-			Title:        is.Title,
-			URL:          is.URL,
-			BlockedBy:    blockedBy,
-			Blocking:     blocking,
-			SubIssueGate: subGate,
+			Number:             is.Number,
+			Title:              is.Title,
+			URL:                is.URL,
+			BlockedBy:          blockedBy,
+			BlockedByTruncated: is.BlockedByTruncated,
+			Blocking:           blocking,
+			BlockingTruncated:  is.BlockingTruncated,
+			SubIssueGate:       subGate,
 		}
 
 		switch {
@@ -181,11 +191,14 @@ type Classification struct {
 // Gate is one do-first root in the summary projection: an issue that is itself
 // ready and unblocks open downstream work. BlockingCount is how many open
 // downstream issues it unblocks — the classification metadata a caller ranks by,
-// not the raw edge list (that lives in the recommendation block).
+// not the raw edge list (that lives in the recommendation block). BlockingTruncated
+// marks a capped blocking-edge list, so BlockingCount (and the gate's ordering) is a
+// lower bound.
 type Gate struct {
-	Number        int    `json:"number"`
-	Title         string `json:"title"`
-	BlockingCount int    `json:"blockingCount"`
+	Number            int    `json:"number"`
+	Title             string `json:"title"`
+	BlockingCount     int    `json:"blockingCount"`
+	BlockingTruncated bool   `json:"blockingTruncated"`
 }
 
 // Classification projects the full facts to the summary-side view: it keeps the
@@ -194,7 +207,12 @@ type Gate struct {
 func (f Facts) Classification() Classification {
 	gates := make([]Gate, 0, len(f.Gates))
 	for _, g := range f.Gates {
-		gates = append(gates, Gate{Number: g.Number, Title: g.Title, BlockingCount: len(g.Blocking)})
+		gates = append(gates, Gate{
+			Number:            g.Number,
+			Title:             g.Title,
+			BlockingCount:     len(g.Blocking),
+			BlockingTruncated: g.BlockingTruncated,
+		})
 	}
 	return Classification{
 		OpenIssueCount:   f.OpenIssueCount,

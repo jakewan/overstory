@@ -58,6 +58,33 @@ func TestReduceClassifiesBlockedAndGates(t *testing.T) {
 	}
 }
 
+// TestReduceSurfacesPerIssueEdgeTruncation pins that a listed issue carries the
+// per-issue edge-truncation flags, so a caller can tell a capped edge list — and a
+// derived lower-bound gate ordering / blockingCount — from a complete one, the same
+// honesty the deferred and recommendation blocks provide.
+func TestReduceSurfacesPerIssueEdgeTruncation(t *testing.T) {
+	blocked := issue(1)
+	blocked.BlockedBy = edges(2)
+	blocked.BlockedByTruncated = true // more blockers than the window read
+	gate := issue(2)
+	gate.Blocking = edges(1)
+	gate.BlockingTruncated = true // more downstream than the window read
+
+	facts := Reduce([]github.Issue{blocked, gate}, 2, 20)
+	if len(facts.Blocked) != 1 || !facts.Blocked[0].BlockedByTruncated {
+		t.Errorf("blocked issue BlockedByTruncated not surfaced: %+v", facts.Blocked)
+	}
+	if len(facts.Gates) != 1 || !facts.Gates[0].BlockingTruncated {
+		t.Errorf("gate BlockingTruncated not surfaced: %+v", facts.Gates)
+	}
+	// The summary projection carries the gate's blocking truncation, so a caller reads
+	// its blockingCount as a lower bound.
+	c := facts.Classification()
+	if len(c.Gates) != 1 || !c.Gates[0].BlockingTruncated {
+		t.Errorf("classification gate BlockingTruncated not surfaced: %+v", c.Gates)
+	}
+}
+
 // TestClassificationDropsPerIssueEdges pins the summary-side projection: it carries
 // the counts and the gate set (with how many each gate unblocks) but not the raw
 // per-issue edge lists — the recommendation block already ships those.
