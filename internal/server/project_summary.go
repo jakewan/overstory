@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/jakewan/overstory/internal/criticalpath"
+	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
 	"github.com/jakewan/overstory/internal/reduce"
@@ -32,7 +33,7 @@ type projectSummaryInput struct {
 // handler's projection set. Excludes the always-present meta blocks (repo,
 // generatedAt, openIssueSet, rateLimit, sizeBound).
 var summaryBlockNames = []string{
-	"milestones", "areaInventory", "hygiene", "openPRs", "recommendations", "criticalPath",
+	"milestones", "areaInventory", "hygiene", "openPRs", "recommendations", "criticalPath", "dependencies",
 }
 
 // projectSummaryTool publishes the input contract via a hand-written schema, the
@@ -43,7 +44,7 @@ func projectSummaryTool() *mcp.Tool {
 	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "project_summary",
-		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity, and dependency signals: the heuristic bodyRefs plus the authoritative native blockedBy, blocking, and open sub-issue children with their completion counts — a caller ranks 'what next' from; the ranking judgment stays caller-side), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a candidate's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue to verify as a gate, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary. The optional blocks parameter projects a subset: pass an allowlist of block names to return only those (omit it for the full composite), which also skips the secondary fetch backing any unrequested milestones/openPRs block; repo, generatedAt, and openIssueSet are always returned.",
+		Description: "Survey a GitHub repository for session orientation — \"given what's open now, what should I pick up?\" — and return compact structured facts for the caller to render: a milestones block (each open milestone's authoritative open/closed counts plus the fetched open issues belonging to it, with a per-milestone flag when that member list is a floor relative to the open count), an area-inventory block (per functional area, the active-vs-deferred split of its open issues, areas identified by the repo's manifest labels and prefixes), a hygiene block (four signals over the open issues: missing-area, unmilestoned-and-aged, stale, and deferred-without-context), an open-PRs block (each open pull request's branch, draft/ready state, CI rollup, and inactivity, plus a stale-PR count), a recommendations block (per-issue inputs — bug-labeled, milestone, age, inactivity, and dependency signals: the heuristic bodyRefs plus the authoritative native blockedBy, blocking, and open sub-issue children with their completion counts — a caller ranks 'what next' from; the ranking judgment stays caller-side), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), a dependencies block (open issues classified by their authoritative native blocked-by/blocking edges — convention-free: the ready/blocked/provisional counts and the gate set, the do-first roots that block open downstream work, each with how many downstream issues it unblocks. This is the graph-level classification only — the raw per-issue edges live in the recommendations block above; an issue is blocked by an open blocked-by edge or an open sub-issue gate, provisional when a truncated edge list leaves readiness unconfirmed, and the classification is over the fetched window), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a candidate's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue to verify as a gate, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window). The milestones and open-PRs blocks each need their own fetch and mark themselves unavailable (with a rate_limited/fetch_failed reason) if that fetch fails, rather than failing the whole summary. The optional blocks parameter projects a subset: pass an allowlist of block names to return only those (omit it for the full composite), which also skips the secondary fetch backing any unrequested milestones/openPRs block; repo, generatedAt, and openIssueSet are always returned.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -133,6 +134,10 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			AreaLabels:   cfg.AreaBalance.Labels,
 			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
 		}, in.Limit)
+		// The classification-only projection: recommendations already ships every
+		// candidate's raw blocked-by/blocking edges, so the summary adds the graph-level
+		// ready/blocked split and the gate set, not a second copy of the edges.
+		dependencies := dependency.Reduce(issues, totalOpen, in.Limit).Classification()
 
 		facts := summary.Facts{
 			Repo:        ownerRepo,
@@ -154,6 +159,9 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		}
 		if want["criticalPath"] {
 			facts.CriticalPath = &criticalPath
+		}
+		if want["dependencies"] {
+			facts.Dependencies = &dependencies
 		}
 
 		// Milestones and PRs each need their own fetch and run only when requested.
@@ -190,6 +198,9 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		}
 		if facts.Recommendations != nil {
 			units = append(units, trimUnit("recommendations", &facts.Recommendations.Candidates, &facts.Recommendations.ListTruncated))
+		}
+		if facts.Dependencies != nil {
+			units = append(units, trimUnit("dependencies:gates", &facts.Dependencies.Gates, &facts.Dependencies.GatesTruncated))
 		}
 		// Trim milestone members, not whole milestones. Each milestone's progress entry
 		// (title, open/closed counts) is the headline orientation signal; the nested

@@ -345,6 +345,85 @@ func TestBacklogReviewSurfacesCriticalPath(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewSurfacesDependencyStructureWithoutDeferredConvention pins the
+// #87 fix: a repo whose manifest declares no deferred convention still gets its
+// authoritative native dependency structure. Before this block, the deferred
+// reduction was the only projection of native edges on backlog_review, so a
+// deferred-less repo saw none. The capstone issue now surfaces as blocked with
+// its blocked-by edges (the direction the mention graph inverts), and its
+// blockers surface as gates.
+func TestBacklogReviewSurfacesDependencyStructureWithoutDeferredConvention(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	capstone := issue(7, daysAgo(1))
+	capstone.BlockedBy = []github.DependencyRef{
+		{Number: 42, Open: true}, {Number: 43, Open: true}, {Number: 44, Open: true},
+		{Number: 45, Open: true}, {Number: 46, Open: true},
+	}
+	issues := []github.Issue{capstone}
+	for _, n := range []int{42, 43, 44, 45, 46} {
+		b := issue(n, daysAgo(1))
+		b.Blocking = []github.DependencyRef{{Number: 7, Open: true}}
+		issues = append(issues, b)
+	}
+	fetcher := fakeFetcher{result: github.IssueListResult{Issues: issues, TotalOpen: 6}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	// The deferred block is a no-op here — proof the repo has no deferred convention.
+	if facts.Deferred.Configured {
+		t.Fatalf("Deferred.Configured = true, want false (no deferred convention)")
+	}
+	dep := facts.Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent; want present on the full composite")
+	}
+	if dep.BlockedCount != 1 || dep.ReadyCount != 5 {
+		t.Errorf("counts blocked=%d ready=%d, want 1/5", dep.BlockedCount, dep.ReadyCount)
+	}
+	if len(dep.Blocked) != 1 || dep.Blocked[0].Number != 7 {
+		t.Fatalf("Blocked = %+v, want [#7]", dep.Blocked)
+	}
+	if got := dep.Blocked[0].BlockedBy; len(got) != 5 || got[0] != 42 || got[4] != 46 {
+		t.Errorf("#7 BlockedBy = %v, want [42..46] (authoritative direction)", got)
+	}
+	if len(dep.Gates) != 5 {
+		t.Errorf("Gates = %d, want 5 (the blockers)", len(dep.Gates))
+	}
+}
+
+// TestBacklogReviewDependencyProvisionalUnderTruncation pins the truncation
+// contract on the MCP path (not only the unit level): a truncated fetch window
+// sets fetchTruncated, and an issue whose blocked-by edge list was capped is
+// classified provisional — never ready — so a capped edge list never reads as
+// readiness after serialization.
+func TestBacklogReviewDependencyProvisionalUnderTruncation(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	capped := issue(1, daysAgo(1))
+	capped.BlockedByTruncated = true // edge list capped: readiness unconfirmable
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, issue(2, daysAgo(1))},
+		TotalOpen: 500, // fetched window is a floor
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if !dep.FetchTruncated {
+		t.Error("FetchTruncated = false, want true (2 fetched of 500)")
+	}
+	if dep.ProvisionalCount != 1 {
+		t.Errorf("ProvisionalCount = %d, want 1 (the truncated-edge issue)", dep.ProvisionalCount)
+	}
+	if dep.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (#2 only; the truncated issue is not ready)", dep.ReadyCount)
+	}
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area

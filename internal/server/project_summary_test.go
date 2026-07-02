@@ -220,6 +220,42 @@ func TestProjectSummarySurfacesCriticalPath(t *testing.T) {
 	}
 }
 
+// TestProjectSummarySurfacesDependencyClassification pins the classification-only
+// dependency block on the orientation read: the graph-level ready/blocked split
+// and the gate set (each gate's downstream count), without the raw per-issue edges
+// the recommendations block already ships.
+func TestProjectSummarySurfacesDependencyClassification(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	capstone := issue(7, daysAgo(1))
+	capstone.BlockedBy = []github.DependencyRef{{Number: 42, Open: true}, {Number: 43, Open: true}}
+	gateA := issue(42, daysAgo(1))
+	gateA.Blocking = []github.DependencyRef{{Number: 7, Open: true}}
+	gateB := issue(43, daysAgo(1))
+	gateB.Blocking = []github.DependencyRef{{Number: 7, Open: true}}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{capstone, gateA, gateB}, TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	dep := facts.Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent; want present on the full composite")
+	}
+	if dep.BlockedCount != 1 || dep.ReadyCount != 2 || dep.GateCount != 2 {
+		t.Errorf("counts blocked=%d ready=%d gate=%d, want 1/2/2", dep.BlockedCount, dep.ReadyCount, dep.GateCount)
+	}
+	if len(dep.Gates) != 2 {
+		t.Fatalf("Gates = %d, want 2", len(dep.Gates))
+	}
+	for _, g := range dep.Gates {
+		if g.BlockingCount != 1 {
+			t.Errorf("gate #%d BlockingCount = %d, want 1 (unblocks #7)", g.Number, g.BlockingCount)
+		}
+	}
+}
+
 // TestProjectSummaryDegradesMilestonesOnFetchError pins that a milestone
 // sub-fetch failure degrades only that block — not a tool error — while the
 // issue-derived blocks stay populated.
