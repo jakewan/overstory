@@ -27,3 +27,4 @@ Conventions for the user/integrator documentation book (`docs/src/`). These keep
 ## Tool and fact reference
 
 - The tool/fact reference documents the stable *shape* and points at the Go source (`internal/backlog/`, `internal/summary/`) for field-by-field detail. Don't duplicate struct fields into prose — adding a field to a `Facts` struct shouldn't require a doc edit. Update the reference only when a block is added, removed, or changes meaning (see `CONTRIBUTING.md`).
+- The reference render skills under `docs/src/guide/render-skills/` are the exception: because they reproduce a skill's body verbatim, they *do* name individual fields, so a block or named-field change requires revisiting them too. Overstory maintains this render-skill content canonically — see `CONTRIBUTING.md` for the full docs-pinning contract.

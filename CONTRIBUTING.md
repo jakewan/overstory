@@ -52,11 +52,12 @@ The project uses BDD-style/outside-in TDD:
 
 User/integrator documentation lives in the [`docs/`](docs/) book (mdbook). Build it with `just docs-build` (or `just docs-serve` for live preview) before pushing documentation changes. `docs-build` also runs the linkcheck backend, so a broken `SUMMARY.md` entry, cross-page link, or anchor fails the build. CI enforces the same build on any change under `docs/`, and a pre-push hook runs it locally when a push includes docs changes.
 
-Keep the docs pinned to the code:
+Keep the docs pinned to the code. Overstory's observable output is taught across the whole book, so a change to a tool's output — a block added, removed, or changed in meaning; a documented field's meaning; a truncation contract; the shape of what a tool returns — triggers a review of every doc surface that teaches it, not only the specific files below. Treat the list as signposts, not an exhaustive checklist:
 
 - When a tool is added, renamed, or changes its parameters, update its mention in `README.md` and `docs/src/tools.md`.
 - When the install or registration path changes, update `docs/src/guide/installation.md` — its single home; the README only links to it.
 - The tool/fact reference documents the stable shape and points at the Go source (`internal/backlog/`, `internal/summary/`) for field-by-field detail, so adding a field to a `Facts` struct doesn't require a doc edit. Update the reference only when a block is added, removed, or changes meaning.
+- The reference render skills under `docs/src/guide/render-skills/` reproduce a skill's body verbatim, so — unlike the reference above — they name individual fields (`sizeBound`, `blockedByTruncated`, and the like). They are the one exception to the field-doc-freedom rule: when a block or a named field's meaning changes, revisit the guides too, not just the reference. Overstory owns this render-skill content canonically — a maintainer's own working-copy skills track it, so corrections start here and flow outward, never the reverse.
 
 ### Project name
 
