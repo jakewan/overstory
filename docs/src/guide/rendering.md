@@ -73,11 +73,11 @@ When any of these is set, the render must say so — "showing 25 of 60+; this is
 
 ## Adopting a render skill
 
-The reference skills in this section — [Project Summary](./render-skills/project-summary.md) and [Backlog Review](./render-skills/backlog-review.md) — are working examples you can copy and adapt. They are **snapshots**, not a maintained distribution: the canonical render skills live in the operator's own agent configuration, and the in-book copies will drift from the server's evolving facts. Treat them as a starting point to adapt, not a contract to depend on.
+The reference skills in this section — [Project Summary](./render-skills/project-summary.md) and [Backlog Review](./render-skills/backlog-review.md) — are working examples you can copy and adapt. They are maintained here as the canonical render-skill content, kept in step with the server's reductions. Once you copy one into your own agent configuration and adapt it to your repository's conventions, that copy is a point-in-time starting point — it will drift from the server's evolving facts as you tailor it and as the reductions move on — so treat it as a base to adapt, not a contract to depend on.
 
 To adopt one, copy its `SKILL.md` body into your agent's skills directory under a directory named for the skill:
 
 - **Claude Code:** `~/.claude/skills/<name>/SKILL.md`
 - **Cursor:** `~/.cursor/skills/<name>/SKILL.md`
 
-A skill's `SKILL.md` — its name, description, and body — is identical for both callers; only separate *rule* files (`.md` for Claude, `.mdc` for Cursor) would differ, and these render skills carry none. Adapt the copy to your repository's conventions as the server's facts evolve, rather than treating the snapshot as a fixed interface.
+A skill's `SKILL.md` — its name, description, and body — is identical for both callers; only separate *rule* files (`.md` for Claude, `.mdc` for Cursor) would differ, and these render skills carry none. Adapt the copy to your repository's conventions as the server's facts evolve, rather than treating the in-book example as a fixed interface.

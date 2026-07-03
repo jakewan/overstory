@@ -38,11 +38,12 @@ In priority order:
 
 ## Reviewing documentation changes
 
-Overstory ships an mdbook under `docs/src/`. For PRs that touch it:
+Overstory ships an mdbook under `docs/src/`, and the docs are pinned to the code. For PRs that touch the docs — or that change a tool's observable output:
 
+- **Output changes must be reflected in the docs.** A PR that changes overstory's observable output — a reduction block added, removed, or changed in meaning; a documented field's meaning; the shape of what a tool returns — should update the docs that teach it (the tool/fact reference `docs/src/tools.md` and the render-skill guides under `docs/src/guide/render-skills/`) in the same PR. Flag an output change that leaves those surfaces stale. Scope this to the diff: flag when the output change is visible in the diff and the teaching doc is untouched — not a speculative audit of the docs against all of the code.
 - **Build-enforced conventions — don't re-flag.** The `mdbook` build (linkcheck2 backend) fails CI on broken intra-book links, bad anchors, or a page missing from `SUMMARY.md`; don't speculatively flag those. Prose is one long line per paragraph by convention — don't flag the absence of fixed-column wrapping.
-- **Don't ask for more struct-field prose.** The tool/fact reference documents the stable *shape* and points at the Go source for field-level detail. Flag prose that enumerates a `Facts` struct's fields (it rots as fields are added); don't request additional field-by-field documentation.
-- **Reference render skills are verbatim snapshots.** The pages under `docs/src/guide/render-skills/` reproduce skills maintained in the operator's own agent configuration, verbatim, as adaptable examples (each carries a provenance stamp saying so). Flag a reproduction that diverges from a faithful copy, or a broken outer code fence — but do **not** flag wording, omissions, or improvements *within* the snapshot body: that text is a faithful copy of an artifact maintained elsewhere, so "fixing" it here would break the snapshot.
+- **Don't ask for more struct-field prose.** The tool/fact reference (`docs/src/tools.md`) documents the stable *shape* and points at the Go source for field-level detail. Flag prose that enumerates a `Facts` struct's fields *there* (it rots as fields are added); don't request additional field-by-field documentation. Exception: the render-skill guides reproduce a skill body verbatim and so legitimately name fields — don't flag their field mentions as rot.
+- **Reference render skills are maintained here.** The pages under `docs/src/guide/render-skills/` are this project's canonical render-skill content; operators adapt *copies* into their own agent configuration (each carries a provenance stamp saying so). Because they teach the tools' output, they must track the reductions — a guide left stale by an output change is the output-changes flag above. Flag a broken outer code fence (mechanical), but don't bikeshed prose wording or request improvements that aren't drift.
 
 ## Reviewing changelog changes
 
