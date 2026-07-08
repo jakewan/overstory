@@ -99,6 +99,8 @@ func TestQueryDecodeContract(t *testing.T) {
 	}{
 		{"open-issue connection", issuesQuery, issuesConnection{}},
 		{"open-issue rate limit", issuesQuery, rateLimitNode{}},
+		{"critical-path connection", criticalPathIssuesQuery, criticalPathConnection{}},
+		{"critical-path rate limit", criticalPathIssuesQuery, rateLimitNode{}},
 		{"activity connection", activityQuery, activityConnection{}},
 		{"activity rate limit", activityQuery, rateLimitNode{}},
 		{"milestones connection", milestonesQuery, milestonesConnection{}},
@@ -163,6 +165,7 @@ func TestQueryStructuralKeys(t *testing.T) {
 		keys  []string
 	}{
 		{"open issues", issuesQuery, []string{"repository", "issues", "rateLimit"}},
+		{"critical-path issues", criticalPathIssuesQuery, []string{"repository", "issues", "rateLimit"}},
 		{"activity", activityQuery, []string{"repository", "issues", "rateLimit"}},
 		{"milestones", milestonesQuery, []string{"repository", "milestones", "rateLimit"}},
 		{"pull requests", pullRequestsQuery, []string{"repository", "pullRequests", "rateLimit"}},

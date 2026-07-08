@@ -255,12 +255,6 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		crossref := backlog.ReduceCrossRef(result.Issues, result.TotalOpen, in.Limit)
 		dependencies := dependency.Reduce(result.Issues, result.TotalOpen, in.Limit)
-		criticalPath := criticalpath.Reduce(result.Issues, result.TotalOpen, criticalpath.Params{
-			Streams:      cfg.CriticalPath.Streams,
-			Label:        cfg.CriticalPath.Label,
-			AreaLabels:   cfg.AreaBalance.Labels,
-			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
-		}, in.Limit)
 
 		facts := backlog.Facts{
 			Repo:        ownerRepo,
@@ -297,9 +291,6 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		if want["dependencies"] {
 			facts.Dependencies = &dependencies
 		}
-		if want["criticalPath"] {
-			facts.CriticalPath = &criticalPath
-		}
 
 		// Trajectory and PR-trajectory each need their own second fetch (closed/merged
 		// items too) and run only when their block is requested — the fan-out
@@ -308,6 +299,11 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		// returns its own fetch's budget; tightestBudget picks the tightest across the
 		// fetches that ran, so a degraded fetch's zero-remaining throttle still wins.
 		budgets := []*github.RateLimit{result.RateLimit}
+		if want["criticalPath"] {
+			cp, cpBudget := criticalPathBlock(ctx, fetcher, ownerRepo, cfg, result.Issues, result.TotalOpen, in.Limit, now)
+			facts.CriticalPath = &cp
+			budgets = append(budgets, cpBudget)
+		}
 		if want["trajectory"] {
 			trajectory, trajBudget := reduceTrajectory(ctx, fetcher, ownerRepo, cfg.Trajectory, n, now)
 			facts.Trajectory = &trajectory
@@ -532,6 +528,48 @@ func thresholdSource(matched bool) string {
 		return "manifest"
 	}
 	return "default"
+}
+
+// criticalPathBlock builds the critical-path / gate block, which both tools wire
+// identically. The block is sourced from the critical-path-labeled subset the gate
+// depends on — but only fetches it when it must. When critical-path is
+// unconfigured, or when the general open-issue window already covers every open
+// issue (len == totalOpen), the window in hand holds every critical-path issue, so
+// it reduces over that with no second fetch. Only a truncated general window
+// triggers the dedicated label-scoped fetch, bounding the extra request — and its
+// failure surface — to the repos that actually exceed the window. On that fetch's
+// failure the block degrades (Available:false, Configured:true) rather than
+// clearing every gate over an empty set or failing the whole call, mirroring the
+// milestone and pull-request blocks. Returns the block and the fetch's budget (nil
+// when no fetch ran) for the caller's tightest-budget aggregation.
+func criticalPathBlock(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.Config, issues []github.Issue, totalOpen, limit int, now func() time.Time) (criticalpath.Facts, *github.RateLimit) {
+	params := criticalpath.Params{
+		Streams:      cfg.CriticalPath.Streams,
+		Label:        cfg.CriticalPath.Label,
+		AreaLabels:   cfg.AreaBalance.Labels,
+		AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
+	}
+	if !params.Configured() {
+		// A no-op block (configured:false); no fetch, no budget.
+		return criticalpath.Reduce(nil, true, params, limit), nil
+	}
+	if len(issues) == totalOpen {
+		// The general window is complete, so it holds every critical-path issue.
+		return criticalpath.Reduce(issues, true, params, limit), nil
+	}
+	res, err := fetcher.ListOpenIssuesWithLabel(ctx, ownerRepo, cfg.CriticalPath.Label, cfg.Staleness.FetchLimit)
+	if err == nil {
+		return criticalpath.Reduce(res.Issues, len(res.Issues) == res.TotalOpen, params, limit), res.RateLimit
+	}
+	// Degrade like the milestone/PR blocks: Configured (the repo declared a path) but
+	// not Available (the fetch failed). Available:false is set explicitly, mirroring
+	// the sibling helpers, rather than left to the zero value.
+	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
+		return criticalpath.Facts{Configured: true, Available: false, Unavailable: "rate_limited", Streams: []criticalpath.Stream{}},
+			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
+	}
+	log.Printf("overstory: critical-path fetch for %s: %v", ownerRepo, err)
+	return criticalpath.Facts{Configured: true, Available: false, Unavailable: "fetch_failed", Streams: []criticalpath.Stream{}}, nil
 }
 
 // mapPrefixes adapts the manifest's prefix rules to the backlog matcher's, so the

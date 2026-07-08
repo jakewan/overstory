@@ -135,6 +135,107 @@ func TestListOpenIssuesParsesLabels(t *testing.T) {
 	}
 }
 
+func TestListOpenIssuesWithLabelFiltersAndParses(t *testing.T) {
+	// Three assertions in one round-trip: (a) the query scopes to the label via the
+	// `labels:` filter argument, so the fetch returns only critical-path issues; (b)
+	// the label is passed as a GraphQL *variable*, never interpolated into query
+	// structure; (c) each issue's labels decode, since the reduction still classifies
+	// a critical-path issue into its stream by area label.
+	var gotQuery string
+	var gotVars map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotQuery = req.Query
+		gotVars = req.Variables
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","labels":{"nodes":[{"name":"critical-path"},{"name":"area/simulation"}]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssuesWithLabel(context.Background(), "acme/widgets", "critical-path", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssuesWithLabel: %v", err)
+	}
+	// Match the filter argument and the variable token, not exact spacing.
+	if !strings.Contains(gotQuery, "labels:") {
+		t.Errorf("query does not scope by the labels filter; got:\n%s", gotQuery)
+	}
+	if !strings.Contains(gotQuery, "$label") {
+		t.Errorf("query does not pass the label as a variable; got:\n%s", gotQuery)
+	}
+	if gotVars["label"] != "critical-path" {
+		t.Errorf("label variable = %v, want %q (passed as a variable, not interpolated)", gotVars["label"], "critical-path")
+	}
+	if res.TotalOpen != 1 || len(res.Issues) != 1 {
+		t.Fatalf("TotalOpen=%d len=%d, want 1/1", res.TotalOpen, len(res.Issues))
+	}
+	got := res.Issues[0].Labels
+	if len(got) != 2 || got[0] != "critical-path" || got[1] != "area/simulation" {
+		t.Errorf("Labels = %v, want [critical-path area/simulation]", got)
+	}
+}
+
+// TestListOpenIssuesWithLabelPaginatesAndReportsTotal proves the labeled fetch
+// pages like the general one and reports the exact labeled open total (which the
+// handler compares against the fetched count to decide the source set is complete).
+func TestListOpenIssuesWithLabelPaginatesAndReportsTotal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		var body string
+		if req.Variables["after"] == nil {
+			body = `{"data":{"repository":{"issues":{
+				"totalCount":3,
+				"pageInfo":{"hasNextPage":true,"endCursor":"c1"},
+				"nodes":[{"number":1,"title":"a","labels":{"nodes":[{"name":"critical-path"}]}}]
+			}}}}`
+		} else {
+			body = `{"data":{"repository":{"issues":{
+				"totalCount":3,
+				"pageInfo":{"hasNextPage":false,"endCursor":""},
+				"nodes":[
+					{"number":2,"title":"b","labels":{"nodes":[{"name":"critical-path"}]}},
+					{"number":3,"title":"c","labels":{"nodes":[{"name":"critical-path"}]}}
+				]
+			}}}}`
+		}
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// fetchLimit 1 would stop after page 1; use a limit that spans both pages.
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssuesWithLabel(context.Background(), "acme/widgets", "critical-path", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssuesWithLabel: %v", err)
+	}
+	if res.TotalOpen != 3 {
+		t.Errorf("TotalOpen = %d, want 3 (exact labeled open total)", res.TotalOpen)
+	}
+	if len(res.Issues) != 3 {
+		t.Fatalf("fetched %d issues, want 3 (both pages)", len(res.Issues))
+	}
+}
+
 func TestListOpenIssuesParsesBodyText(t *testing.T) {
 	// (a) the query actually asks GitHub for bodyText — a typo in the selection
 	// would silently ship and the quality reduction would see every body as empty;

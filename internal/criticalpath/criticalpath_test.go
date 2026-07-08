@@ -30,18 +30,18 @@ func streamByName(facts Facts, name string) (Stream, bool) {
 }
 
 // TestReduceNotConfigured: with no declared streams the reduction is a no-op — not
-// an error — carrying the corpus counts but no streams.
+// an error — carrying no streams. It is still a successful reduction (Available),
+// distinct from a degraded fetch, which the handler marks Available:false.
 func TestReduceNotConfigured(t *testing.T) {
-	facts := Reduce([]github.Issue{issue(1, "critical-path", "area/simulation")}, 1, Params{}, 20)
+	facts := Reduce([]github.Issue{issue(1, "critical-path", "area/simulation")}, true, Params{}, 20)
 	if facts.Configured {
 		t.Errorf("Configured = true, want false")
 	}
+	if !facts.Available {
+		t.Errorf("Available = false, want true (a no-op is a successful reduction, not a degraded fetch)")
+	}
 	if len(facts.Streams) != 0 {
 		t.Errorf("Streams = %+v, want empty", facts.Streams)
-	}
-	// Counts still describe the fetched corpus.
-	if facts.OpenIssueCount != 1 || facts.FetchedCount != 1 {
-		t.Errorf("counts = open %d fetched %d, want 1/1", facts.OpenIssueCount, facts.FetchedCount)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestReduceStreamsWithoutLabelIsNotConfigured(t *testing.T) {
 	for _, label := range []string{"", "   "} {
 		facts := Reduce(
 			[]github.Issue{issue(1, "critical-path", "area/simulation")},
-			1,
+			true,
 			Params{Streams: []string{"simulation"}, Label: label, AreaPrefixes: areaPrefix},
 			20,
 		)
@@ -74,7 +74,7 @@ func TestReducePreservesDeclaredOrder(t *testing.T) {
 		issue(1, "critical-path", "area/ui"), // only ui has a member
 		issue(2, "critical-path", "area/ui"),
 	}
-	facts := Reduce(issues, 2, params("simulation", "narrative", "ui"), 20)
+	facts := Reduce(issues, true, params("simulation", "narrative", "ui"), 20)
 	want := []string{"simulation", "narrative", "ui"}
 	for i, w := range want {
 		if facts.Streams[i].Stream != w {
@@ -84,11 +84,18 @@ func TestReducePreservesDeclaredOrder(t *testing.T) {
 }
 
 // TestReduceGateClearedVsUncleared: a stream with an open critical-path member is
-// uncleared; one with none is cleared.
+// uncleared; one with none is cleared. A complete source set reports the reduction
+// available and the fetch not truncated, so the gate is authoritative.
 func TestReduceGateClearedVsUncleared(t *testing.T) {
 	issues := []github.Issue{issue(1, "critical-path", "area/simulation")}
-	facts := Reduce(issues, 1, params("simulation", "narrative"), 20)
+	facts := Reduce(issues, true, params("simulation", "narrative"), 20)
 
+	if !facts.Available {
+		t.Errorf("Available = false, want true")
+	}
+	if facts.FetchTruncated {
+		t.Errorf("FetchTruncated = true, want false (complete source set)")
+	}
 	sim, _ := streamByName(facts, "simulation")
 	if sim.GateCleared {
 		t.Errorf("simulation GateCleared = true, want false (open member)")
@@ -110,7 +117,7 @@ func TestReduceGateBeforeCap(t *testing.T) {
 		issue(1, "critical-path", "area/simulation"),
 		issue(2, "critical-path", "area/simulation"),
 	}
-	facts := Reduce(issues, 2, params("simulation"), 0)
+	facts := Reduce(issues, true, params("simulation"), 0)
 	sim, _ := streamByName(facts, "simulation")
 	if sim.GateCleared {
 		t.Errorf("GateCleared = true under listLimit:0, want false (gate reads pre-cap count)")
@@ -129,7 +136,7 @@ func TestReduceMemberOrderAndCap(t *testing.T) {
 		issue(2, "critical-path", "area/simulation"),
 		issue(8, "critical-path", "area/simulation"),
 	}
-	facts := Reduce(issues, 3, params("simulation"), 2)
+	facts := Reduce(issues, true, params("simulation"), 2)
 	sim, _ := streamByName(facts, "simulation")
 	if !sim.ListTruncated {
 		t.Fatalf("ListTruncated = false, want true (3 members, limit 2)")
@@ -143,7 +150,7 @@ func TestReduceMemberOrderAndCap(t *testing.T) {
 // member of each (overlapping, like areaInventory) and blocks both gates.
 func TestReduceMultiStreamMember(t *testing.T) {
 	issues := []github.Issue{issue(1, "critical-path", "area/simulation", "area/narrative")}
-	facts := Reduce(issues, 1, params("simulation", "narrative"), 20)
+	facts := Reduce(issues, true, params("simulation", "narrative"), 20)
 	for _, name := range []string{"simulation", "narrative"} {
 		s, _ := streamByName(facts, name)
 		if s.GateCleared || len(s.Members) != 1 {
@@ -153,23 +160,33 @@ func TestReduceMultiStreamMember(t *testing.T) {
 	if facts.OffPathCount != 0 {
 		t.Errorf("OffPathCount = %d, want 0 (on-path issue not double-counted)", facts.OffPathCount)
 	}
+	// One critical-path issue in hand — FetchedCount counts the matched subset, not
+	// the stream-membership fan-out (the issue is a member of two streams but one fetch).
+	if facts.FetchedCount != 1 {
+		t.Errorf("FetchedCount = %d, want 1 (one critical-path issue)", facts.FetchedCount)
+	}
 }
 
 // TestReduceOffPathVsUnareaed: a critical-path issue in a real-but-undeclared area
 // is off-path; one with no area at all is unareaed. Precedence: an issue that is
-// also a member of a declared stream is neither.
+// also a member of a declared stream is neither. FetchedCount counts every
+// critical-path issue reduced over, regardless of disposition.
 func TestReduceOffPathVsUnareaed(t *testing.T) {
 	issues := []github.Issue{
 		issue(1, "critical-path", "area/tooling"),                    // off-path: real area, not declared
 		issue(2, "critical-path"),                                    // unareaed: no area label
 		issue(3, "critical-path", "area/simulation", "area/tooling"), // on-path: member wins over off-path
+		issue(4, "area/simulation"),                                  // not critical-path → not counted
 	}
-	facts := Reduce(issues, 3, params("simulation", "narrative"), 20)
+	facts := Reduce(issues, true, params("simulation", "narrative"), 20)
 	if facts.OffPathCount != 1 {
 		t.Errorf("OffPathCount = %d, want 1 (issue 1)", facts.OffPathCount)
 	}
 	if facts.UnareaedCount != 1 {
 		t.Errorf("UnareaedCount = %d, want 1 (issue 2)", facts.UnareaedCount)
+	}
+	if facts.FetchedCount != 3 {
+		t.Errorf("FetchedCount = %d, want 3 (issues 1,2,3 are critical-path; issue 4 is not)", facts.FetchedCount)
 	}
 	sim, _ := streamByName(facts, "simulation")
 	if len(sim.Members) != 1 || sim.Members[0].Number != 3 {
@@ -177,18 +194,19 @@ func TestReduceOffPathVsUnareaed(t *testing.T) {
 	}
 }
 
-// TestReduceFetchTruncation: under a truncated window an empty stream's gate still
-// reads cleared (a windowed fact), and FetchTruncated marks the corpus as partial
-// so a caller treats that cleared gate as provisional.
-func TestReduceFetchTruncation(t *testing.T) {
-	// Fetched 1 issue but the repo has 50 open — a truncated window.
-	facts := Reduce([]github.Issue{issue(1, "critical-path", "area/simulation")}, 50, params("simulation", "narrative"), 20)
+// TestReduceIncompleteSourceSet: when the source set is incomplete (the labeled
+// fetch itself truncated), FetchTruncated is set so a caller treats an empty
+// stream's cleared gate as provisional — an unfetched critical-path issue may
+// remain. This is the rare tail: it fires only when the general window truncated
+// AND more than the fetch cap of labeled issues exist.
+func TestReduceIncompleteSourceSet(t *testing.T) {
+	facts := Reduce([]github.Issue{issue(1, "critical-path", "area/simulation")}, false, params("simulation", "narrative"), 20)
 	if !facts.FetchTruncated {
-		t.Errorf("FetchTruncated = false, want true (1 of 50 fetched)")
+		t.Errorf("FetchTruncated = false, want true (incomplete source set)")
 	}
 	nar, _ := streamByName(facts, "narrative")
 	if !nar.GateCleared {
-		t.Errorf("narrative GateCleared = false, want true (no member in window — provisional under truncation)")
+		t.Errorf("narrative GateCleared = false, want true (no member in the incomplete set — provisional)")
 	}
 }
 
@@ -196,7 +214,7 @@ func TestReduceFetchTruncation(t *testing.T) {
 // names match an issue's labels case-insensitively (GitHub labels match that way).
 func TestReduceLabelMatchingIsCaseInsensitive(t *testing.T) {
 	issues := []github.Issue{issue(1, "Critical-Path", "Area/Simulation")}
-	facts := Reduce(issues, 1, params("simulation"), 20)
+	facts := Reduce(issues, true, params("simulation"), 20)
 	sim, ok := streamByName(facts, "simulation")
 	if !ok || sim.GateCleared || len(sim.Members) != 1 {
 		t.Errorf("simulation = %+v ok=%v, want member #1 despite label casing", sim, ok)

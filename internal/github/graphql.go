@@ -234,6 +234,29 @@ const commitHistoryQuery = `query($owner:String!,$name:String!,$id:ID!,$since:Gi
   }
 }`
 
+// criticalPathIssuesQuery fetches a page of open issues scoped to a single label,
+// for the critical-path reduction when the general open-issue window truncated.
+// owner/name/label are GraphQL variables, not interpolated, so caller-supplied
+// values can never become query structure; the label is coerced into the
+// single-element list the issues connection's `labels` argument expects. The node
+// selection is deliberately lean — number, title, and labels(first:25) only —
+// because the reduction reads nothing else: it classifies each critical-path issue
+// into its stream by area label, and the label filter is server-side so the
+// critical-path label is guaranteed present. labels(first:25) matches the general
+// window's cap, so an issue's stream classification has identical fidelity on
+// either source path. UPDATED_AT ASC mirrors the general window's order (immaterial
+// here — the reduction sorts members by number — but keeps the two queries aligned).
+const criticalPathIssuesQuery = `query($owner:String!,$name:String!,$label:String!,$first:Int!,$after:String){
+  rateLimit{ remaining resetAt }
+  repository(owner:$owner,name:$name){
+    issues(states:OPEN, labels:[$label], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
+      totalCount
+      pageInfo{ hasNextPage endCursor }
+      nodes{ number title labels(first:25){ nodes{ name } } }
+    }
+  }
+}`
+
 // GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process —
 // and, for the maintenance reduction's issue-events stream, the REST API.
 // endpoint, restEndpoint, tokens, and client are fields so tests can drive it
@@ -326,6 +349,81 @@ func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, f
 	}
 	if derr := json.Unmarshal(repo, &data); derr != nil {
 		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub issues for %s/%s: %w", owner, name, derr)
+	}
+	return data.Issues, budget, nil
+}
+
+// ListOpenIssuesWithLabel fetches up to fetchLimit open issues carrying the given
+// label, paginating until the limit is reached or the connection is exhausted, and
+// reports the exact count of open issues with that label via TotalOpen. The result
+// shape matches ListOpenIssues so a caller derives truncation the same way
+// (len(Issues) < TotalOpen); the nodes carry only number/title/labels.
+func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo, label string, fetchLimit int) (IssueListResult, error) {
+	owner, name, err := splitOwnerRepo(ownerRepo)
+	if err != nil {
+		return IssueListResult{}, err
+	}
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return IssueListResult{}, err
+	}
+
+	var (
+		issues    []Issue
+		totalOpen int
+		cursor    *string
+		budget    *RateLimit
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(issues); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := f.queryLabeled(ctx, token, owner, name, label, first, cursor)
+		if qerr != nil {
+			return IssueListResult{}, qerr
+		}
+		budget = pageBudget
+		totalOpen = conn.TotalCount
+		for _, n := range conn.Nodes {
+			issues = append(issues, n.toIssue())
+		}
+		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
+			break
+		}
+		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever
+		}
+		next := conn.PageInfo.EndCursor
+		cursor = &next
+		if len(issues) >= fetchLimit {
+			break
+		}
+	}
+	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
+}
+
+// queryLabeled fetches one page of the label-scoped open-issue window, decoding the
+// shared spine's raw repository payload into the lean critical-path connection. The
+// label rides as a variable (not in queryVars, which the unlabeled shapes share).
+func (f *GraphQLFetcher) queryLabeled(ctx context.Context, token, owner, name, label string, first int, after *string) (criticalPathConnection, *RateLimit, error) {
+	vars := map[string]any{"owner": owner, "name": name, "label": label, "first": first}
+	if after != nil {
+		vars["after"] = *after
+	}
+	repo, budget, err := f.do(ctx, token, criticalPathIssuesQuery, vars, owner, name)
+	if err != nil {
+		return criticalPathConnection{}, nil, err
+	}
+	var data struct {
+		Issues criticalPathConnection `json:"issues"`
+	}
+	if derr := json.Unmarshal(repo, &data); derr != nil {
+		return criticalPathConnection{}, nil, fmt.Errorf("decoding GitHub critical-path issues for %s/%s: %w", owner, name, derr)
 	}
 	return data.Issues, budget, nil
 }
@@ -1260,6 +1358,42 @@ type issuesConnection struct {
 		EndCursor   string `json:"endCursor"`
 	} `json:"pageInfo"`
 	Nodes []issueNode `json:"nodes"`
+}
+
+// criticalPathConnection is the lean issue connection the label-scoped
+// critical-path fetch decodes: pagination plus each issue's number, title, and
+// labels. It is separate from issuesConnection because issueNode carries bodyText,
+// native edges, and the cross-reference timeline the critical-path reduction never
+// reads — reusing it would over-fetch and fail the decode-contract test.
+type criticalPathConnection struct {
+	TotalCount int `json:"totalCount"`
+	PageInfo   struct {
+		HasNextPage bool   `json:"hasNextPage"`
+		EndCursor   string `json:"endCursor"`
+	} `json:"pageInfo"`
+	Nodes []criticalPathNode `json:"nodes"`
+}
+
+// criticalPathNode decodes one lean critical-path issue node: identity plus label
+// names, enough to classify the issue into its stream by area label.
+type criticalPathNode struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	Labels struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+}
+
+// toIssue converts a lean critical-path node to the domain Issue, carrying only the
+// fields the query fetched; the rest stay zero-valued (the reduction reads none).
+func (n criticalPathNode) toIssue() Issue {
+	labels := make([]string, 0, len(n.Labels.Nodes))
+	for _, l := range n.Labels.Nodes {
+		labels = append(labels, l.Name)
+	}
+	return Issue{Number: n.Number, Title: n.Title, Labels: labels}
 }
 
 // activityConnection is the lean issue connection the trajectory fetch decodes:

@@ -28,6 +28,11 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	if _, err := f.ListOpenIssues(ctx, repo, 5); err != nil {
 		t.Errorf("ListOpenIssues against %s: %v", repo, err)
 	}
+	// A label the repo need not actually have — a nonexistent label yields an empty
+	// set, not an error, so this still exercises the query against the real schema.
+	if _, err := f.ListOpenIssuesWithLabel(ctx, repo, "critical-path", 5); err != nil {
+		t.Errorf("ListOpenIssuesWithLabel against %s: %v", repo, err)
+	}
 	if _, err := f.ListIssuesUpdatedSince(ctx, repo, time.Now().AddDate(0, 0, -90), 5); err != nil {
 		t.Errorf("ListIssuesUpdatedSince against %s: %v", repo, err)
 	}
