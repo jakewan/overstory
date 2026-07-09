@@ -117,14 +117,14 @@ Render `ciStatus` verbatim (e.g. `SUCCESS`, `FAILURE`, `PENDING`); an **empty** 
 
 Header: `## Critical Path / Gate Status`
 
-From the `criticalPath` block. If `configured` is false, the repo declares no critical path — render "No critical-path convention configured for this repo" and move on (the same no-op posture the milestone and PR blocks take when degraded). When configured, render `streams` in their declared order — the order *is* the path — each with its `gateCleared` status and its open critical-path `members` (number/title):
+From the `criticalPath` block. If `configured` is false, the repo declares no critical path — render "No critical-path convention configured for this repo" and move on. If `available` is false the repo *is* configured but the critical-path fetch failed — render the block as unavailable (the reason is in `unavailable`, e.g. `rate_limited`/`fetch_failed`), the same degrade posture the milestone and PR blocks take, and never read its empty `streams` as a set of cleared gates. When configured and available, render `streams` in their declared order — the order *is* the path — each with its `gateCleared` status and its open critical-path `members` (number/title):
 
 ```markdown
 1. **api-contract** — gate **cleared** (no open critical-path issue)
 2. **ingest** — gate **open**: #51 - Title, #58 - Title
 ```
 
-A stream's gate is **cleared** when no open critical-path issue remains in it (so a downstream stream may begin) and **open** otherwise. The gate is a windowed fact: when `fetchTruncated` is set, mark every gate **provisional** — it is computed before the list cap, so a cleared gate is authoritative only on a complete window. Then surface misplaced critical-path issues: `unareaedCount` (labeled critical-path but carrying no area) and `offPathCount` (in a real area outside the declared path). Honor per-stream `listTruncated`.
+A stream's gate is **cleared** when no open critical-path issue remains in it (so a downstream stream may begin) and **open** otherwise. The block is sourced from the critical-path-labeled subset the gate depends on — the fetched window when it already covers every open issue, otherwise a dedicated label-scoped fetch of that subset — so a cleared gate and the member list are authoritative regardless of backlog size. Only `fetchTruncated` makes a cleared gate **provisional**, and it is rare: it marks the labeled subset *itself* exceeding the fetch cap, not the general backlog exceeding the window. When it is set, mark every gate provisional. Then surface misplaced critical-path issues: `unareaedCount` (labeled critical-path but carrying no area) and `offPathCount` (in a real area outside the declared path). Honor per-stream `listTruncated`.
 
 ### Dependency Classification
 
@@ -138,7 +138,7 @@ Lead with the ready/blocked/provisional split over `fetchedCount` (the classific
 **Dependencies: 12 ready / 4 blocked / 1 provisional** — 17 of 22 open classified
 ```
 
-When `fetchTruncated`, the split covers only the fetched window — the `openIssueCount − fetchedCount` remainder is **unclassified** (a coverage floor); never present the split as covering `openIssueCount` (the three counts sum to `fetchedCount`). Each fetched issue's verdict is authoritative — unlike `criticalPath`, not blanket-degraded under truncation. **Provisional** = presents no open blocker but its `blockedBy` edge list was capped, so readiness is unconfirmed.
+When `fetchTruncated`, the split covers only the fetched window — the `openIssueCount − fetchedCount` remainder is **unclassified** (a coverage floor); never present the split as covering `openIssueCount` (the three counts sum to `fetchedCount`). Each fetched issue's verdict is authoritative — unlike `criticalPath`, whose gate goes blanket-provisional whenever *its* `fetchTruncated` fires (now rare: only when the labeled critical-path subset overflows the cap), this block's per-issue verdicts survive a truncated window. **Provisional** = presents no open blocker but its `blockedBy` edge list was capped, so readiness is unconfirmed.
 
 Then the gate set (`gates`, each `number`, `title`, `blockingCount`), most-leverage-first:
 

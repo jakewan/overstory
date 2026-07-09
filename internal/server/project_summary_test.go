@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,6 +219,142 @@ func TestProjectSummarySurfacesCriticalPath(t *testing.T) {
 	ui := cp.Streams[2]
 	if !ui.GateCleared || len(ui.Members) != 0 {
 		t.Errorf("ui = %+v, want gateCleared with no members", ui)
+	}
+}
+
+// cpManifest is the shared critical-path manifest for the fetch-behavior tests
+// below: an `area/` taxonomy and a two-stream critical path.
+const cpManifest = "acme/widgets:\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n  criticalPath:\n    streams: [simulation, narrative]\n    label: critical-path\n"
+
+// TestProjectSummaryCriticalPathAuthoritativeUnderTruncation pins the #95 fix: when
+// the general open-issue window truncates (more open issues than the fetch window),
+// the critical-path block is sourced from a dedicated label-scoped fetch of the
+// bounded critical-path subset — so the gate is authoritative (fetchTruncated
+// false) regardless of total backlog size, rather than permanently provisional.
+func TestProjectSummaryCriticalPathAuthoritativeUnderTruncation(t *testing.T) {
+	root := writeManifestDir(t, cpManifest)
+	var labeledCalls atomic.Int64
+	fetcher := fakeFetcher{
+		// General window truncated: 2 of 203 fetched, neither a critical-path issue —
+		// under the old design the gate read cleared-but-provisional here.
+		result: github.IssueListResult{
+			Issues:    []github.Issue{summaryIssue(1, nil, "area/simulation"), summaryIssue(2, nil)},
+			TotalOpen: 203,
+		},
+		// The labeled fetch returns the complete critical-path subset.
+		labeledResult: github.IssueListResult{
+			Issues:    []github.Issue{summaryIssue(51, nil, "area/simulation", "critical-path")},
+			TotalOpen: 1,
+		},
+		labeledCalls: &labeledCalls,
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	cp := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).CriticalPath
+	if cp == nil || !cp.Configured || !cp.Available {
+		t.Fatalf("cp = %+v, want configured and available", cp)
+	}
+	if labeledCalls.Load() != 1 {
+		t.Errorf("labeled fetch called %d times, want 1 (general window truncated)", labeledCalls.Load())
+	}
+	if cp.FetchTruncated {
+		t.Errorf("FetchTruncated = true, want false (labeled subset complete despite truncated general window — the #95 fix)")
+	}
+	if sim := cp.Streams[0]; sim.GateCleared || len(sim.Members) != 1 || sim.Members[0].Number != 51 {
+		t.Errorf("simulation = %+v, want uncleared with member #51 (from the labeled fetch)", sim)
+	}
+	if nar := cp.Streams[1]; !nar.GateCleared {
+		t.Errorf("narrative GateCleared = false, want true (authoritative, not provisional)")
+	}
+}
+
+// TestProjectSummaryCriticalPathSkipsFetchWhenWindowComplete pins the failure-surface
+// floor: when the general window already covers every open issue, the block is
+// computed from it with no second fetch — so no repo at or below the fetch window
+// pays the extra request or its failure surface.
+func TestProjectSummaryCriticalPathSkipsFetchWhenWindowComplete(t *testing.T) {
+	root := writeManifestDir(t, cpManifest)
+	var labeledCalls atomic.Int64
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{
+			Issues:    []github.Issue{summaryIssue(1, nil, "area/simulation", "critical-path")},
+			TotalOpen: 1, // complete window
+		},
+		labeledCalls: &labeledCalls,
+		// labeledResult intentionally empty: a wrongful fetch would clear the gate and
+		// fail the member assertion below.
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	cp := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).CriticalPath
+	if labeledCalls.Load() != 0 {
+		t.Errorf("labeled fetch called %d times, want 0 (general window was complete)", labeledCalls.Load())
+	}
+	if sim := cp.Streams[0]; sim.GateCleared || len(sim.Members) != 1 || sim.Members[0].Number != 1 {
+		t.Errorf("simulation = %+v, want uncleared with member #1 (from the complete general window)", sim)
+	}
+}
+
+// TestProjectSummaryCriticalPathDegradesOnFetchFailure pins C1: when the general
+// window truncated and the dedicated labeled fetch fails, the block degrades
+// (Available:false, Configured:true) rather than reducing over an empty set — which
+// would falsely clear every gate — or failing the whole call.
+func TestProjectSummaryCriticalPathDegradesOnFetchFailure(t *testing.T) {
+	root := writeManifestDir(t, cpManifest)
+	fetcher := fakeFetcher{
+		result: github.IssueListResult{
+			Issues:    []github.Issue{summaryIssue(1, nil, "area/simulation")},
+			TotalOpen: 203, // truncated → triggers the labeled fetch
+		},
+		labeledErr: errors.New("boom"),
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	cp := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).CriticalPath
+	if cp == nil {
+		t.Fatal("CriticalPath block absent; a degraded block must still be present")
+	}
+	if cp.Available {
+		t.Errorf("Available = true, want false (labeled fetch failed → degrade)")
+	}
+	if cp.Unavailable != "fetch_failed" {
+		t.Errorf("Unavailable = %q, want %q", cp.Unavailable, "fetch_failed")
+	}
+	if !cp.Configured {
+		t.Errorf("Configured = false, want true (the repo is configured; only the fetch failed)")
+	}
+	for _, s := range cp.Streams {
+		if s.GateCleared {
+			t.Errorf("degraded block cleared gate %q — must not report gates on a failed fetch", s.Stream)
+		}
+	}
+}
+
+// TestProjectSummaryCriticalPathUnconfiguredButWanted pins M5: when the block is
+// requested but the repo declares no critical path, it is still present with
+// configured:false (the documented no-op contract), available, and no labeled fetch
+// is issued even though the general window truncated.
+func TestProjectSummaryCriticalPathUnconfiguredButWanted(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n") // no criticalPath
+	var labeledCalls atomic.Int64
+	fetcher := fakeFetcher{
+		result:       github.IssueListResult{Issues: []github.Issue{summaryIssue(1, nil)}, TotalOpen: 203}, // truncated
+		labeledCalls: &labeledCalls,
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	cp := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).CriticalPath
+	if cp == nil {
+		t.Fatal("CriticalPath block absent; want present with configured:false")
+	}
+	if cp.Configured {
+		t.Errorf("Configured = true, want false (no critical-path convention)")
+	}
+	if !cp.Available {
+		t.Errorf("Available = false, want true (a no-op is not a degraded fetch)")
+	}
+	if labeledCalls.Load() != 0 {
+		t.Errorf("labeled fetch called %d times, want 0 (unconfigured ⇒ no fetch)", labeledCalls.Load())
 	}
 }
 

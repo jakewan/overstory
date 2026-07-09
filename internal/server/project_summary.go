@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/jakewan/overstory/internal/criticalpath"
 	"github.com/jakewan/overstory/internal/dependency"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
@@ -128,12 +127,6 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			ContextBodyLength:   cfg.Quality.MinBodyLength,
 		}, in.Limit, n)
 		recommendations := summary.ReduceRecommendations(issues, totalOpen, cfg.Summary.BugLabels, in.Limit, n)
-		criticalPath := criticalpath.Reduce(issues, totalOpen, criticalpath.Params{
-			Streams:      cfg.CriticalPath.Streams,
-			Label:        cfg.CriticalPath.Label,
-			AreaLabels:   cfg.AreaBalance.Labels,
-			AreaPrefixes: mapPrefixes(cfg.AreaBalance.Prefixes),
-		}, in.Limit)
 		// The classification-only projection: recommendations already ships every
 		// candidate's raw blocked-by/blocking edges, so the summary adds the graph-level
 		// ready/blocked split and the gate set, not a second copy of the edges.
@@ -157,9 +150,6 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		if want["recommendations"] {
 			facts.Recommendations = &recommendations
 		}
-		if want["criticalPath"] {
-			facts.CriticalPath = &criticalPath
-		}
 		if want["dependencies"] {
 			facts.Dependencies = &dependencies
 		}
@@ -169,6 +159,11 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		// budget across the fetches that ran: a caller pacing itself must see the lowest
 		// remaining ceiling, and a degraded sub-fetch's zero-remaining throttle wins.
 		budgets := []*github.RateLimit{result.RateLimit}
+		if want["criticalPath"] {
+			cp, cpBudget := criticalPathBlock(ctx, fetcher, ownerRepo, cfg, issues, totalOpen, in.Limit, now)
+			facts.CriticalPath = &cp
+			budgets = append(budgets, cpBudget)
+		}
 		if want["milestones"] {
 			milestones, msBudget := summaryMilestones(ctx, fetcher, ownerRepo, cfg.Summary, issues, in.Limit, n, now)
 			facts.Milestones = &milestones
