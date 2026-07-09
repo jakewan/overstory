@@ -390,7 +390,7 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 		budget = pageBudget
 		totalOpen = conn.TotalCount
 		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue())
+			issues = append(issues, n.toIssue(label))
 		}
 		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
 			break
@@ -1388,12 +1388,34 @@ type criticalPathNode struct {
 
 // toIssue converts a lean critical-path node to the domain Issue, carrying only the
 // fields the query fetched; the rest stay zero-valued (the reduction reads none).
-func (n criticalPathNode) toIssue() Issue {
-	labels := make([]string, 0, len(n.Labels.Nodes))
+//
+// filterLabel is the label the search filtered on server-side. Because labels(first:25)
+// can truncate an issue's label list, that label may be absent from the fetched names
+// even though the server authoritatively matched it — so it is guaranteed present here
+// (case-insensitively, never duplicated). Without the guarantee the reduction's
+// defensive critical-path re-check would silently drop a server-matched issue on a
+// >25-label issue and falsely clear its gate. (Area labels past the fetch window are
+// still subject to the same cap — the pre-existing general limitation, out of scope.)
+func (n criticalPathNode) toIssue(filterLabel string) Issue {
+	labels := make([]string, 0, len(n.Labels.Nodes)+1)
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
 	}
+	if !containsFold(labels, filterLabel) {
+		labels = append(labels, filterLabel)
+	}
 	return Issue{Number: n.Number, Title: n.Title, Labels: labels}
+}
+
+// containsFold reports whether labels contains target under case folding — GitHub
+// label names match case-insensitively, so an equal-fold hit is a real duplicate.
+func containsFold(labels []string, target string) bool {
+	for _, l := range labels {
+		if strings.EqualFold(l, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // activityConnection is the lean issue connection the trajectory fetch decodes:

@@ -236,6 +236,58 @@ func TestListOpenIssuesWithLabelPaginatesAndReportsTotal(t *testing.T) {
 	}
 }
 
+// TestListOpenIssuesWithLabelGuaranteesFilteredLabel pins that a server-matched
+// issue always carries the filter label in its Labels, even when labels(first:25)
+// truncated it out. The search filters server-side (the label match is
+// authoritative), but each node fetches only its first 25 labels — so on a
+// >25-label issue the filtered label can be absent from the fetched names. Without
+// this guarantee the critical-path reduction's defensive re-check would silently
+// drop such an issue and falsely clear its gate — the exact failure this fetch
+// exists to prevent. A label already present (case-insensitively) is not duplicated.
+func TestListOpenIssuesWithLabelGuaranteesFilteredLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		nodeLabels string // the labels connection's node array, verbatim
+	}{
+		{"filtered label truncated out of the fetched names", `{"name":"area/simulation"}`},
+		{"filtered label present in canonical case is not duplicated", `{"name":"Critical-Path"},{"name":"area/simulation"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"data":{"repository":{"issues":{
+				"totalCount":1,
+				"pageInfo":{"hasNextPage":false,"endCursor":""},
+				"nodes":[{"number":7,"title":"a","labels":{"nodes":[` + tc.nodeLabels + `]}}]
+			}}}}`
+			srv := jsonServer(t, http.StatusOK, body)
+			res, err := fetcherTo(srv.URL, "tok").ListOpenIssuesWithLabel(context.Background(), "acme/widgets", "critical-path", 100)
+			if err != nil {
+				t.Fatalf("ListOpenIssuesWithLabel: %v", err)
+			}
+			if len(res.Issues) != 1 {
+				t.Fatalf("got %d issues, want 1", len(res.Issues))
+			}
+			got := res.Issues[0].Labels
+			if n := countFold(got, "critical-path"); n != 1 {
+				t.Errorf("Labels = %v: critical-path appears %d times, want exactly 1 (guaranteed present, not duplicated)", got, n)
+			}
+			if countFold(got, "area/simulation") != 1 {
+				t.Errorf("Labels = %v, want the fetched area label retained", got)
+			}
+		})
+	}
+}
+
+// countFold counts labels equal to target under case folding.
+func countFold(labels []string, target string) int {
+	n := 0
+	for _, l := range labels {
+		if strings.EqualFold(l, target) {
+			n++
+		}
+	}
+	return n
+}
+
 func TestListOpenIssuesParsesBodyText(t *testing.T) {
 	// (a) the query actually asks GitHub for bodyText — a typo in the selection
 	// would silently ship and the quality reduction would see every body as empty;
