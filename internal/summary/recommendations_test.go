@@ -161,6 +161,31 @@ func TestReduceRecommendationsReservesNewestHighLeverageGate(t *testing.T) {
 	}
 }
 
+// TestReduceRecommendationsReserveTieBreakPrefersNewest pins that when two ready
+// gates tie on both leverage and age, the reserve seats the newer (higher-numbered)
+// one — a same-day-filed fresh blocker should win the scarce slot, not lose it to an
+// older sibling.
+func TestReduceRecommendationsReserveTieBreakPrefersNewest(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	// Two gates, same leverage (both gate P) and same age.
+	older := mkIssue(11, 1, 1, nil, nil)
+	older.Blocking = blk(50)
+	newer := mkIssue(12, 1, 1, nil, nil)
+	newer.Blocking = blk(50)
+	// Oldest filler takes the non-reserve slot, so absence proves the reserve, not the fill.
+	filler := mkIssue(60, 100, 1, nil, nil)
+
+	// limit 2 → reserve 1, which must seat the newer (higher-numbered) gate on the tie.
+	facts := ReduceRecommendations([]github.Issue{p, older, newer, filler}, 4, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("candidate 12 (newer, tied gate) absent — the reserve seated the older sibling")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("candidate 11 (older, tied gate) present — it should lose the tie to the newer #12")
+	}
+}
+
 // TestReduceRecommendationsReserveDoesNotStarveBugs pins Finding 2: an over-cap
 // gate band cannot push every bug out of the candidate list — the reserve is
 // bounded so the normal bugs-first pre-sort keeps at least half the slots.

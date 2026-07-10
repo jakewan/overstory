@@ -111,7 +111,8 @@ type RecommendationCandidate struct {
 // gateReserve caps how many ready gates of prioritized work the reduction
 // guarantees a slot when the candidate list caps. Small because an orientation read
 // only needs the top do-first blockers, not all of them; capped further at half the
-// list (below) so it can never starve the bugs-first band.
+// list (below) so the reserve always leaves the bugs-first band at least half the
+// slots.
 const gateReserve = 5
 
 // ReduceRecommendations reduces the fetched open issues to ranking-input
@@ -242,7 +243,7 @@ func selectWithReserve(preSorted []RecommendationCandidate, limit int) []Recomme
 			if gates[i].AgeDays != gates[j].AgeDays {
 				return gates[i].AgeDays < gates[j].AgeDays // newest first, so a fresh gate is not evicted
 			}
-			return gates[i].Number < gates[j].Number
+			return gates[i].Number > gates[j].Number // same-day tie: the newer (higher-numbered) gate wins
 		})
 		if len(gates) > reserveCap {
 			gates = gates[:reserveCap]
