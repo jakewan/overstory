@@ -617,6 +617,47 @@ func TestProjectSummaryRecommendationBlockingEmptySerializesAsArray(t *testing.T
 	}
 }
 
+// TestProjectSummaryRecommendationSurfacesReadyBlockerOfPrioritized is the #97
+// acceptance: a ready issue that gates a milestoned issue — but is not itself a
+// bug, aged, or low-numbered — still reaches the caller. It survives the candidate
+// cap (the reserve) and carries gatesPrioritized naming the prioritized work it
+// unblocks, so orientation can point at the do-first ready work rather than only
+// naming the blocked priority.
+func TestProjectSummaryRecommendationSurfacesReadyBlockerOfPrioritized(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	// The prioritized work: a milestoned issue, itself blocked.
+	priority := summaryIssue(1, &github.MilestoneRef{Number: 7, Title: "Round 5"})
+	priority.BlockedBy = []github.DependencyRef{{Number: 90, Open: true}}
+	// The ready blocker: freshly filed (high number, recent), not a bug, gating the
+	// milestoned issue. Under the old oldest-first cap it would sink below the list.
+	blocker := github.Issue{
+		Number: 90, Title: "ready blocker", URL: "u90",
+		CreatedAt: daysAgo(1), LastActivityAt: daysAgo(1),
+		Blocking: []github.DependencyRef{{Number: 1, Open: true}},
+	}
+	// Aged filler that would otherwise win the cap on age.
+	filler := github.Issue{Number: 40, Title: "aged", URL: "u40", CreatedAt: daysAgo(300), LastActivityAt: daysAgo(300)}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{priority, blocker, filler},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": float64(2)}))
+	var got *summary.RecommendationCandidate
+	for i := range facts.Recommendations.Candidates {
+		if facts.Recommendations.Candidates[i].Number == 90 {
+			got = &facts.Recommendations.Candidates[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("ready blocker #90 absent from candidates %+v — did not survive the cap", facts.Recommendations.Candidates)
+	}
+	if len(got.GatesPrioritized) != 1 || got.GatesPrioritized[0] != 1 {
+		t.Errorf("GatesPrioritized = %v, want [1] (the milestoned issue it unblocks)", got.GatesPrioritized)
+	}
+}
+
 func TestProjectSummaryRecommendationSurfacesNativeSubIssues(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
 	parent := summaryIssue(1, nil)

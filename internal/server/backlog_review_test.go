@@ -444,6 +444,25 @@ func TestBacklogReviewDependencyProvisionalUnderTruncation(t *testing.T) {
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area
 // issues, and orders areas by count — alongside the other reduction blocks.
+// TestBacklogReviewStalenessFetchLimitBackstopDefault pins the shared-fetch change
+// on its second consumer (#97): backlog_review reads the same Staleness.FetchLimit
+// as project_summary, so raising its default to the paginate-to-completion backstop
+// flips the value backlog_review surfaces in its staleness block — an observable
+// output, not only an internal knob.
+func TestBacklogReviewStalenessFetchLimitBackstopDefault(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{labeledIssue(1, "bug")},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.Staleness.FetchLimit != 2000 {
+		t.Errorf("Staleness.FetchLimit = %d, want 2000 (the raised backstop default the shared fetch now uses)", facts.Staleness.FetchLimit)
+	}
+}
+
 func TestBacklogReviewSurfacesAreaBalance(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  areaBalance:\n    labels: [http]\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n")
 	fetcher := fakeFetcher{result: github.IssueListResult{
