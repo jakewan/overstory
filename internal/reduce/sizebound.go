@@ -26,10 +26,12 @@ type SizeBoundFacts struct {
 // TrimmedBlock records how much of one block's detail list the size bound removed.
 // Dropped and Remaining count the block's natural list element — items for the flat
 // list blocks (staleness, deferred, quality, hygiene signals, open PRs,
-// recommendations), whole groups for overlap and cross-reference, whole milestones
-// for the milestone block. The block's own count fields (e.g. DeferredCount,
-// GroupCount) remain the authoritative totals; this only reconciles the shown list
-// length, which the per-block limit no longer predicts once a bound is present.
+// recommendations), whole groups for overlap and cross-reference, and the member
+// lists nested within a kept entry: the open members within each milestone
+// (project_summary) or the members within each track (milestone_tracks), the entry
+// itself preserved. The block's own count fields (e.g. DeferredCount, GroupCount)
+// remain the authoritative totals; this only reconciles the shown list length, which
+// the per-block limit no longer predicts once a bound is present.
 type TrimmedBlock struct {
 	Block     string `json:"block"`
 	Dropped   int    `json:"dropped"`

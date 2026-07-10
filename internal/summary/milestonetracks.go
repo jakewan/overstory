@@ -16,9 +16,15 @@ import (
 // then degrades rather than failing the whole call, and Unavailable names the
 // reason. OpenMilestones is the repository's exact open-milestone count and
 // FetchTruncated marks a milestone fetch that did not cover them all, so a capped
-// fetch never silently omits milestones. Repo, GeneratedAt, and RateLimit are
-// stamped by the handler, not the reduction (the reduction is a pure function of
+// fetch never silently omits milestones. Repo, GeneratedAt, RateLimit, and SizeBound
+// are stamped by the handler, not the reduction (the reduction is a pure function of
 // the descriptions).
+//
+// SizeBound is present only when the assembled response exceeded the byte budget and
+// had to be trimmed. The trim sheds per-track member lists only; unlike the composite
+// tools it cannot shed the verbatim per-milestone Description ("unbounded by design",
+// below), so the bound is best-effort — SizeBound.FinalBytes honestly reports an
+// overflow when the description floor alone exceeds the budget.
 type MilestoneTracksFacts struct {
 	Repo           string                 `json:"repo"`
 	GeneratedAt    time.Time              `json:"generatedAt"`
@@ -31,6 +37,7 @@ type MilestoneTracksFacts struct {
 	Limit          int                    `json:"limit"`
 	ListTruncated  bool                   `json:"listTruncated"`
 	RateLimit      *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
+	SizeBound      *reduce.SizeBoundFacts `json:"sizeBound,omitempty"`
 }
 
 // MilestoneTrackSet is one open milestone's parsed tracks. Tracks is empty (not
@@ -59,6 +66,9 @@ type MilestoneTrackSet struct {
 // Members in description order. ListTruncated marks a member list capped at the
 // list limit — parse-relative ("parsed more than emitted"), since the description
 // is the only source and there is no authoritative member count to compare against.
+// The response size bound also sets it when it trims this member list to fit the byte
+// budget; the dropped/remaining split then lives in the sizeBound marker's
+// TrimmedBlock, since Track carries no count field of its own.
 type Track struct {
 	Label         string        `json:"label"`
 	Status        string        `json:"status,omitempty"`

@@ -12,6 +12,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/jakewan/overstory/internal/github"
 	"github.com/jakewan/overstory/internal/manifest"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/jakewan/overstory/internal/summary"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -78,6 +79,27 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 		facts.Repo = ownerRepo
 		facts.GeneratedAt = now()
 		facts.RateLimit = mapRateLimit(budget)
+
+		// Bound the total response the same way the composite tools do, but over the
+		// leaf lists only: each track's members. Trimming members preserves every
+		// milestone and track headline (the per-milestone and per-track summary #84
+		// asks to keep) and keeps one non-overlapping unit per trimmable list — a
+		// whole-track unit would double-count its members' bytes and dangle a pointer
+		// into a dropped track. The verbatim per-milestone Description is not trimmable,
+		// so the bound is best-effort over a prose-dominated floor.
+		var units []reduce.Trimmable
+		for i := range facts.Milestones {
+			m := &facts.Milestones[i]
+			for j := range m.Tracks {
+				tr := &m.Tracks[j]
+				units = append(units, trimUnit(
+					fmt.Sprintf("milestones[#%d].tracks[%d].members", m.Number, j),
+					&tr.Members, &tr.ListTruncated))
+			}
+		}
+		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
+			return nil, summary.MilestoneTracksFacts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
+		}
 		return nil, facts, nil
 	}
 }
