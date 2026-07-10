@@ -18,6 +18,8 @@ type boundFake struct {
 }
 
 func sliceUnit(block string, list *[]string, trunc *bool) Trimmable {
+	origLen := len(*list)
+	origTrunc := *trunc
 	return Trimmable{
 		Block:     block,
 		Size:      func() int { return JSONLen(*list) },
@@ -27,6 +29,10 @@ func sliceUnit(block string, list *[]string, trunc *bool) Trimmable {
 				*list = (*list)[:len(*list)-1]
 				*trunc = true
 			}
+		},
+		Restore: func() {
+			*list = (*list)[:origLen]
+			*trunc = origTrunc
 		},
 	}
 }
@@ -174,6 +180,93 @@ func TestApplyByteBudgetDeterministic(t *testing.T) {
 	a, b := run(), run()
 	if mustMarshalStr(t, a) != mustMarshalStr(t, b) {
 		t.Errorf("non-deterministic marker:\n a=%s\n b=%s", mustMarshalStr(t, a), mustMarshalStr(t, b))
+	}
+}
+
+// TestApplyByteBudgetFloorShortCircuits: when the irreducible floor exceeds the
+// budget, the bound reaches the emptied terminal state in a constant number of
+// marshals instead of draining one element per round — and reproduces the same
+// TrimmedBlocks accounting the incremental drain would have. The marshal count is the
+// red-first pin (O(items) before the short-circuit); the emptiness, FinalBytes, and
+// TrimmedBlocks assertions guard that the fast path stays byte-identical to the drain.
+func TestApplyByteBudgetFloorShortCircuits(t *testing.T) {
+	const maxBytes = responseMinBytesUnreachable
+	f := boundFake{Big: repeat("x", 500), Small: repeat("y", 500)}
+	marshals := 0
+	m, err := ApplyByteBudget(
+		func() ([]byte, error) { marshals++; return json.Marshal(f) },
+		func(mk *SizeBoundFacts) { f.Marker = mk },
+		maxBytes,
+		[]Trimmable{
+			sliceUnit("big", &f.Big, &f.BigTrunc),
+			sliceUnit("small", &f.Small, &f.SmallTrunc),
+		},
+	)
+	if err != nil {
+		t.Fatalf("ApplyByteBudget: %v", err)
+	}
+	// A constant number of marshals regardless of the 1000 droppable elements: the
+	// initial fit check plus the single floor probe. The pre-fix drain is ~O(items).
+	if marshals > 4 {
+		t.Errorf("marshals = %d, want a small constant (floor short-circuit, not an O(items) drain)", marshals)
+	}
+	if m == nil {
+		t.Fatalf("marker = nil, want a best-effort marker on a sub-floor budget")
+	}
+	if len(f.Big) != 0 || len(f.Small) != 0 {
+		t.Errorf("lists not emptied: big=%d small=%d", len(f.Big), len(f.Small))
+	}
+	if m.FinalBytes <= m.MaxBytes {
+		t.Errorf("FinalBytes = %d, want > MaxBytes %d on a floor breach", m.FinalBytes, m.MaxBytes)
+	}
+	// The direct-built overflow marker must carry the same per-block tally the drain
+	// would have reached: every element dropped, none remaining.
+	seen := map[string]bool{}
+	for _, tb := range m.TrimmedBlocks {
+		seen[tb.Block] = true
+		if tb.Dropped != 500 || tb.Remaining != 0 {
+			t.Errorf("%s: dropped=%d remaining=%d, want 500/0", tb.Block, tb.Dropped, tb.Remaining)
+		}
+	}
+	if !seen["big"] || !seen["small"] {
+		t.Errorf("TrimmedBlocks = %+v, want entries for both big and small", m.TrimmedBlocks)
+	}
+}
+
+// TestApplyByteBudgetRestoreResetsDropAllPollution: on the floor-fits branch the bound
+// empties every list to probe the floor (setting each truncated flag), then restores.
+// A unit the incremental loop never re-drops must come back with its truncated flag
+// reset to the value it had before the bound — false here. This is the polarity that
+// regresses: a Restore that skips the flag would leave the drop-all pollution and
+// report a complete list as truncated. (A wants-true assertion cannot catch it — see
+// the companion below.)
+func TestApplyByteBudgetRestoreResetsDropAllPollution(t *testing.T) {
+	// Big is heavy and long; Small is tiny and starts untruncated. Draining Big alone
+	// reaches the budget while Big is still larger than Small, so Small never becomes
+	// the largest unit and is left fully intact.
+	f := boundFake{Big: repeat(strings.Repeat("A", 50), 20), Small: repeat("s", 3)}
+	if _, err := f.bound(700); err != nil {
+		t.Fatalf("ApplyByteBudget: %v", err)
+	}
+	if len(f.Small) != 3 || f.SmallTrunc {
+		t.Errorf("small untouched-unit regressed: len=%d trunc=%v, want len=3 trunc=false", len(f.Small), f.SmallTrunc)
+	}
+	if len(f.Big) >= 20 || !f.BigTrunc {
+		t.Errorf("big should have been trimmed: len=%d trunc=%v", len(f.Big), f.BigTrunc)
+	}
+}
+
+// TestApplyByteBudgetRestorePreservesPriorTruncation: the dual-source companion. A unit
+// that carried truncated == true before the bound ran (the parser count-cap case) and
+// is left intact by the incremental loop must keep truncated == true — Restore writes
+// the original value, not a constant. Catches a Restore that force-resets to false.
+func TestApplyByteBudgetRestorePreservesPriorTruncation(t *testing.T) {
+	f := boundFake{Big: repeat(strings.Repeat("A", 50), 20), Small: repeat("s", 3), SmallTrunc: true}
+	if _, err := f.bound(700); err != nil {
+		t.Fatalf("ApplyByteBudget: %v", err)
+	}
+	if len(f.Small) != 3 || !f.SmallTrunc {
+		t.Errorf("small prior-truncation not preserved: len=%d trunc=%v, want len=3 trunc=true", len(f.Small), f.SmallTrunc)
 	}
 }
 

@@ -39,16 +39,25 @@ type TrimmedBlock struct {
 }
 
 // Trimmable is one block's handle for the size bound: its name, the current
-// serialized byte size and remaining unit count of its detail list, and a Drop
-// that removes one tail unit and marks the block truncated. The caller (a tool
-// handler) builds these over the assembled facts; closing over the same live facts
-// value the measure closure marshals keeps a single source of truth — there is no
-// copy that could drift from what is serialized.
+// serialized byte size and remaining unit count of its detail list, a Drop that
+// removes one tail unit and marks the block truncated, and a Restore that rewinds
+// the list to its pre-Drop length and its truncated flag to the value it carried
+// before the bound ran. The caller (a tool handler) builds these over the assembled
+// facts; closing over the same live facts value the measure closure marshals keeps a
+// single source of truth — there is no copy that could drift from what is serialized.
+//
+// All four closures are required. ApplyByteBudget calls Restore unconditionally on
+// the floor-fits branch (to undo the floor probe) and does not nil-guard it: a nil
+// Restore skipped there would leave lists emptied and yield a silently over-trimmed
+// result — worse than a panic. A Drop must reslice down only (never reallocate or
+// zero), so the backing array still holds the tail elements a later Restore reslices
+// back into view.
 type Trimmable struct {
 	Block     string
 	Size      func() int
 	Remaining func() int
 	Drop      func()
+	Restore   func()
 }
 
 // finalBytesSentinel is a fixed, generously wide placeholder for the marker's own
@@ -61,13 +70,22 @@ const finalBytesSentinel = 2_000_000_000
 // detail lists in units. measure marshals the live facts; setMarker installs (or
 // clears, on nil) this marker onto those same facts so the marker's own bytes are
 // inside every measurement. If the facts already fit, it clears any marker and
-// returns nil. Otherwise it trims one unit per round from the block whose current
-// serialized list is largest in bytes (ties broken by unit order, so the result is
-// deterministic), re-measuring each round, until the response fits or every unit is
-// empty. Trimming is balanced rather than richest-first: dropping from the
-// current-largest each round equalizes byte spend across blocks instead of gutting
-// the heaviest block (e.g. deferred) before touching thin ones. The returned marker
-// is also installed via setMarker, so the caller need only check the error.
+// returns nil.
+//
+// Otherwise it probes the floor first: it empties every list once and measures the
+// fully-trimmed response a single time. When even that floor overflows the budget —
+// the untrimmable content (counts, summaries, verbatim descriptions) alone exceeds
+// maxBytes — the emptied state is the terminal answer, so it returns directly with a
+// best-effort marker. This short-circuits the drain that would otherwise empty every
+// element one at a time (O(items) marshals) on exactly the large, prose-dominated
+// input the bound exists to handle. When the floor fits, it restores every list and
+// trims one unit per round from the block whose current serialized list is largest in
+// bytes (ties broken by unit order, so the result is deterministic), re-measuring each
+// round, until the response fits. Trimming is balanced rather than richest-first:
+// dropping from the current-largest each round equalizes byte spend across blocks
+// instead of gutting the heaviest block (e.g. deferred) before touching thin ones. The
+// returned marker is also installed via setMarker, so the caller need only check the
+// error.
 func ApplyByteBudget(measure func() ([]byte, error), setMarker func(*SizeBoundFacts), maxBytes int, units []Trimmable) (*SizeBoundFacts, error) {
 	setMarker(nil)
 	b, err := measure()
@@ -78,7 +96,35 @@ func ApplyByteBudget(measure func() ([]byte, error), setMarker func(*SizeBoundFa
 		return nil, nil
 	}
 
+	// Empty every list with cheap reslices (no marshals) to measure the floor once.
+	// The per-drop tally is kept so a best-effort marker reproduces the same
+	// TrimmedBlocks the incremental drain would have reported.
 	dropped := make(map[string]int, len(units))
+	for i := range units {
+		for units[i].Remaining() > 0 {
+			units[i].Drop()
+			dropped[units[i].Block]++
+		}
+	}
+	setMarker(buildMarker(maxBytes, finalBytesSentinel, units, dropped))
+	floor, err := measure()
+	if err != nil {
+		return nil, err
+	}
+	if len(floor) > maxBytes {
+		// floor was measured with the wide FinalBytes sentinel, so it is an upper bound
+		// on the delivered size once the real value (fewer digits) is written back.
+		m := buildMarker(maxBytes, len(floor), units, dropped)
+		setMarker(m)
+		return m, nil
+	}
+
+	// The floor fits: the response has a balanced trim point between full and empty.
+	// Undo the probe and trim incrementally to find it.
+	for i := range units {
+		units[i].Restore()
+	}
+	dropped = make(map[string]int, len(units))
 	for {
 		setMarker(buildMarker(maxBytes, finalBytesSentinel, units, dropped))
 		b, err = measure()
@@ -90,7 +136,7 @@ func ApplyByteBudget(measure func() ([]byte, error), setMarker func(*SizeBoundFa
 		}
 		i := largestUnit(units)
 		if i < 0 {
-			break // best-effort floor: nothing left to trim
+			break // defensive: the fit break above triggers first once the floor fits
 		}
 		units[i].Drop()
 		dropped[units[i].Block]++

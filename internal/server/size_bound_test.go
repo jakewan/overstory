@@ -303,6 +303,66 @@ func TestMilestoneTracksProseDescriptionBoundIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestMilestoneTracksFloorOverflowWithUnitsShortCircuits is the real-units witness of
+// the floor-overflow path (#101): unlike the prose test above (zero parsed tracks, so
+// drop-all does nothing), this fixture is ref-dense — its descriptions parse into many
+// track/member trim units — yet the verbatim descriptions themselves already exceed the
+// budget. The bound must empty every member list (the short-circuit's drop-all),
+// attribute the drops in the marker, and honestly report the residual overflow via
+// FinalBytes, all while preserving every headline. This exercises the real
+// trimUnit→boundResponse wiring on the many-units drain the fix targets, which the
+// prose fixture cannot.
+func TestMilestoneTracksFloorOverflowWithUnitsShortCircuits(t *testing.T) {
+	// Ref-dense descriptions whose sheer bulk (untrimmable verbatim text) exceeds the
+	// budget on their own, even after every member list is emptied.
+	const maxBytes = 4096
+	const milestones, tracksPer, membersPer = 8, 3, 50
+	root := writeManifestDir(t, fmt.Sprintf("acme/widgets:\n  response:\n    maxBytes: %d\n", maxBytes))
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: bulkyMilestoneTracks(milestones, tracksPer, membersPer),
+		TotalOpen:  milestones,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 100})
+	facts := decodeMilestoneTracks(t, res)
+
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a best-effort marker when the description floor exceeds the budget")
+	}
+	if facts.SizeBound.FinalBytes <= maxBytes {
+		t.Fatalf("FinalBytes = %d, want > %d — this fixture's description floor must exceed the budget so the short-circuit fires", facts.SizeBound.FinalBytes, maxBytes)
+	}
+	// Every headline survives; every member list is emptied by the drop-all probe.
+	if len(facts.Milestones) != milestones {
+		t.Errorf("milestone entries = %d, want all %d preserved", len(facts.Milestones), milestones)
+	}
+	for _, m := range facts.Milestones {
+		if len(m.Tracks) != tracksPer {
+			t.Errorf("milestone #%d tracks = %d, want all %d preserved", m.Number, len(m.Tracks), tracksPer)
+		}
+		for _, tr := range m.Tracks {
+			if len(tr.Members) != 0 {
+				t.Errorf("milestone #%d track %q members = %d, want 0 (all trimmed on the floor overflow)", m.Number, tr.Label, len(tr.Members))
+			}
+		}
+	}
+	// The marker attributes the drop-all to per-track member blocks with the full member
+	// count dropped and none remaining — the same tally the incremental drain would reach.
+	memberBlocks := 0
+	for _, tb := range facts.SizeBound.TrimmedBlocks {
+		if strings.HasPrefix(tb.Block, "milestones[#") && strings.HasSuffix(tb.Block, ".members") {
+			memberBlocks++
+			if tb.Dropped != membersPer || tb.Remaining != 0 {
+				t.Errorf("%s: dropped=%d remaining=%d, want %d/0", tb.Block, tb.Dropped, tb.Remaining, membersPer)
+			}
+		}
+	}
+	if memberBlocks != milestones*tracksPer {
+		t.Errorf("member TrimmedBlocks = %d, want %d (one per track)", memberBlocks, milestones*tracksPer)
+	}
+}
+
 // TestMilestoneTracksDegradedFetchNoBound locks the seam the byte bound introduced on
 // the degrade path: a failed milestone fetch yields an empty (non-nil) Milestones
 // slice, so the bound registers zero trim units, measures a tiny payload, and leaves
