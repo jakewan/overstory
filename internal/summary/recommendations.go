@@ -74,6 +74,20 @@ type RecommendationFacts struct {
 // a positive gap is a hidden gate, not readiness. It is a bound, not an equality (a
 // not-planned closure can leave it one high), erring only toward over-reporting the
 // gate — so it never reads a gated candidate as ready.
+//
+// GatesPrioritized is the subset of Blocking whose target issue is milestoned or
+// bug-labeled within the fetched window — the prioritized downstream work this
+// candidate unblocks. It is the join a caller cannot compute itself: the target may
+// sit past the list cap, and the open-issue-set block carries only numbers, not each
+// issue's milestone or labels. A ready candidate with a non-empty GatesPrioritized is
+// a do-first gate root of prioritized work — the most actionable next step toward that
+// priority — which is why the reduction reserves such candidates a slot so the list
+// cap cannot drop them. Non-nil even when empty. Two truncation dimensions floor it,
+// not one: BlockingTruncated (the candidate's own blocking edge list was capped) and
+// the block-level fetchTruncated (a blocking target outside the fetched window can't
+// be classified as prioritized, so it is silently excluded even with the edge fully
+// present) — so under fetchTruncated an empty GatesPrioritized is a floor, not a
+// confirmed "gates nothing prioritized."
 type RecommendationCandidate struct {
 	Number             int     `json:"number"`
 	Title              string  `json:"title"`
@@ -85,6 +99,7 @@ type RecommendationCandidate struct {
 	BlockedByTruncated bool    `json:"blockedByTruncated"`
 	Blocking           []int   `json:"blocking"`
 	BlockingTruncated  bool    `json:"blockingTruncated"`
+	GatesPrioritized   []int   `json:"gatesPrioritized"`
 	SubIssues          []int   `json:"subIssues"`
 	SubIssuesTruncated bool    `json:"subIssuesTruncated"`
 	SubIssuesTotal     int     `json:"subIssuesTotal"`
@@ -93,13 +108,21 @@ type RecommendationCandidate struct {
 	InactiveDays       int     `json:"inactiveDays"`
 }
 
+// gateReserve caps how many ready gates of prioritized work the reduction
+// guarantees a slot when the candidate list caps. Small because an orientation read
+// only needs the top do-first blockers, not all of them; capped further at half the
+// list (below) so it can never starve the bugs-first band.
+const gateReserve = 5
+
 // ReduceRecommendations reduces the fetched open issues to ranking-input
 // candidates as of now. IsBug is set by matching the issue's labels against the
 // manifest's bug labels. The candidates are pre-ordered neutrally — bugs first,
 // then oldest-first, then by number — so the capped list keeps the issues a caller
 // is likeliest to want; this ordering is a stable pre-sort, not a recommendation,
-// and the caller does the real ranking. now is injected so the reduction is
-// deterministic.
+// and the caller does the real ranking. When the list caps, the reduction first
+// reserves slots for the top ready gates of prioritized work (see selectWithReserve)
+// so the single most actionable next step toward a priority is never dropped. now is
+// injected so the reduction is deterministic.
 func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []string, listLimit int, now time.Time) RecommendationFacts {
 	facts := RecommendationFacts{
 		OpenIssueCount: totalOpen,
@@ -110,12 +133,31 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 	}
 	bugMatcher := reduce.NewLabelMatcher(bugLabels, nil)
 
+	// The prioritized set: fetched open issues that are milestoned or bug-labeled —
+	// the downstream work a gate root unblocking it is do-first toward. Built once
+	// over the window, since a candidate's blocking target may itself be any fetched
+	// issue, not only another candidate.
+	prioritized := make(map[int]bool, len(issues))
+	for _, is := range issues {
+		if is.Milestone != nil || anyMatch(bugMatcher, is.Labels) {
+			prioritized[is.Number] = true
+		}
+	}
+
 	candidates := make([]RecommendationCandidate, 0, len(issues))
 	for _, is := range issues {
 		var milestone *string
 		if is.Milestone != nil {
 			title := is.Milestone.Title
 			milestone = &title
+		}
+		blocking := reduce.OpenDependencyNumbers(is.Blocking)
+		// blocking is already ascending and distinct, so its prioritized subset is too.
+		gatesPrioritized := make([]int, 0, len(blocking))
+		for _, n := range blocking {
+			if prioritized[n] {
+				gatesPrioritized = append(gatesPrioritized, n)
+			}
 		}
 		candidates = append(candidates, RecommendationCandidate{
 			Number:             is.Number,
@@ -126,8 +168,9 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByTruncated: is.BlockedByTruncated,
-			Blocking:           reduce.OpenDependencyNumbers(is.Blocking),
+			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
+			GatesPrioritized:   gatesPrioritized,
 			SubIssues:          reduce.OpenDependencyNumbers(is.SubIssues),
 			SubIssuesTruncated: is.SubIssuesTruncated,
 			SubIssuesTotal:     is.SubIssuesTotal,
@@ -151,8 +194,75 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 	})
 	if listLimit >= 0 && len(candidates) > listLimit {
 		facts.ListTruncated = true
-		candidates = candidates[:listLimit]
+		candidates = selectWithReserve(candidates, listLimit)
 	}
 	facts.Candidates = candidates
 	return facts
+}
+
+// isReadyGate reports whether a candidate is a ready gate of prioritized work: it
+// unblocks prioritized downstream work and is itself actionable now — no open
+// blocked-by edge and no open sub-issue gap, with the edge set trustworthy-complete.
+// Readiness is load-bearing: an itself-blocked blocker is not do-first now and would
+// surface transitively through its own gate root, so it is not reserved. This mirrors
+// the dependency package's ready classification.
+func isReadyGate(c RecommendationCandidate) bool {
+	return len(c.GatesPrioritized) > 0 &&
+		len(c.BlockedBy) == 0 &&
+		!c.BlockedByTruncated &&
+		c.SubIssuesTotal-c.SubIssuesCompleted == 0
+}
+
+// selectWithReserve picks the capped candidate list from the pre-sorted candidates
+// when there are more than the limit. It guarantees the top ready gates of
+// prioritized work a slot so the do-first blocker of a priority is never evicted by
+// the neutral pre-sort (which weighs neither leverage nor milestone). The reserve is
+// bounded by gateReserve and by half the limit, so the bugs-first band always keeps
+// at least half the slots; within the reserve, gates are ordered by leverage (how
+// much prioritized work they unblock), then newest, then number, so a freshly-filed
+// high-leverage gate wins rather than being evicted oldest-first. The reserve leads
+// the list — a survival ordering, not a ranking, since the caller owns ranking.
+func selectWithReserve(preSorted []RecommendationCandidate, limit int) []RecommendationCandidate {
+	reserveCap := gateReserve
+	if half := limit / 2; half < reserveCap {
+		reserveCap = half
+	}
+
+	gates := make([]RecommendationCandidate, 0, reserveCap)
+	if reserveCap > 0 {
+		for _, c := range preSorted {
+			if isReadyGate(c) {
+				gates = append(gates, c)
+			}
+		}
+		sort.SliceStable(gates, func(i, j int) bool {
+			if li, lj := len(gates[i].GatesPrioritized), len(gates[j].GatesPrioritized); li != lj {
+				return li > lj // more prioritized work unblocked first
+			}
+			if gates[i].AgeDays != gates[j].AgeDays {
+				return gates[i].AgeDays < gates[j].AgeDays // newest first, so a fresh gate is not evicted
+			}
+			return gates[i].Number < gates[j].Number
+		})
+		if len(gates) > reserveCap {
+			gates = gates[:reserveCap]
+		}
+	}
+
+	reserved := make(map[int]bool, len(gates))
+	for _, g := range gates {
+		reserved[g.Number] = true
+	}
+	out := make([]RecommendationCandidate, 0, limit)
+	out = append(out, gates...)
+	for _, c := range preSorted {
+		if len(out) >= limit {
+			break
+		}
+		if reserved[c.Number] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }

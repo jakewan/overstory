@@ -76,6 +76,141 @@ func TestReduceRecommendationsBodyRefs(t *testing.T) {
 	}
 }
 
+// blk builds open native dependency edges to the given issue numbers, for the
+// blocking/blocked-by direction a test needs to exercise.
+func blk(nums ...int) []github.DependencyRef {
+	edges := make([]github.DependencyRef, len(nums))
+	for i, n := range nums {
+		edges[i] = github.DependencyRef{Number: n, Open: true}
+	}
+	return edges
+}
+
+// byNum indexes candidates by issue number so a test reads a specific candidate
+// regardless of the neutral pre-sort's ordering.
+func byNum(cands []RecommendationCandidate) map[int]RecommendationCandidate {
+	m := make(map[int]RecommendationCandidate, len(cands))
+	for _, c := range cands {
+		m[c.Number] = c
+	}
+	return m
+}
+
+// TestReduceRecommendationsGatesPrioritized pins the join (#97): a candidate's
+// gatesPrioritized is the subset of its open blocking edges whose target is
+// milestoned or bug-labeled within the fetched window — the "which prioritized
+// work this candidate unblocks" signal a caller cannot derive itself (the target
+// may be past the list cap, and openIssueSet carries no milestone/label). The
+// signal is emitted regardless of the candidate's own readiness.
+func TestReduceRecommendationsGatesPrioritized(t *testing.T) {
+	// Fetched targets: 50 milestoned, 51 bug-labeled, 52 plain (not prioritized).
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	b := mkIssue(51, 20, 1, []string{"bug"}, nil)
+	n := mkIssue(52, 20, 1, nil, nil)
+	// A ready candidate gating all three plus a closed issue.
+	ready := mkIssue(10, 30, 1, nil, nil)
+	ready.Blocking = []github.DependencyRef{{Number: 50, Open: true}, {Number: 51, Open: true}, {Number: 52, Open: true}, {Number: 53, Open: false}}
+	// A blocked candidate still reports what it gates.
+	blocked := mkIssue(20, 30, 1, nil, nil)
+	blocked.Blocking = blk(50)
+	blocked.BlockedBy = blk(99)
+
+	facts := ReduceRecommendations([]github.Issue{p, b, n, ready, blocked}, 5, []string{"bug"}, 20, now)
+	got := byNum(facts.Candidates)
+
+	if g := got[10].GatesPrioritized; len(g) != 2 || g[0] != 50 || g[1] != 51 {
+		t.Errorf("candidate 10 GatesPrioritized = %v, want [50 51] (milestoned + bug; plain #52 and closed #53 excluded)", g)
+	}
+	if g := got[20].GatesPrioritized; len(g) != 1 || g[0] != 50 {
+		t.Errorf("candidate 20 GatesPrioritized = %v, want [50] (emitted despite being blocked)", g)
+	}
+	// A candidate gating only non-prioritized work reports an empty, non-nil slice.
+	if g := got[52].GatesPrioritized; g == nil {
+		t.Error("candidate 52 GatesPrioritized = nil, want non-nil empty slice (serializes as [])")
+	} else if len(g) != 0 {
+		t.Errorf("candidate 52 GatesPrioritized = %v, want empty", g)
+	}
+}
+
+// TestReduceRecommendationsReservesNewestHighLeverageGate pins Finding 1: when the
+// eligible gate band exceeds the cap, the reserve keeps the highest-leverage /
+// newest ready gate, not the oldest — so a freshly-filed blocker of prioritized
+// work survives the cap rather than being evicted by an oldest-first sort.
+func TestReduceRecommendationsReservesNewestHighLeverageGate(t *testing.T) {
+	// Three milestoned targets so leverage can differ.
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	q := mkIssue(51, 20, 1, nil, msRef(7, "M"))
+	s := mkIssue(52, 20, 1, nil, msRef(7, "M"))
+	// Newest gate, highest leverage (gates all three).
+	newHigh := mkIssue(12, 1, 1, nil, nil)
+	newHigh.Blocking = blk(50, 51, 52)
+	// Older gates, single leverage.
+	oldMid := mkIssue(11, 50, 1, nil, nil)
+	oldMid.Blocking = blk(50)
+	oldOld := mkIssue(10, 100, 1, nil, nil)
+	oldOld.Blocking = blk(50)
+
+	// limit 2 → reserve = min(5, 2/2) = 1 slot, which must go to the newest/highest.
+	facts := ReduceRecommendations([]github.Issue{p, q, s, newHigh, oldMid, oldOld}, 6, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("candidate 12 (newest, highest-leverage gate) absent — evicted by oldest-first (Finding 1)")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("candidate 11 (older, lower-leverage gate) present — should lose the single reserve slot to #12")
+	}
+}
+
+// TestReduceRecommendationsReserveDoesNotStarveBugs pins Finding 2: an over-cap
+// gate band cannot push every bug out of the candidate list — the reserve is
+// bounded so the normal bugs-first pre-sort keeps at least half the slots.
+func TestReduceRecommendationsReserveDoesNotStarveBugs(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	bug := mkIssue(5, 5, 1, []string{"bug"}, nil)
+	gates := []github.Issue{}
+	for _, num := range []int{10, 11, 12, 13} {
+		g := mkIssue(num, num, 1, nil, nil) // ages 10..13 so all are ready gates
+		g.Blocking = blk(50)
+		gates = append(gates, g)
+	}
+	issues := append([]github.Issue{p, bug}, gates...)
+
+	// limit 3 → reserve = min(5, 3/2) = 1, leaving 2 slots for the bugs-first fill.
+	facts := ReduceRecommendations(issues, len(issues), []string{"bug"}, 3, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[5]; !ok {
+		t.Error("bug #5 absent — an over-cap gate band starved the bug band (Finding 2)")
+	}
+}
+
+// TestReduceRecommendationsBlockedGateNotReserved pins that readiness is
+// load-bearing: an itself-blocked gate of prioritized work is not promoted into
+// the reserve (it is not actionable now and would surface transitively through its
+// own gate root).
+func TestReduceRecommendationsBlockedGateNotReserved(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	// Ready gate, older.
+	readyGate := mkIssue(12, 100, 1, nil, nil)
+	readyGate.Blocking = blk(50)
+	// Blocked gate, newest — would win the reserve on leverage/recency if readiness
+	// were ignored.
+	blockedGate := mkIssue(11, 1, 1, nil, nil)
+	blockedGate.Blocking = blk(50)
+	blockedGate.BlockedBy = blk(99)
+	// Oldest filler to take the non-reserve slot.
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	// limit 2 → reserve 1 goes to the ready gate; fill takes the oldest (filler).
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, blockedGate, filler}, 4, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("ready gate #12 absent — readiness-eligible gate lost the reserve")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("blocked gate #11 present — a non-ready gate must not take the reserve slot")
+	}
+}
+
 // TestReduceRecommendationsExactCountAndCap pins OpenIssueCount exactness under
 // fetch truncation and the list cap flag.
 func TestReduceRecommendationsExactCountAndCap(t *testing.T) {
