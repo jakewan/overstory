@@ -316,6 +316,38 @@ func TestResolveRejectsDuplicateKeyWithinFile(t *testing.T) {
 	}
 }
 
+func TestResolveDeduplicatesRepeatedManifestPath(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	p := filepath.Join(dir, "repos.yml")
+	// The same file listed twice in OVERSTORY_MANIFESTS is one carrying file, not a
+	// key split across distinct files — it must resolve, not false-error.
+	cfg, matched, err := NewResolver("", []string{p, p}).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve with a repeated manifest path: %v", err)
+	}
+	if !matched || cfg.Staleness.ThresholdDays != 45 {
+		t.Errorf("got matched=%v thresholdDays=%d, want true/45", matched, cfg.Staleness.ThresholdDays)
+	}
+}
+
+func TestResolveDeduplicatesSymlinkedManifestInDir(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
+	// A file and a symlink to it both glob-match *.yml and both carry the key, yet
+	// resolve to one physical file — not a split entry.
+	if err := os.Symlink(filepath.Join(dir, "repos.yml"), filepath.Join(dir, "alias.yml")); err != nil {
+		t.Skipf("symlink unsupported here: %v", err)
+	}
+	cfg, matched, err := NewResolver(dir, nil).Resolve("acme/widgets")
+	if err != nil {
+		t.Fatalf("Resolve with a symlinked duplicate manifest: %v", err)
+	}
+	if !matched || cfg.Staleness.ThresholdDays != 45 {
+		t.Errorf("got matched=%v thresholdDays=%d, want true/45", matched, cfg.Staleness.ThresholdDays)
+	}
+}
+
 func TestResolveYamlExtensionAlsoMatched(t *testing.T) {
 	dir := t.TempDir()
 	writeManifest(t, dir, "repos.yaml", "acme/widgets:\n  staleness:\n    thresholdDays: 45\n")
