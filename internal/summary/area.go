@@ -60,13 +60,24 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 
 		// Distinct area keys on this issue, so a multi-label issue counts once per
 		// area rather than once per matching label.
-		keys := make(map[string]string) // normalized key -> canonical display
+		keys := make(map[string]struct{})
 		for _, label := range is.Labels {
 			name, ok := areaMatcher.Match(label)
 			if !ok {
 				continue
 			}
-			keys[reduce.NormalizeLabel(name)] = name
+			key := reduce.NormalizeLabel(name)
+			keys[key] = struct{}{}
+			b, exists := areas[key]
+			if !exists {
+				areas[key] = &bucket{display: name}
+			} else if name < b.display {
+				// Canonical display is the smallest original form across *all*
+				// occurrences (min is order-independent, so accumulation stays
+				// deterministic) — the same rule backlog.ReduceAreaBalance applies,
+				// so the two tools never disagree on one area's name.
+				b.display = name
+			}
 		}
 		if len(keys) == 0 {
 			if deferred {
@@ -76,14 +87,8 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 			}
 			continue
 		}
-		for key, display := range keys {
-			b, exists := areas[key]
-			if !exists {
-				b = &bucket{display: display}
-				areas[key] = b
-			} else if display < b.display {
-				b.display = display // smallest original form, deterministically
-			}
+		for key := range keys {
+			b := areas[key]
 			if deferred {
 				b.deferred++
 			} else {

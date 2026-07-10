@@ -36,6 +36,22 @@ func TestReduceAreaInventorySplitsActiveAndDeferred(t *testing.T) {
 	}
 }
 
+// TestReduceAreaInventoryDisplayNameMatchesBacklog pins that the canonical display
+// name for an area is the lexicographically-smallest original form across *all*
+// matching labels — the same rule backlog.ReduceAreaBalance applies — so the two
+// tools never disagree on the same area's name. Here one issue carries an explicit
+// "Core" and a prefix "area/core", both normalizing to key "core"; the smaller
+// original form is "Core", not the per-issue last-seen "core".
+func TestReduceAreaInventoryDisplayNameMatchesBacklog(t *testing.T) {
+	issues := []github.Issue{
+		mkIssue(1, 1, 1, []string{"Core", "area/core"}, nil),
+	}
+	facts := ReduceAreaInventory(issues, 1, []string{"Core"}, prefixes, nil)
+	if len(facts.Areas) != 1 || facts.Areas[0].Area != "Core" {
+		t.Errorf("areas = %+v, want a single area named %q (global-min original form)", facts.Areas, "Core")
+	}
+}
+
 // TestReduceAreaInventoryOrdersByBusiestAndExactCount pins the busiest-first
 // ordering and that OpenIssueCount stays exact under fetch truncation.
 func TestReduceAreaInventoryOrdersByBusiestAndExactCount(t *testing.T) {
