@@ -127,6 +127,13 @@ func TestListOpenIssuesParsesLabels(t *testing.T) {
 	if !strings.Contains(gotQuery, "labels(") {
 		t.Errorf("query does not request labels; got:\n%s", gotQuery)
 	}
+	// The labels selection must request totalCount — the sole guard on label
+	// truncation. queryIdentifiers is position-blind (totalCount appears elsewhere),
+	// so the contract test does not catch a labels selection that drops it; this
+	// scoped assertion does. Do not remove it as "redundant".
+	if !strings.Contains(gotQuery, "labels(first:25){ totalCount") {
+		t.Errorf("labels selection does not request totalCount (truncation would be silent); got:\n%s", gotQuery)
+	}
 	if len(res.Issues) != 1 {
 		t.Fatalf("got %d issues, want 1", len(res.Issues))
 	}
@@ -177,6 +184,11 @@ func TestListOpenIssuesWithLabelFiltersAndParses(t *testing.T) {
 	}
 	if !strings.Contains(gotQuery, "$label") {
 		t.Errorf("query does not pass the label as a variable; got:\n%s", gotQuery)
+	}
+	// Same sole-guard on label truncation as the general path (see
+	// TestListOpenIssuesParsesLabels): the labels selection must request totalCount.
+	if !strings.Contains(gotQuery, "labels(first:25){ totalCount") {
+		t.Errorf("labels selection does not request totalCount (truncation would be silent); got:\n%s", gotQuery)
 	}
 	if gotVars["label"] != "critical-path" {
 		t.Errorf("label variable = %v, want %q (passed as a variable, not interpolated)", gotVars["label"], "critical-path")
@@ -287,6 +299,75 @@ func countFold(labels []string, target string) int {
 		}
 	}
 	return n
+}
+
+// TestListOpenIssuesLabelsTruncation pins the surfaced-not-silent label cap on the
+// general (issueNode) path: an issue whose labels connection totalCount exceeds the
+// fetched node count decodes with LabelsTruncated true; a complete connection leaves
+// it false.
+func TestListOpenIssuesLabelsTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		labelsObj string // the labels connection object, verbatim
+		want      bool
+	}{
+		{"more labels than fetched → truncated", `{"totalCount":30,"nodes":[{"name":"deferred"},{"name":"bug"}]}`, true},
+		{"connection complete → not truncated", `{"totalCount":2,"nodes":[{"name":"deferred"},{"name":"bug"}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"data":{"repository":{"issues":{
+				"totalCount":1,
+				"pageInfo":{"hasNextPage":false,"endCursor":""},
+				"nodes":[
+					{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z",
+					 "labels":` + tc.labelsObj + `,
+					 "comments":{"nodes":[]}}
+				]
+			}}}}`
+			srv := jsonServer(t, http.StatusOK, body)
+			res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+			if err != nil {
+				t.Fatalf("ListOpenIssues: %v", err)
+			}
+			if got := res.Issues[0].LabelsTruncated; got != tc.want {
+				t.Errorf("LabelsTruncated = %v, want %v (%s)", got, tc.want, tc.labelsObj)
+			}
+		})
+	}
+}
+
+// TestListOpenIssuesWithLabelLabelsTruncation pins the same cap on the labeled path,
+// and — the load-bearing boundary — that a filter label re-inserted past the fetch
+// window still reports truncated. The flag reads the raw fetched connection
+// (totalCount > nodes), not the post-re-insert slice length: in the boundary case the
+// re-insert makes len(labels) == totalCount, so a slice-length computation would
+// falsely read "not truncated" and re-open the silence.
+func TestListOpenIssuesWithLabelLabelsTruncation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		labelsObj string
+		want      bool
+	}{
+		{"labels capped → truncated", `{"totalCount":30,"nodes":[{"name":"critical-path"},{"name":"area/simulation"}]}`, true},
+		{"filter label re-inserted at the boundary still flags truncated", `{"totalCount":2,"nodes":[{"name":"area/simulation"}]}`, true},
+		{"connection complete, filter present → not truncated", `{"totalCount":2,"nodes":[{"name":"critical-path"},{"name":"area/simulation"}]}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"data":{"repository":{"issues":{
+				"totalCount":1,
+				"pageInfo":{"hasNextPage":false,"endCursor":""},
+				"nodes":[{"number":7,"title":"a","labels":` + tc.labelsObj + `}]
+			}}}}`
+			srv := jsonServer(t, http.StatusOK, body)
+			res, err := fetcherTo(srv.URL, "tok").ListOpenIssuesWithLabel(context.Background(), "acme/widgets", "critical-path", 100)
+			if err != nil {
+				t.Fatalf("ListOpenIssuesWithLabel: %v", err)
+			}
+			if got := res.Issues[0].LabelsTruncated; got != tc.want {
+				t.Errorf("LabelsTruncated = %v, want %v (%s)", got, tc.want, tc.labelsObj)
+			}
+		})
+	}
 }
 
 func TestListOpenIssuesParsesBodyText(t *testing.T) {

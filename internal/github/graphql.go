@@ -34,10 +34,13 @@ const (
 // GraphQL variables, not interpolated, so caller-supplied values can never
 // become query structure. UPDATED_AT ASC is the closest available proxy for
 // "least recently active first"; comments(last:25) bounds the window scanned to
-// derive last-human activity; labels(first:25) bounds the labels read per issue
-// (an issue with >25 labels could miss a label in the tail, so the deferred,
-// area-balance, and quality signals can misread such an issue — acceptable for a
-// grooming signal). bodyText is the rendered-plaintext body (markdown and
+// derive last-human activity; labels(first:25) bounds the labels read per issue.
+// An issue with >25 labels misses a label in the tail, so the deferred, area, and
+// quality signals can misread it — but that is no longer silent: totalCount lets
+// toIssue set Issue.LabelsTruncated, the surfaced-not-swallowed truncation the other
+// bounded connections here already carry, so a classifying reduction can flag an
+// incomplete label-derived signal rather than trust the capped list. bodyText is the
+// rendered-plaintext body (markdown and
 // HTML-comment scaffolding stripped) for the quality reduction's length check;
 // the raw markdown body is deliberately not fetched until a later increment needs
 // it, so unread payload doesn't bloat this shared fetch. milestone{number title}
@@ -78,7 +81,7 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
       nodes{
         number title url createdAt bodyText
         milestone{ number title }
-        labels(first:25){ nodes{ name } }
+        labels(first:25){ totalCount nodes{ name } }
         comments(last:25){ nodes{ createdAt author{ __typename login } } }
         timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25){
           totalCount
@@ -252,7 +255,7 @@ const criticalPathIssuesQuery = `query($owner:String!,$name:String!,$label:Strin
     issues(states:OPEN, labels:[$label], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
       totalCount
       pageInfo{ hasNextPage endCursor }
-      nodes{ number title labels(first:25){ nodes{ name } } }
+      nodes{ number title labels(first:25){ totalCount nodes{ name } } }
     }
   }
 }`
@@ -1386,7 +1389,8 @@ type criticalPathNode struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
 	Labels struct {
-		Nodes []struct {
+		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
@@ -1400,8 +1404,11 @@ type criticalPathNode struct {
 // even though the server authoritatively matched it — so it is guaranteed present here
 // (case-insensitively, never duplicated). Without the guarantee the reduction's
 // defensive critical-path re-check would silently drop a server-matched issue on a
-// >25-label issue and falsely clear its gate. (Area labels past the fetch window are
-// still subject to the same cap — the pre-existing general limitation, out of scope.)
+// >25-label issue and falsely clear its gate. Area labels past the fetch window are
+// still subject to the same cap, but that is no longer silent: LabelsTruncated
+// (below) flags it, so the critical-path reduction can mark a stream assignment (and
+// its gate) provisional. totalCount reads the raw fetched connection, never the
+// post-re-insert slice.
 func (n criticalPathNode) toIssue(filterLabel string) Issue {
 	labels := make([]string, 0, len(n.Labels.Nodes)+1)
 	for _, l := range n.Labels.Nodes {
@@ -1410,7 +1417,16 @@ func (n criticalPathNode) toIssue(filterLabel string) Issue {
 	if !containsFold(labels, filterLabel) {
 		labels = append(labels, filterLabel)
 	}
-	return Issue{Number: n.Number, Title: n.Title, Labels: labels}
+	// Truncation reads the raw connection, never the post-re-insert slice: a filter
+	// label re-inserted past position 25 makes len(labels)==26, so len(labels) would
+	// give totalCount(26)>26==false and silently drop the very signal. n.Labels.Nodes
+	// is the untouched fetched set.
+	return Issue{
+		Number:          n.Number,
+		Title:           n.Title,
+		Labels:          labels,
+		LabelsTruncated: n.Labels.TotalCount > len(n.Labels.Nodes),
+	}
 }
 
 // containsFold reports whether labels contains target under case folding — GitHub
@@ -1584,7 +1600,8 @@ type issueNode struct {
 	BodyText  string            `json:"bodyText"`
 	Milestone *milestoneRefNode `json:"milestone"`
 	Labels    struct {
-		Nodes []struct {
+		TotalCount int `json:"totalCount"`
+		Nodes      []struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
@@ -1668,6 +1685,7 @@ func (n issueNode) toIssue(repoFullName string) Issue {
 		CreatedAt:          n.CreatedAt,
 		LastActivityAt:     n.lastHumanActivity(),
 		Labels:             labels,
+		LabelsTruncated:    n.Labels.TotalCount > len(n.Labels.Nodes),
 		BodyText:           n.BodyText,
 		ReferencedBy:       n.referencedBy(),
 		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),

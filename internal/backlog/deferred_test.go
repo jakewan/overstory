@@ -148,6 +148,28 @@ func TestReduceDeferredBodyRefs(t *testing.T) {
 	}
 }
 
+// TestReduceDeferredProjectsLabelsTruncated pins that a deferred issue whose label
+// list was capped carries LabelsTruncated through to its projected row, so a renderer
+// knows its MatchedLabels may be missing a tail label; a non-truncated sibling reads
+// false.
+func TestReduceDeferredProjectsLabelsTruncated(t *testing.T) {
+	capped := labeledIssue(1, 50, "deferred")
+	capped.LabelsTruncated = true
+	whole := labeledIssue(2, 40, "deferred")
+
+	facts := ReduceDeferred([]github.Issue{capped, whole}, 2, []string{"deferred"}, 20, now)
+	if facts.DeferredCount != 2 {
+		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
+	}
+	// Most-inactive first: #1 (50) before #2 (40).
+	if got := facts.DeferredIssues[0]; got.Number != 1 || !got.LabelsTruncated {
+		t.Errorf("issue #%d LabelsTruncated = %v, want #1 true", got.Number, got.LabelsTruncated)
+	}
+	if got := facts.DeferredIssues[1]; got.Number != 2 || got.LabelsTruncated {
+		t.Errorf("issue #%d LabelsTruncated = %v, want #2 false", got.Number, got.LabelsTruncated)
+	}
+}
+
 func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	issues := []github.Issue{labeledIssue(1, 100, "deferred"), labeledIssue(2, 90, "deferred")}
 	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, now)

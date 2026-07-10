@@ -800,6 +800,34 @@ func TestBacklogReviewSurfacesDeferred(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewDeferredSurfacesLabelsTruncation is the outside-in pin for the
+// deferred row's truncation companion: a deferred issue whose label list was capped
+// surfaces labelsTruncated:true through the tool output (so a renderer knows its
+// matchedLabels may be missing a tail label); a non-truncated sibling reads false.
+func TestBacklogReviewDeferredSurfacesLabelsTruncation(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	capped := deferredIssue(1, daysAgo(100), "deferred")
+	capped.LabelsTruncated = true
+	whole := deferredIssue(2, daysAgo(50), "deferred")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, whole},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 2 {
+		t.Fatalf("listed %d deferred issues, want 2", len(facts.Deferred.DeferredIssues))
+	}
+	// Most-inactive first: #1 (100d) then #2 (50d).
+	if got := facts.Deferred.DeferredIssues[0]; got.Number != 1 || !got.LabelsTruncated {
+		t.Errorf("issue #%d labelsTruncated = %v, want #1 true", got.Number, got.LabelsTruncated)
+	}
+	if got := facts.Deferred.DeferredIssues[1]; got.Number != 2 || got.LabelsTruncated {
+		t.Errorf("issue #%d labelsTruncated = %v, want #2 false", got.Number, got.LabelsTruncated)
+	}
+}
+
 // TestBacklogReviewDeferredSurfacesBodyRefs pins the dependency-readiness signal
 // end-to-end (#32): each deferred issue carries the distinct #N references parsed
 // from its (plaintext) body, with PR references and the issue's own number

@@ -65,6 +65,14 @@ type DeferredFacts struct {
 // the deferred labels it matched. InactiveDays is measured from the last human
 // activity; AgeDays from creation.
 //
+// LabelsTruncated carries the issue's whole-label-set truncation (more labels than
+// the per-issue fetch cap read), not a signal scoped to MatchedLabels: a
+// matchedLabelsTruncated name would over-promise, implying a deferred label is
+// definitely missing when the truncated tail may hold only non-deferred labels. It
+// means only that MatchedLabels *may* be incomplete — a conservative over-report
+// (never claims a capped list is whole), so a renderer should read it as "possibly
+// missing a tail label", not a precise matched-list signal.
+//
 // BodyRefs are the distinct #N references parsed from the issue body, ascending,
 // with pull-request references and the issue's own number excluded — the parked
 // issue's stated dependencies, so a client can tell whether a blocker has since
@@ -110,6 +118,7 @@ type DeferredIssue struct {
 	Title               string    `json:"title"`
 	URL                 string    `json:"url"`
 	MatchedLabels       []string  `json:"matchedLabels"`
+	LabelsTruncated     bool      `json:"labelsTruncated"`
 	BodyRefs            []int     `json:"bodyRefs"`
 	BlockedBy           []int     `json:"blockedBy"`
 	BlockedByTruncated  bool      `json:"blockedByTruncated"`
@@ -166,6 +175,7 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
+			LabelsTruncated:     is.LabelsTruncated,
 			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			BlockedBy:           reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByTruncated:  is.BlockedByTruncated,

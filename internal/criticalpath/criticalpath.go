@@ -34,20 +34,34 @@ import (
 // FetchedCount is the number of critical-path-labeled issues the reduction saw (the
 // matched subset, not the whole source window). FetchTruncated marks an incomplete
 // source set — the labeled fetch itself truncated — so a cleared gate over it is
-// provisional. A critical-path-labeled issue that matches no declared stream is
+// provisional.
+//
+// LabelTruncatedCount is the second provisional axis, orthogonal to FetchTruncated:
+// the number of on-path members whose own label list was capped (github.Issue.
+// LabelsTruncated). A member's stream is its area label, so a member whose area label
+// fell in the truncated tail is misassigned — out of its real stream into Unareaed/
+// OffPath or another stream — silently emptying its stream and clearing that gate. So
+// when LabelTruncatedCount > 0 a cleared gate is provisional: a hidden member could
+// belong to any stream. It is a lower bound on the general-window path, where an issue
+// whose critical-path label itself was truncated out never matched and so was never
+// counted here; on the labeled-fetch path the filter label is guaranteed present, so
+// only area assignment (not membership) is at risk.
+//
+// A critical-path-labeled issue that matches no declared stream is
 // surfaced, never dropped, split by cause: UnareaedCount (no area label at all — a
 // triage gap) versus OffPathCount (a real area that is not a declared stream —
 // usually a misconfiguration, or a critical path missing an area that carries
 // blocking work).
 type Facts struct {
-	Configured     bool     `json:"configured"`
-	Available      bool     `json:"available"`
-	Unavailable    string   `json:"unavailable,omitempty"`
-	FetchedCount   int      `json:"fetchedCount"`
-	FetchTruncated bool     `json:"fetchTruncated"`
-	Streams        []Stream `json:"streams"`
-	UnareaedCount  int      `json:"unareaedCount"`
-	OffPathCount   int      `json:"offPathCount"`
+	Configured          bool     `json:"configured"`
+	Available           bool     `json:"available"`
+	Unavailable         string   `json:"unavailable,omitempty"`
+	FetchedCount        int      `json:"fetchedCount"`
+	FetchTruncated      bool     `json:"fetchTruncated"`
+	LabelTruncatedCount int      `json:"labelTruncatedCount"`
+	Streams             []Stream `json:"streams"`
+	UnareaedCount       int      `json:"unareaedCount"`
+	OffPathCount        int      `json:"offPathCount"`
 }
 
 // Stream is one declared critical-path stream and the open critical-path issues in
@@ -55,12 +69,16 @@ type Facts struct {
 // the signal a caller uses to decide a downstream stream may begin. Two caveats the
 // caller must respect:
 //
-//   - Authoritative on a complete source set, provisional otherwise. The block is
-//     sourced from the critical-path-labeled subset the gate actually depends on, so
-//     a cleared gate is authoritative when Facts.FetchTruncated is false — the common
-//     case, since that labeled subset is small and bounded. FetchTruncated marks the
-//     rare tail where even the labeled fetch truncated (more than the fetch cap of
-//     labeled issues), leaving a cleared gate provisional.
+//   - Authoritative on a complete source set with untruncated member labels,
+//     provisional otherwise. The block is sourced from the critical-path-labeled
+//     subset the gate actually depends on, so a cleared gate is authoritative when
+//     both Facts.FetchTruncated and Facts.LabelTruncatedCount are zero — the common
+//     case, since that labeled subset is small and bounded and issues rarely exceed
+//     the per-issue label cap. FetchTruncated marks the rare tail where even the
+//     labeled fetch truncated (more labeled issues than the fetch cap); the separate
+//     LabelTruncatedCount marks an on-path member whose area label was capped and so
+//     may have been misassigned out of this stream. Either leaves a cleared gate
+//     provisional.
 //   - It witnesses absence, not completion. "Every critical-path issue closed" and
 //     "no critical-path issue ever existed" both present as no members and a cleared
 //     gate; the gate reports the absence of open blockers, not that work was done.
@@ -159,6 +177,13 @@ func Reduce(issues []github.Issue, complete bool, params Params, listLimit int) 
 		// Count every critical-path issue reduced over — the matched subset, coherent
 		// whether the source is the general window (path 1) or a labeled fetch (path 2).
 		facts.FetchedCount++
+		// A member whose own labels were capped may have had its area (stream) label
+		// truncated out, so its stream assignment — and any gate it would clear — is
+		// provisional. Counted on the on-path set only; see the Facts godoc for the
+		// path-1 lower-bound caveat.
+		if is.LabelsTruncated {
+			facts.LabelTruncatedCount++
+		}
 		// Distinct area keys for this issue, so a multi-label issue is counted once
 		// per area rather than once per matching label.
 		areaKeys := make(map[string]struct{})

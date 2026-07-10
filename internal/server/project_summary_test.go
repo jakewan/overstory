@@ -358,6 +358,41 @@ func TestProjectSummaryCriticalPathUnconfiguredButWanted(t *testing.T) {
 	}
 }
 
+// TestProjectSummaryCriticalPathSurfacesLabelTruncation is the outside-in pin for the
+// gate's second provisional axis: an on-path member whose own labels were capped
+// (LabelsTruncated) surfaces LabelTruncatedCount > 0 through the tool output, so a
+// cleared gate reads provisional. The member's area label is truncated out, so it
+// lands unareaed and its streams read cleared — the exact silent false-clear the count
+// guards. A complete window ⇒ no labeled fetch, so the signal rides the general path.
+func TestProjectSummaryCriticalPathSurfacesLabelTruncation(t *testing.T) {
+	root := writeManifestDir(t, cpManifest)
+	capped := summaryIssue(1, nil, "critical-path") // area label truncated out ⇒ unareaed
+	capped.LabelsTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped},
+		TotalOpen: 1, // complete window ⇒ general path, no labeled fetch
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	cp := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).CriticalPath
+	if cp == nil || !cp.Configured {
+		t.Fatalf("cp = %+v, want configured", cp)
+	}
+	if cp.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1 (the capped on-path member)", cp.LabelTruncatedCount)
+	}
+	if cp.UnareaedCount != 1 {
+		t.Errorf("UnareaedCount = %d, want 1 (member lost its area label)", cp.UnareaedCount)
+	}
+	// Both streams read cleared (no assigned member), but LabelTruncatedCount marks
+	// that clearance provisional — the hidden member could belong to either.
+	for _, s := range cp.Streams {
+		if !s.GateCleared {
+			t.Errorf("stream %q GateCleared = false, want true (member is unareaed)", s.Stream)
+		}
+	}
+}
+
 // TestProjectSummarySurfacesDependencyClassification pins the classification-only
 // dependency block on the orientation read: the graph-level ready/blocked split
 // and the gate set (each gate's downstream count), without the raw per-issue edges
