@@ -1,6 +1,6 @@
 # Reference Skill: Backlog Review
 
-A worked render skill for the `backlog_review` tool — the grooming read ("what in the backlog needs maintenance attention?"). It renders the staleness, deferred, area-balance, quality, overlap, cross-reference, dependency-structure, trajectory, and critical-path blocks into a report for a dedicated grooming session, then synthesizes prioritized findings. See [Rendering the Facts](../rendering.md) for the concept this skill makes concrete, and [Project Summary](./project-summary.md) for its lighter-weight orientation counterpart.
+A worked render skill for the `backlog_review` tool — the grooming read ("what in the backlog needs maintenance attention?"). It renders the staleness, deferred, area-balance, quality, overlap, cross-reference, dependency-structure, trajectory, pull-request-trajectory, and critical-path blocks into a report for a dedicated grooming session, then synthesizes prioritized findings. See [Rendering the Facts](../rendering.md) for the concept this skill makes concrete, and [Project Summary](./project-summary.md) for its lighter-weight orientation counterpart.
 
 > **Reference skill.** This is the reference render skill for `backlog_review`, maintained in this repository. It is an illustrative example, not a fixed interface: the conventions evolve with the server's reductions, so adapt it to your repository. To use it, copy the body below into `~/.claude/skills/pm-backlog-review/SKILL.md` (or `~/.cursor/skills/pm-backlog-review/SKILL.md` for Cursor) and adjust as needed. Last revised 2026-07.
 
@@ -54,7 +54,7 @@ Report which check failed and stop. This skill has **no `gh` fallback** by desig
 
 ## Step 2: Render the report
 
-The tool returns a composite object: `repo`, `generatedAt`, one block per section — `deferred`, `quality`, `staleness`, `areaBalance`, `overlap`, `crossRef`, `dependencies`, `trajectory`, `criticalPath` — a top-level `openIssueSet` (used to resolve deferred `bodyRefs`, not rendered as its own section), and an optional `rateLimit`. Render each section below from its block, in order, then synthesize Key Findings last.
+The tool returns a composite object: `repo`, `generatedAt`, one block per section — `deferred`, `quality`, `staleness`, `areaBalance`, `overlap`, `crossRef`, `dependencies`, `trajectory`, `prTrajectory`, `criticalPath` — a top-level `openIssueSet` (used to resolve deferred `bodyRefs`, not rendered as its own section), and an optional `rateLimit`. Render each section below from its block, in order, then synthesize Key Findings last.
 
 **Truncation is load-bearing.** Several blocks carry `fetchTruncated` (the scan window didn't cover every open issue), `listTruncated` (more matches exist than were listed), and — on `crossRef` — `refsTruncated` (some issues' reference lists were capped). The open-issue fetch paginates the *full* open set, so `fetchTruncated` normally fires only when a repository exceeds the `staleness.fetchLimit` safety backstop — uncommon on most backlogs. When any flag is true, render an explicit "lower bound" note for that section: the result is a floor, not a complete picture. Never present a truncated run as exhaustive. For overlap and cross-reference specifically, `fetchTruncated` means duplicates or links *outside* the fetch window are undetectable — say so. Deferred issues additionally carry per-edge flags (`blockedByTruncated`, `blockingTruncated`, `subIssuesTruncated`) and `openIssueSet` carries `fetchTruncated` — an empty edge list under a true flag is a floor, not a confirmed "none." Additionally, the response as a whole carries a top-level `sizeBound` marker **only when** it was trimmed to a serialization byte budget — `finalBytes`/`maxBytes` plus a `trimmedBlocks[]` of `{block, dropped, remaining}` (where `block` may be a nested path, e.g. `hygiene.stale`). Each trimmed block also sets its own `listTruncated`, so the per-block lower-bound note still fires; `sizeBound` adds the *cause* (a size trim, not a `limit` cap) and the count dropped. When present, flag the response as size-bounded and note the remedy is a narrower request (fewer `blocks`) or a higher per-repo `maxBytes`, not a higher `limit`.
 
@@ -195,6 +195,22 @@ From the `trajectory` block. **If `available` is false**, the trajectory fetch w
 ```
 
 Add a one-line read per the longest window: net positive = growing (new work identified faster than resolved — normal during active development); net zero = stable; net negative = shrinking (good momentum). Note `fetchTruncated` if set (the activity window was capped — treat as directional).
+
+### Pull Request Trajectory
+
+Header: `## Pull Request Trajectory`
+
+From the `prTrajectory` block. **If `available` is false**, the pull-request-trajectory fetch was degraded — render "Pull request trajectory unavailable: \<`unavailable`\>" and skip the table; do not infer a closure ratio. When available, render `windows` (each `days`, `opened`, `closed`, `net`):
+
+```markdown
+| Window  | Opened | Closed | Net |
+| ------- | ------ | ------ | --- |
+| 7 days  | 3      | 2      | +1  |
+| 30 days | 8      | 11     | -3  |
+| 90 days | 20     | 18     | +2  |
+```
+
+`closed` counts both merged and closed-without-merge PRs, and the block returns raw counts rather than a computed ratio — derive whatever closure-ratio reading you present. Add a one-line read per the longest window: net positive = PRs opening faster than they land (a review/merge backlog building), net zero = keeping pace, net negative = draining the PR backlog. Note `fetchTruncated` if set (the activity window was capped — treat as directional).
 
 ### Critical Path / Gate Status
 
