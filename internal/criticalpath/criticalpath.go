@@ -18,22 +18,31 @@ import (
 
 // Facts is the compact result of the critical-path reduction. Configured is true
 // exactly when the repo declared a stream list and a label; when false the
-// reduction is a no-op (empty Streams, zero counts) rather than an error, because
-// a critical path is repo-specific and has no generic default — the same posture
-// the deferred reduction takes. Configured intentionally does NOT reuse the
-// Available/Unavailable degrade idiom the fetch-backed blocks use: this reduction
-// runs over an already-fetched corpus and has no fetch of its own to fail.
+// reduction is a no-op (empty Streams) rather than an error, because a critical
+// path is repo-specific and has no generic default — the same posture the deferred
+// reduction takes.
 //
-// OpenIssueCount is the repository-wide open-issue total (not the critical-path
-// subset); it stays exact even when the fetch window truncates, which
-// FetchTruncated marks. A critical-path-labeled issue that matches no declared
-// stream is surfaced, never dropped, split by cause: UnareaedCount (no area label
-// at all — a triage gap) versus OffPathCount (a real area that is not a declared
-// stream — usually a misconfiguration, or a critical path missing an area that
-// carries blocking work).
+// Available distinguishes a successful reduction (including the not-configured
+// no-op) from a degraded one: when the block is sourced from a dedicated
+// label-scoped fetch (the truncated-window path in the server) and that fetch
+// fails, the handler marks the block Available:false with Unavailable naming the
+// reason, degrading rather than failing the whole call — the same idiom the
+// milestone and pull-request blocks use. Reduce itself always yields
+// Available:true; the degraded value is constructed by the handler without calling
+// Reduce.
+//
+// FetchedCount is the number of critical-path-labeled issues the reduction saw (the
+// matched subset, not the whole source window). FetchTruncated marks an incomplete
+// source set — the labeled fetch itself truncated — so a cleared gate over it is
+// provisional. A critical-path-labeled issue that matches no declared stream is
+// surfaced, never dropped, split by cause: UnareaedCount (no area label at all — a
+// triage gap) versus OffPathCount (a real area that is not a declared stream —
+// usually a misconfiguration, or a critical path missing an area that carries
+// blocking work).
 type Facts struct {
 	Configured     bool     `json:"configured"`
-	OpenIssueCount int      `json:"openIssueCount"`
+	Available      bool     `json:"available"`
+	Unavailable    string   `json:"unavailable,omitempty"`
 	FetchedCount   int      `json:"fetchedCount"`
 	FetchTruncated bool     `json:"fetchTruncated"`
 	Streams        []Stream `json:"streams"`
@@ -44,11 +53,14 @@ type Facts struct {
 // Stream is one declared critical-path stream and the open critical-path issues in
 // it. GateCleared is true when no open critical-path issue remains in the stream —
 // the signal a caller uses to decide a downstream stream may begin. Two caveats the
-// caller must respect, both consequences of reducing over open issues alone:
+// caller must respect:
 //
-//   - It is a windowed fact. When the enclosing Facts.FetchTruncated is true, a
-//     cleared gate is provisional — an unfetched critical-path issue may remain — so
-//     a caller treats GateCleared as authoritative only when FetchTruncated is false.
+//   - Authoritative on a complete source set, provisional otherwise. The block is
+//     sourced from the critical-path-labeled subset the gate actually depends on, so
+//     a cleared gate is authoritative when Facts.FetchTruncated is false — the common
+//     case, since that labeled subset is small and bounded. FetchTruncated marks the
+//     rare tail where even the labeled fetch truncated (more than the fetch cap of
+//     labeled issues), leaving a cleared gate provisional.
 //   - It witnesses absence, not completion. "Every critical-path issue closed" and
 //     "no critical-path issue ever existed" both present as no members and a cleared
 //     gate; the gate reports the absence of open blockers, not that work was done.
@@ -82,6 +94,17 @@ type Params struct {
 	AreaPrefixes []reduce.PrefixRule
 }
 
+// Configured reports whether the params declare both a stream list and a
+// non-blank label — the condition under which the reduction can classify issues.
+// Guarded here (not only at the manifest layer) so a direct caller passing streams
+// with an empty label reports not-configured rather than configured-but-matching-
+// nothing (which would clear every gate). Reduce sets Facts.Configured from it, and
+// the server's fetch gate reads it to decide whether to fetch at all, so it is the
+// single definition both share rather than a predicate recomputed at each site.
+func (p Params) Configured() bool {
+	return len(p.Streams) > 0 && strings.TrimSpace(p.Label) != ""
+}
+
 // Reduce groups the fetched open issues into the declared streams. An issue is
 // considered only if it carries the critical-path label. It is classified per
 // issue with precedence so a multi-area issue resolves to exactly one disposition:
@@ -89,17 +112,20 @@ type Params struct {
 // counted off-path); else if it matched a real area that is not a declared stream
 // it is off-path; else (no area match) it is unareaed. Streams are emitted in
 // declared order, every declared stream present even when it has no member.
-// totalOpen keeps OpenIssueCount exact when the window is truncated.
-func Reduce(issues []github.Issue, totalOpen int, params Params, listLimit int) Facts {
+//
+// complete says whether the source set covers every open critical-path issue; the
+// handler sets it per source path (true when the general open-issue window was not
+// truncated, or when a dedicated labeled fetch was not truncated). It drives
+// FetchTruncated, so a cleared gate over an incomplete set reads provisional. The
+// critical-path label filter runs here regardless of source, so Reduce is valid
+// over the general window (path 1) or an already-labeled fetch (path 2) alike.
+func Reduce(issues []github.Issue, complete bool, params Params, listLimit int) Facts {
 	facts := Facts{
-		// Both streams and a label are required to classify; guard here, not only at
-		// the manifest layer, so a direct caller passing streams with an empty label
-		// reports not-configured rather than configured-but-matching-nothing (which
-		// would clear every gate). This matches the Configured godoc.
-		Configured:     len(params.Streams) > 0 && strings.TrimSpace(params.Label) != "",
-		OpenIssueCount: totalOpen,
-		FetchedCount:   len(issues),
-		FetchTruncated: len(issues) < totalOpen,
+		Configured: params.Configured(),
+		// A completed reduction, always — the degraded Available:false value is the
+		// handler's, built without calling Reduce.
+		Available:      true,
+		FetchTruncated: !complete,
 		Streams:        make([]Stream, 0, len(params.Streams)),
 	}
 	if !facts.Configured {
@@ -130,6 +156,9 @@ func Reduce(issues []github.Issue, totalOpen int, params Params, listLimit int) 
 		if !anyMatch(cpMatcher, is.Labels) {
 			continue
 		}
+		// Count every critical-path issue reduced over — the matched subset, coherent
+		// whether the source is the general window (path 1) or a labeled fetch (path 2).
+		facts.FetchedCount++
 		// Distinct area keys for this issue, so a multi-label issue is counted once
 		// per area rather than once per matching label.
 		areaKeys := make(map[string]struct{})

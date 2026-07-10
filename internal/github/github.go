@@ -316,7 +316,11 @@ type IssueEventsResult struct {
 // Fetcher fetches a repository's issues, milestones, and pull requests for the
 // reductions. It exists so tests can substitute a fake without invoking gh or the
 // network. ListOpenIssues returns the open-issue grooming window
-// (newest-activity-last, up to fetchLimit); ListIssuesUpdatedSince returns the
+// (newest-activity-last, up to fetchLimit); ListOpenIssuesWithLabel returns the
+// open issues carrying a single label (up to fetchLimit) — a lean fetch (number,
+// title, labels only) the critical-path reduction uses when the general window
+// truncated, so the gate rides on the small labeled subset it depends on rather
+// than the general backlog window; ListIssuesUpdatedSince returns the
 // lean open-and-closed activity window updated at or after `since` (up to
 // fetchLimit), feeding the creation-vs-closure trajectory;
 // ListPullRequestsUpdatedSince returns the lean open-and-closed/merged
@@ -335,6 +339,7 @@ type IssueEventsResult struct {
 // shapes use.
 type Fetcher interface {
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
+	ListOpenIssuesWithLabel(ctx context.Context, ownerRepo, label string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)
 	ListPullRequestsUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (PullRequestActivityResult, error)
 	ListOpenMilestones(ctx context.Context, ownerRepo string, fetchLimit int) (MilestoneListResult, error)

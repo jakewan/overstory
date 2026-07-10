@@ -23,8 +23,17 @@ import (
 // that don't care about trajectory are unaffected. The milestone* fields play
 // the same role for the project_summary milestone fetch.
 type fakeFetcher struct {
-	result           github.IssueListResult
-	err              error
+	result github.IssueListResult
+	err    error
+	// labeledResult/labeledErr drive the critical-path label-scoped fetch, which the
+	// handler issues only when the general window (result) truncated. Kept distinct
+	// from result so a test can express a truncated general window alongside a
+	// complete labeled subset — the #95 scenario. labeledCalls counts invocations so
+	// a test can assert the fetch was skipped when the general window was complete (a
+	// pointer for the same copy-by-value reason as the other counters below).
+	labeledResult    github.IssueListResult
+	labeledErr       error
+	labeledCalls     *atomic.Int64
 	activityResult   github.IssueActivityResult
 	activityErr      error
 	prActivityResult github.PullRequestActivityResult
@@ -98,6 +107,13 @@ func withBudget(r github.AuthoredActivityResult, remaining int, reset time.Time)
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
 	return f.result, f.err
+}
+
+func (f fakeFetcher) ListOpenIssuesWithLabel(_ context.Context, _ string, _ string, _ int) (github.IssueListResult, error) {
+	if f.labeledCalls != nil {
+		f.labeledCalls.Add(1)
+	}
+	return f.labeledResult, f.labeledErr
 }
 
 func (f fakeFetcher) ListIssuesUpdatedSince(_ context.Context, _ string, _ time.Time, _ int) (github.IssueActivityResult, error) {
