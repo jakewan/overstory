@@ -46,12 +46,12 @@ type TrimmedBlock struct {
 // facts; closing over the same live facts value the measure closure marshals keeps a
 // single source of truth — there is no copy that could drift from what is serialized.
 //
-// All four closures are required. ApplyByteBudget calls Restore unconditionally on
-// the floor-fits branch (to undo the floor probe) and does not nil-guard it: a nil
-// Restore skipped there would leave lists emptied and yield a silently over-trimmed
-// result — worse than a panic. A Drop must reslice down only (never reallocate or
-// zero), so the backing array still holds the tail elements a later Restore reslices
-// back into view.
+// All four closures are required and must be non-nil. ApplyByteBudget calls Restore
+// unconditionally on the floor-fits branch (to undo the floor probe), so a nil Restore
+// panics there. That is deliberate: nil-guarding Restore to a no-op would instead leave
+// the probed lists emptied and silently over-trim the result — worse than a loud panic.
+// A Drop must reslice down only (never reallocate or zero), so the backing array still
+// holds the tail elements a later Restore reslices back into view.
 type Trimmable struct {
 	Block     string
 	Size      func() int
