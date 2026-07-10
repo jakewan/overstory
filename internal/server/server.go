@@ -198,10 +198,12 @@ func backlogReviewTool() *mcp.Tool {
 }
 
 // backlogReviewHandler resolves the repo's conventions, fetches its open issues,
-// and reduces them to the composite backlog facts — one block per grooming
-// signal (staleness, deferred, area balance, quality, overlap, cross-reference,
-// trajectory, critical path). Most blocks reduce the one open-issue fetch; trajectory adds a
-// second open-and-closed fetch and degrades to an unavailable block on failure.
+// and reduces them to the composite backlog facts — one block per grooming signal
+// (staleness, deferred, area balance, quality, overlap, cross-reference,
+// dependencies, trajectory, pull-request trajectory, critical path; see
+// backlogBlockNames). Most blocks reduce the one open-issue fetch; trajectory and
+// pull-request trajectory each add a secondary open-and-closed fetch and degrade
+// to an unavailable block on failure.
 // Errors from the open fetch are returned plain so the SDK surfaces them as tool
 // errors (IsError); a manifest error names a file, so it is logged to stderr and
 // replaced with a repo-named message on the caller channel.
