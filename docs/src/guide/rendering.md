@@ -65,7 +65,7 @@ The example above fits comfortably under any limit — the repository has four o
 
 Truncation is surfaced explicitly, never silently, so the caller can tell incomplete data from complete. Each flag appears on the blocks where its kind of truncation can occur:
 
-- `fetchTruncated` — the scan window didn't cover every open issue, so counts themselves are a floor.
+- `fetchTruncated` — the scan window didn't cover every open issue, so counts themselves are a floor. The open-issue fetch paginates the full open set, so this fires only when a repository exceeds the `staleness.fetchLimit` safety backstop.
 - `listTruncated` — more matches exist than were listed under the call's `limit`.
 - `membershipTruncated` — on a milestone, its listed members are a floor relative to its open count.
 

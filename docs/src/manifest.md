@@ -70,7 +70,7 @@ Every block is optional; an omitted block inherits its defaults entirely. Within
 | Field           | Type | Default | Notes                                                  |
 | --------------- | ---- | ------- | ------------------------------------------------------ |
 | `thresholdDays` | int  | `30`    | Inactivity days at/beyond which an issue is stale. > 0. |
-| `fetchLimit`    | int  | `200`   | Cap on open issues fetched for the reduction. > 0.      |
+| `fetchLimit`    | int  | `2000`  | Safety backstop on the open-issue window shared by `project_summary` and `backlog_review`: the fetch paginates the full open set, so this is hit only on a very large backlog, where `fetchTruncated` then marks the floor. > 0. |
 
 ### `deferred`
 
