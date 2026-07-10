@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -674,6 +675,79 @@ func TestListOpenIssuesPaginates(t *testing.T) {
 	}
 	if len(res.Issues) != 3 {
 		t.Errorf("collected %d issues across pages, want 3", len(res.Issues))
+	}
+}
+
+// pagedIssueServer serves a repo of totalCount open issues as pages, deriving the
+// page start from the cursor and honoring the fetch's requested first — so a test can
+// exercise both a full paginate-to-completion and a fetchLimit-bounded truncation
+// against a window larger than a single page.
+func pagedIssueServer(t *testing.T, totalCount int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Variables struct {
+				First int     `json:"first"`
+				After *string `json:"after"`
+			} `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		start := 0
+		if req.Variables.After != nil {
+			if _, err := fmt.Sscanf(*req.Variables.After, "cursor-%d", &start); err != nil {
+				t.Errorf("parse cursor %q: %v", *req.Variables.After, err)
+			}
+		}
+		end := min(start+req.Variables.First, totalCount)
+		nodes := make([]string, 0, end-start)
+		for n := start + 1; n <= end; n++ {
+			nodes = append(nodes, fmt.Sprintf(`{"number":%d,"createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}`, n))
+		}
+		body := fmt.Sprintf(`{"data":{"repository":{"issues":{"totalCount":%d,"pageInfo":{"hasNextPage":%t,"endCursor":"cursor-%d"},"nodes":[%s]}}}}`,
+			totalCount, end < totalCount, end, strings.Join(nodes, ","))
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+}
+
+// TestListOpenIssuesPaginatesToCompletion pins that when the repo's open count
+// exceeds a single page but stays under the fetchLimit backstop, the fetch collects
+// the entire open set — no issue is dropped, so the newest issues (past the old
+// 200 cap) are present and the window is not truncated.
+func TestListOpenIssuesPaginatesToCompletion(t *testing.T) {
+	srv := pagedIssueServer(t, 250)
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 2000)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 250 || res.TotalOpen != 250 {
+		t.Fatalf("fetched %d of TotalOpen %d, want 250/250 (full window)", len(res.Issues), res.TotalOpen)
+	}
+	// The last issue (highest number) is the newest by the seeded order — it must be
+	// present, since the newest-drop bug is the whole point of the change.
+	if res.Issues[len(res.Issues)-1].Number != 250 {
+		t.Errorf("last fetched issue = #%d, want #250 (newest present)", res.Issues[len(res.Issues)-1].Number)
+	}
+}
+
+// TestListOpenIssuesBackstopTruncates pins the backstop: when the open count
+// exceeds the fetchLimit, the fetch stops at the limit and still reports the exact
+// TotalOpen, so a downstream reduction's fetchTruncated (len < TotalOpen) fires.
+func TestListOpenIssuesBackstopTruncates(t *testing.T) {
+	srv := pagedIssueServer(t, 250)
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 150)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 150 || res.TotalOpen != 250 {
+		t.Errorf("fetched %d of TotalOpen %d, want 150/250 (backstop hit, count exact)", len(res.Issues), res.TotalOpen)
 	}
 }
 

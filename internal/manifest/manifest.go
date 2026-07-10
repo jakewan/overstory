@@ -45,8 +45,11 @@ type ResponseConfig struct {
 }
 
 // StalenessConfig holds resolved staleness conventions. ThresholdDays is the
-// inactivity threshold (an issue is stale at or beyond it); FetchLimit caps how
-// many open issues are fetched to compute the reduction.
+// inactivity threshold (an issue is stale at or beyond it); FetchLimit is a safety
+// backstop on the open-issue window, not a routine cap — the fetch paginates the
+// full open set, so the limit is hit only on a pathological backlog, where
+// fetchTruncated then honestly marks the floor. A high default keeps orientation
+// from silently dropping the newest issues (its freshest blockers) under truncation.
 type StalenessConfig struct {
 	ThresholdDays int
 	FetchLimit    int
@@ -176,7 +179,7 @@ type CriticalPathConfig struct {
 // area-label conventions so an unconfigured repo still classifies out of the box.
 func Defaults() Config {
 	return Config{
-		Staleness: StalenessConfig{ThresholdDays: 30, FetchLimit: 200},
+		Staleness: StalenessConfig{ThresholdDays: 30, FetchLimit: 2000},
 		AreaBalance: AreaBalanceConfig{Prefixes: []PrefixRule{
 			{Prefix: "area", Delimiter: "/"},
 			{Prefix: "area", Delimiter: ":"},
