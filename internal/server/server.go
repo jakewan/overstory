@@ -355,6 +355,11 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 // block truncated, so the block's count fields stay authoritative while the shown
 // list shrinks.
 func trimUnit[T any](block string, list *[]T, truncated *bool) reduce.Trimmable {
+	// Captured at construction (before the bound mutates anything), so Restore can
+	// rewind the floor probe: the length and the pre-bound truncated value, which may
+	// already be true from the parser's count cap and must survive an untouched unit.
+	origLen := len(*list)
+	origTrunc := *truncated
 	return reduce.Trimmable{
 		Block:     block,
 		Size:      func() int { return reduce.JSONLen(*list) },
@@ -365,6 +370,10 @@ func trimUnit[T any](block string, list *[]T, truncated *bool) reduce.Trimmable 
 			}
 			*list = (*list)[:len(*list)-1]
 			*truncated = true
+		},
+		Restore: func() {
+			*list = (*list)[:origLen]
+			*truncated = origTrunc
 		},
 	}
 }
