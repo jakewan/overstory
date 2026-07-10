@@ -27,7 +27,7 @@ Two consequences worth noting. Because a projectable block can now be absent, th
 
 ## Cross-cutting conventions
 
-These hold across every block of both composites:
+These hold across every block of the two composite reads; where a convention also governs `milestone_tracks`, the bullet says so:
 
 - **Hoisted identity.** Each composite carries `repo` and `generatedAt` at the top level.
 - **Truncation is explicit, never silent.** A caller must be able to tell incomplete data from complete data. Blocks carry:
