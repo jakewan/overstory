@@ -16,8 +16,8 @@ func writeManifest(t *testing.T, dir, name, contents string) {
 
 func TestDefaults(t *testing.T) {
 	d := Defaults()
-	if d.Staleness.ThresholdDays != 30 || d.Staleness.FetchLimit != 200 {
-		t.Errorf("Defaults() = %+v, want {30, 200}", d.Staleness)
+	if d.Staleness.ThresholdDays != 30 || d.Staleness.FetchLimit != 2000 {
+		t.Errorf("Defaults() = %+v, want {30, 2000}", d.Staleness)
 	}
 }
 
@@ -50,8 +50,8 @@ func TestResolveMergesEntryOverDefaults(t *testing.T) {
 	if cfg.Staleness.ThresholdDays != 45 {
 		t.Errorf("ThresholdDays = %d, want 45 (from manifest)", cfg.Staleness.ThresholdDays)
 	}
-	if cfg.Staleness.FetchLimit != 200 {
-		t.Errorf("FetchLimit = %d, want 200 (inherited default)", cfg.Staleness.FetchLimit)
+	if cfg.Staleness.FetchLimit != 2000 {
+		t.Errorf("FetchLimit = %d, want 2000 (inherited default)", cfg.Staleness.FetchLimit)
 	}
 }
 
