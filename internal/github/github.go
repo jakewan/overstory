@@ -171,10 +171,11 @@ type PullRequestListResult struct {
 }
 
 // IssueListResult carries the fetched issues plus the repository's exact open
-// count. The window is truncated when len(Issues) < TotalOpen — now only when the
+// count. The window is truncated when len(Issues) < TotalOpen — normally only when the
 // fetch's safety backstop is hit, since the fetch otherwise paginates the full open
-// set. RateLimit is the most-recent budget snapshot observed across the paginated
-// fetch, or nil when the response carried none, so a caller can pace itself.
+// set (a defensive pagination guard can also stop it early, the rare exception).
+// RateLimit is the most-recent budget snapshot observed across the paginated fetch, or
+// nil when the response carried none, so a caller can pace itself.
 type IssueListResult struct {
 	Issues    []Issue
 	TotalOpen int

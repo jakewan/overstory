@@ -259,13 +259,15 @@ func NewGraphQLFetcher() *GraphQLFetcher {
 	}
 }
 
-// ListOpenIssues paginates the full open-issue set, stopping only when the
-// connection is exhausted or the fetchLimit safety backstop is reached, and reports
-// the repository's exact open count via TotalOpen. fetchLimit is a backstop against a
-// pathological backlog, not a routine cap — hitting it leaves len(Issues) < TotalOpen
-// so a downstream reduction's fetchTruncated marks the floor; on a normal repo the
-// whole open set is returned. Ordering is least-recently-active first, but under
-// completion that governs only arrival order, not which issues are kept.
+// ListOpenIssues paginates the full open-issue set, stopping when the connection is
+// exhausted, the fetchLimit safety backstop is reached, or a defensive guard trips (a
+// cursor that fails to advance), and reports the repository's exact open count via
+// TotalOpen. fetchLimit is a backstop against a pathological backlog, not a routine
+// cap — reaching it leaves len(Issues) < TotalOpen so a downstream reduction's
+// fetchTruncated marks the floor; on a normal repo the whole open set is returned, and
+// only the (rare) defensive stop truncates below the backstop. Ordering is
+// least-recently-active first, but under completion that governs only arrival order,
+// not which issues are kept.
 func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error) {
 	owner, name, err := splitOwnerRepo(ownerRepo)
 	if err != nil {

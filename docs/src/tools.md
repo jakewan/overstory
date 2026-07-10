@@ -31,7 +31,7 @@ These hold across every block of both composites:
 
 - **Hoisted identity.** Each composite carries `repo` and `generatedAt` at the top level.
 - **Truncation is explicit, never silent.** A caller must be able to tell incomplete data from complete data. Blocks carry:
-  - `fetchTruncated` — the scan window didn't cover every open issue (counts are a lower bound). The open-issue fetch paginates the full open set, so this is set only when a repository exceeds the [`staleness.fetchLimit`](./manifest.md#staleness) safety backstop — not a routine cap.
+  - `fetchTruncated` — the scan window didn't cover every open issue (counts are a lower bound). The open-issue fetch paginates the full open set, so this is normally set only when a repository exceeds the [`staleness.fetchLimit`](./manifest.md#staleness) safety backstop — not a routine cap.
   - `listTruncated` — more matches exist than were listed under `limit`.
   - `membershipTruncated` (milestones) — a milestone's listed members are a floor relative to its open count.
   - `refsTruncated` (cross-reference) — not all references were retrieved.
