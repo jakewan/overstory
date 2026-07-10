@@ -210,6 +210,45 @@ func TestReduceIncompleteSourceSet(t *testing.T) {
 	}
 }
 
+// TestReduceLabelTruncatedCount: an on-path member whose own labels were capped is
+// counted in LabelTruncatedCount, the second provisional axis. The pinned case is the
+// silent false-clear it guards: a member's area label is absent (truncated out), so it
+// lands unareaed and its real stream reads empty/cleared — but LabelTruncatedCount > 0
+// marks that cleared gate provisional. A non-truncated member contributes zero.
+func TestReduceLabelTruncatedCount(t *testing.T) {
+	capped := issue(1, "critical-path") // area label truncated out ⇒ unareaed
+	capped.LabelsTruncated = true
+	whole := issue(2, "critical-path", "area/narrative")
+
+	facts := Reduce([]github.Issue{capped, whole}, true, params("simulation", "narrative"), 20)
+
+	if facts.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1 (only the capped on-path member)", facts.LabelTruncatedCount)
+	}
+	if facts.UnareaedCount != 1 {
+		t.Errorf("UnareaedCount = %d, want 1 (the capped member lost its area label)", facts.UnareaedCount)
+	}
+	// simulation has no member and reads cleared — but the block-level count is the
+	// signal that this clearance is provisional (the capped member could belong here).
+	sim, _ := streamByName(facts, "simulation")
+	if !sim.GateCleared {
+		t.Errorf("simulation GateCleared = false, want true (no assigned member)")
+	}
+}
+
+// TestReduceLabelTruncatedCountZeroWhenWhole: no on-path member with a capped label
+// leaves the count at zero, so a fully-labeled fetch reads no false-clear risk.
+func TestReduceLabelTruncatedCountZeroWhenWhole(t *testing.T) {
+	issues := []github.Issue{
+		issue(1, "critical-path", "area/simulation"),
+		issue(2, "critical-path", "area/narrative"),
+	}
+	facts := Reduce(issues, true, params("simulation", "narrative"), 20)
+	if facts.LabelTruncatedCount != 0 {
+		t.Errorf("LabelTruncatedCount = %d, want 0 (no capped labels)", facts.LabelTruncatedCount)
+	}
+}
+
 // TestReduceLabelMatchingIsCaseInsensitive: the critical-path label and stream
 // names match an issue's labels case-insensitively (GitHub labels match that way).
 func TestReduceLabelMatchingIsCaseInsensitive(t *testing.T) {
