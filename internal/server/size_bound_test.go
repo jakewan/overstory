@@ -155,6 +155,172 @@ func TestProjectSummaryBoundsResponseSize(t *testing.T) {
 	}
 }
 
+// bulkyMilestoneTracks builds milestones whose descriptions parse into tracksPer
+// bold-run-in tracks each carrying membersPer inline issue refs — enough member
+// tuples to breach a small budget. The refs are kept ref-dense (bare `#N`, minimal
+// prose) so the irreducible description floor stays below budget and member trimming
+// can actually bring the response under it; a prose-dense description would leave the
+// floor over budget (the honest partial-bound residual, pinned separately below).
+func bulkyMilestoneTracks(milestones, tracksPer, membersPer int) []github.Milestone {
+	ms := make([]github.Milestone, 0, milestones)
+	ref := 0
+	for m := 1; m <= milestones; m++ {
+		var b strings.Builder
+		fmt.Fprintf(&b, "## Milestone %d tracks\n\n", m)
+		for tk := 1; tk <= tracksPer; tk++ {
+			fmt.Fprintf(&b, "**Track %d**:\n", tk)
+			for range membersPer {
+				ref++
+				fmt.Fprintf(&b, "#%d ", ref)
+			}
+			b.WriteString("\n\n")
+		}
+		ms = append(ms, github.Milestone{
+			Number:      m,
+			Title:       fmt.Sprintf("milestone %d", m),
+			URL:         "u",
+			OpenIssues:  tracksPer * membersPer,
+			Description: b.String(),
+		})
+	}
+	return ms
+}
+
+// TestMilestoneTracksBoundKeepsHeadlinesTrimsMembers is the BDD driver for #84: on a
+// milestone set large enough to breach the budget, the response comes back bounded —
+// every milestone and track headline preserved, the per-track member lists trimmed to
+// fit, and the marker attributing the trim. The leaf (members) carries the bytes; the
+// summary above it is never dropped.
+func TestMilestoneTracksBoundKeepsHeadlinesTrimsMembers(t *testing.T) {
+	// The budget sits above the irreducible floor (descriptions + headlines + the
+	// marker's own per-track entries) so the member trim can reach it — the ref-dense
+	// fixture keeps that floor small. A prose-dense fixture would push the floor over
+	// budget, which is the honest partial-bound residual pinned separately below.
+	const maxBytes = 8000
+	const milestones, tracksPer, membersPer = 6, 2, 60
+	root := writeManifestDir(t, fmt.Sprintf("acme/widgets:\n  response:\n    maxBytes: %d\n", maxBytes))
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: bulkyMilestoneTracks(milestones, tracksPer, membersPer),
+		TotalOpen:  milestones,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 100})
+	facts := decodeMilestoneTracks(t, res)
+
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a marker on an over-budget response")
+	}
+	if got := structuredLen(t, res); got > maxBytes {
+		t.Errorf("structured size = %d bytes, want <= %d", got, maxBytes)
+	}
+	// Every milestone and track headline survives — members-only trimming never drops
+	// a headline.
+	if len(facts.Milestones) != milestones {
+		t.Errorf("milestone entries = %d, want all %d to survive", len(facts.Milestones), milestones)
+	}
+	for _, m := range facts.Milestones {
+		if len(m.Tracks) != tracksPer {
+			t.Errorf("milestone #%d tracks = %d, want all %d to survive", m.Number, len(m.Tracks), tracksPer)
+		}
+	}
+	// Members carried the bytes, so at least one track's list was trimmed with its flag.
+	listed, sawTrimmed := 0, false
+	for _, m := range facts.Milestones {
+		for _, tr := range m.Tracks {
+			listed += len(tr.Members)
+			if tr.ListTruncated {
+				sawTrimmed = true
+			}
+		}
+	}
+	if listed >= milestones*tracksPer*membersPer {
+		t.Errorf("listed members = %d, want < %d (members trimmed to fit)", listed, milestones*tracksPer*membersPer)
+	}
+	if !sawTrimmed {
+		t.Errorf("no track's ListTruncated set, want the trimmed lists flagged")
+	}
+	// The marker attributes the trim to a per-track member block.
+	var sawMemberBlock bool
+	for _, tb := range facts.SizeBound.TrimmedBlocks {
+		if strings.HasPrefix(tb.Block, "milestones[#") && strings.HasSuffix(tb.Block, ".members") {
+			sawMemberBlock = true
+			if tb.Dropped <= 0 || tb.Remaining < 0 {
+				t.Errorf("member TrimmedBlock = %+v, want positive dropped", tb)
+			}
+		}
+	}
+	if !sawMemberBlock {
+		t.Errorf("TrimmedBlocks = %+v, want a milestones[#N].tracks[M].members entry", facts.SizeBound.TrimmedBlocks)
+	}
+}
+
+// TestMilestoneTracksNoBoundOnSmallResponse pins the normal-path invariant: a small
+// response carries no marker (key omitted), so existing consumers see byte-identical
+// output.
+func TestMilestoneTracksNoBoundOnSmallResponse(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets: {}\n")
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: []github.Milestone{
+			{Number: 1, Title: "M1", URL: "u", OpenIssues: 2, Description: "**Track A**:\n#1 #2\n"},
+		},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.SizeBound != nil {
+		t.Errorf("SizeBound = %+v, want nil on an under-budget response", facts.SizeBound)
+	}
+}
+
+// TestMilestoneTracksProseDescriptionBoundIsBestEffort pins the honest degraded case
+// of the settled members-only decision (#84): a verbatim milestone description is
+// "unbounded by design" and members-only trimming cannot shed it, so when the
+// description floor alone exceeds the budget the bound is best-effort — the marker is
+// stamped and FinalBytes honestly reports the overflow rather than falsely claiming
+// success. This is a real partial-bound residual the composites do not have.
+func TestMilestoneTracksProseDescriptionBoundIsBestEffort(t *testing.T) {
+	const maxBytes = 4096 // the manifest floor; the prose below exceeds it on its own
+	root := writeManifestDir(t, fmt.Sprintf("acme/widgets:\n  response:\n    maxBytes: %d\n", maxBytes))
+	prose := strings.Repeat("This milestone description is operator-authored planning prose. ", 100)
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: []github.Milestone{{Number: 1, Title: "big", URL: "u", OpenIssues: 1, Description: prose}},
+		TotalOpen:  1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a best-effort marker when the description floor exceeds the budget")
+	}
+	if facts.SizeBound.FinalBytes <= maxBytes {
+		t.Errorf("FinalBytes = %d, want > %d (honest overflow on the irreducible description floor)", facts.SizeBound.FinalBytes, maxBytes)
+	}
+	// The milestone headline still survives — there was nothing trimmable to drop.
+	if len(facts.Milestones) != 1 {
+		t.Errorf("milestones = %d, want 1 (headline preserved)", len(facts.Milestones))
+	}
+}
+
+// TestMilestoneTracksDegradedFetchNoBound locks the seam the byte bound introduced on
+// the degrade path: a failed milestone fetch yields an empty (non-nil) Milestones
+// slice, so the bound registers zero trim units, measures a tiny payload, and leaves
+// no marker — a degraded block never spuriously reports a size bound.
+func TestMilestoneTracksDegradedFetchNoBound(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets: {}\n")
+	fetcher := fakeFetcher{milestonesErr: github.ErrRepoNotFound}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.Available {
+		t.Errorf("Available = true, want false on fetch failure")
+	}
+	if facts.SizeBound != nil {
+		t.Errorf("SizeBound = %+v, want nil on a degraded fetch", facts.SizeBound)
+	}
+}
+
 // TestProjectSummaryBoundKeepsMilestoneEntriesTrimsMembers pins the milestone trim
 // shape: the bound sheds milestone *members* (the bytes) while every milestone's
 // headline progress entry survives — never a whole-milestone drop, which (since
