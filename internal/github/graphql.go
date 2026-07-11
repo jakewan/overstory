@@ -324,10 +324,12 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 // single named connection field out of the repository payload. It is the shared home
 // for the six single-page wrappers' decode: field is the JSON key the connection sits
 // under ("issues", "milestones", "pullRequests"); subject names the shape for the
-// wrap error. An absent key yields a zero T with no error, matching the single-field
-// anonymous-struct decode it replaces (where an absent key simply leaves the field
-// zero). It is a free function, not a method, because Go forbids type parameters on
-// methods; the wrappers stay methods that delegate to it.
+// wrap error. An absent key yields a zero T with no error (as the single-field struct
+// decode it replaces left an absent field zero). The field lookup is case-sensitive —
+// unlike encoding/json's case-insensitive struct-key fallback — but GitHub echoes the
+// queried field name verbatim, so the two agree on every real response. It is a free
+// function, not a method, because Go forbids type parameters on methods; the wrappers
+// stay methods that delegate to it.
 func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, token, query string, vars map[string]any, owner, name, field, subject string) (T, *RateLimit, error) {
 	var conn T
 	repo, budget, err := f.do(ctx, token, query, vars, owner, name)
@@ -387,7 +389,6 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 // shared spine's raw repository payload into the lean critical-path connection. The
 // label rides as a variable (not in queryVars, which the unlabeled shapes share).
 func (f *GraphQLFetcher) queryLabeled(ctx context.Context, token, owner, name, label string, first int, after *string) (criticalPathConnection, *RateLimit, error) {
-	// The label rides as a variable (not in queryVars, which the unlabeled shapes share).
 	vars := map[string]any{"owner": owner, "name": name, "label": label, "first": first}
 	if after != nil {
 		vars["after"] = *after
