@@ -171,7 +171,7 @@ func Reduce(issues []github.Issue, complete bool, params Params, listLimit int) 
 	}
 
 	for _, is := range issues {
-		if !anyMatch(cpMatcher, is.Labels) {
+		if !cpMatcher.MatchesAny(is.Labels) {
 			continue
 		}
 		// Count every critical-path issue reduced over — the matched subset, coherent
@@ -237,14 +237,4 @@ func Reduce(issues []github.Issue, complete bool, params Params, listLimit int) 
 		})
 	}
 	return facts
-}
-
-// anyMatch reports whether any of the labels matches the matcher.
-func anyMatch(m reduce.LabelMatcher, labels []string) bool {
-	for _, l := range labels {
-		if _, ok := m.Match(l); ok {
-			return true
-		}
-	}
-	return false
 }

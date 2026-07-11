@@ -54,31 +54,21 @@ type PRTrajectoryWindow struct {
 // now is normalized to UTC and injected so the reduction is deterministic. A reopened
 // PR carries no ClosedAt (GitHub clears it on reopen), so it counts as open.
 func ReducePRTrajectory(activities []github.PullRequestActivity, windows []int, fetchTruncated bool, now time.Time) PRTrajectoryFacts {
-	now = now.UTC()
-	uniq := dedupeSortedWindows(windows)
-
+	counts := countTrajectoryWindows(activities, windows, now,
+		func(a github.PullRequestActivity) time.Time { return a.CreatedAt },
+		func(a github.PullRequestActivity) time.Time { return a.ClosedAt })
 	facts := PRTrajectoryFacts{
 		Available:      true,
 		FetchedCount:   len(activities),
 		FetchTruncated: fetchTruncated,
-		Windows:        make([]PRTrajectoryWindow, 0, len(uniq)),
+		Windows:        make([]PRTrajectoryWindow, 0, len(counts)),
 	}
-	for _, days := range uniq {
-		start := now.AddDate(0, 0, -days)
-		var opened, closed int
-		for _, a := range activities {
-			if !a.CreatedAt.Before(start) {
-				opened++
-			}
-			if !a.ClosedAt.IsZero() && !a.ClosedAt.Before(start) {
-				closed++
-			}
-		}
+	for _, c := range counts {
 		facts.Windows = append(facts.Windows, PRTrajectoryWindow{
-			Days:   days,
-			Opened: opened,
-			Closed: closed,
-			Net:    opened - closed,
+			Days:   c.Days,
+			Opened: c.Primary,
+			Closed: c.Closed,
+			Net:    c.Primary - c.Closed,
 		})
 	}
 	return facts

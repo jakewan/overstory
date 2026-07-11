@@ -56,7 +56,7 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 	areas := make(map[string]*bucket)
 
 	for _, is := range issues {
-		deferred := anyMatch(deferredMatcher, is.Labels)
+		deferred := deferredMatcher.MatchesAny(is.Labels)
 
 		// Distinct area keys on this issue, so a multi-label issue counts once per
 		// area rather than once per matching label.
@@ -110,14 +110,4 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 		return facts.Areas[i].Area < facts.Areas[j].Area
 	})
 	return facts
-}
-
-// anyMatch reports whether any of the labels matches the matcher.
-func anyMatch(m reduce.LabelMatcher, labels []string) bool {
-	for _, l := range labels {
-		if _, ok := m.Match(l); ok {
-			return true
-		}
-	}
-	return false
 }

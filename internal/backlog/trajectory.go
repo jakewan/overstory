@@ -58,34 +58,63 @@ type TrajectoryWindow struct {
 // reopened issue carries no ClosedAt (GitHub clears it on reopen), so it counts as
 // open — the "net backlog change as of now" reading.
 func ReduceTrajectory(activities []github.IssueActivity, windows []int, fetchTruncated bool, now time.Time) TrajectoryFacts {
-	now = now.UTC()
-	uniq := dedupeSortedWindows(windows)
-
+	counts := countTrajectoryWindows(activities, windows, now,
+		func(a github.IssueActivity) time.Time { return a.CreatedAt },
+		func(a github.IssueActivity) time.Time { return a.ClosedAt })
 	facts := TrajectoryFacts{
 		Available:      true,
 		FetchedCount:   len(activities),
 		FetchTruncated: fetchTruncated,
-		Windows:        make([]TrajectoryWindow, 0, len(uniq)),
+		Windows:        make([]TrajectoryWindow, 0, len(counts)),
 	}
-	for _, days := range uniq {
-		start := now.AddDate(0, 0, -days)
-		var created, closed int
-		for _, a := range activities {
-			if !a.CreatedAt.Before(start) {
-				created++
-			}
-			if !a.ClosedAt.IsZero() && !a.ClosedAt.Before(start) {
-				closed++
-			}
-		}
+	for _, c := range counts {
 		facts.Windows = append(facts.Windows, TrajectoryWindow{
-			Days:    days,
-			Created: created,
-			Closed:  closed,
-			Net:     created - closed,
+			Days:    c.Days,
+			Created: c.Primary,
+			Closed:  c.Closed,
+			Net:     c.Primary - c.Closed,
 		})
 	}
 	return facts
+}
+
+// windowCount is one lookback window's tally from countTrajectoryWindows: how many
+// activities fell within the window by their created/opened instant (Primary) and
+// by their close instant. It is label-agnostic so the issue and PR trajectories
+// each map Primary onto their own json field ("created" vs "opened").
+type windowCount struct {
+	Days    int
+	Primary int
+	Closed  int
+}
+
+// countTrajectoryWindows tallies, per deduped-ascending window, how many activities
+// fall within the last that-many days as of now by their created/opened instant
+// (Primary) and their close instant. The comparison is at-or-after the window start
+// (window membership), and a zero close instant — an open or reopened item, whose
+// closedAt GitHub clears on reopen — is never counted as closed. now is normalized
+// to UTC so AddDate lands on a clean day boundary. It is the shared counting core of
+// ReduceTrajectory and ReducePRTrajectory; each owns its public window struct and its
+// json label, so this returns neutral tallies. createdAt/closedAt project the two
+// instants from the concrete activity type (the two types share no interface).
+func countTrajectoryWindows[T any](activities []T, windows []int, now time.Time, createdAt, closedAt func(T) time.Time) []windowCount {
+	now = now.UTC()
+	uniq := dedupeSortedWindows(windows)
+	out := make([]windowCount, 0, len(uniq))
+	for _, days := range uniq {
+		start := now.AddDate(0, 0, -days)
+		var primary, closed int
+		for _, a := range activities {
+			if !createdAt(a).Before(start) {
+				primary++
+			}
+			if c := closedAt(a); !c.IsZero() && !c.Before(start) {
+				closed++
+			}
+		}
+		out = append(out, windowCount{Days: days, Primary: primary, Closed: closed})
+	}
+	return out
 }
 
 // dedupeSortedWindows returns the windows deduplicated and sorted ascending, so

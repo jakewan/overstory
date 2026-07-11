@@ -1,9 +1,9 @@
 // Package reduce holds the primitives shared across overstory's reduction
 // packages (backlog grooming and project-summary orientation): label
-// classification, day arithmetic, and the rate-limit fact shape. They live here
-// rather than in any one reduction package so a second consumer reuses them
-// without depending on the first — the dependency arrow points from each
-// reduction into reduce, never between reductions.
+// classification, day arithmetic, the rate-limit fact shape, and its per-batch
+// budget aggregation. They live here rather than in any one reduction package so
+// a second consumer reuses them without depending on the first — the dependency
+// arrow points from each reduction into reduce, never between reductions.
 package reduce
 
 import (
@@ -75,6 +75,18 @@ func (m LabelMatcher) Match(label string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// MatchesAny reports whether any of the labels matches the matcher. It lives here
+// as one shared predicate so the byte-identical copies that had grown across the
+// reduction packages cannot drift apart.
+func (m LabelMatcher) MatchesAny(labels []string) bool {
+	for _, l := range labels {
+		if _, ok := m.Match(l); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeLabel folds a label name for case-insensitive matching. GitHub label
