@@ -304,62 +304,54 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		return IssueListResult{}, err
 	}
 
-	var (
-		issues    []Issue
-		totalOpen int
-		cursor    *string
-		// budget tracks the most recent page's rateLimit (nil included), so the
-		// freshest observation wins and a final page that omits it clears a stale
-		// earlier value rather than reporting an optimistic one.
-		budget *RateLimit
+	issues, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (issuesConnection, *RateLimit, error) {
+			return f.query(ctx, token, owner, name, first, after)
+		},
+		func(c issuesConnection) ([]issueNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n issueNode) Issue { return n.toIssue(owner + "/" + name) },
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(issues); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.query(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return IssueListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue(owner+"/"+name))
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(issues) >= fetchLimit {
-			break // safety backstop reached; TotalOpen stays exact so truncation is visible
-		}
+	if err != nil {
+		return IssueListResult{}, err
 	}
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
+}
+
+// decodeConnection executes one repository-rooted GraphQL request and decodes the
+// single named connection field out of the repository payload. It is the shared home
+// for the six single-page wrappers' decode: field is the JSON key the connection sits
+// under ("issues", "milestones", "pullRequests"); subject names the shape for the
+// wrap error. An absent key yields a zero T with no error (as the single-field struct
+// decode it replaces left an absent field zero). The field lookup is case-sensitive —
+// unlike encoding/json's case-insensitive struct-key fallback — but GitHub echoes the
+// queried field name verbatim, so the two agree on every real response. It is a free
+// function, not a method, because Go forbids type parameters on methods; the wrappers
+// stay methods that delegate to it.
+func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, token, query string, vars map[string]any, owner, name, field, subject string) (T, *RateLimit, error) {
+	var conn T
+	repo, budget, err := f.do(ctx, token, query, vars, owner, name)
+	if err != nil {
+		return conn, nil, err
+	}
+	var fields map[string]json.RawMessage
+	if derr := json.Unmarshal(repo, &fields); derr != nil {
+		return conn, nil, fmt.Errorf("decoding GitHub %s for %s/%s: %w", subject, owner, name, derr)
+	}
+	if raw, ok := fields[field]; ok {
+		if derr := json.Unmarshal(raw, &conn); derr != nil {
+			return conn, nil, fmt.Errorf("decoding GitHub %s for %s/%s: %w", subject, owner, name, derr)
+		}
+	}
+	return conn, budget, nil
 }
 
 // query fetches one page of the open-issue grooming window, decoding the shared
 // spine's raw repository payload into the open-issue connection.
 func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (issuesConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, issuesQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return issuesConnection{}, nil, err
-	}
-	var data struct {
-		Issues issuesConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub issues for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[issuesConnection](ctx, f, token, issuesQuery, queryVars(owner, name, first, after), owner, name, "issues", "issues")
 }
 
 // ListOpenIssuesWithLabel fetches up to fetchLimit open issues carrying the given
@@ -377,41 +369,18 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 		return IssueListResult{}, err
 	}
 
-	var (
-		issues    []Issue
-		totalOpen int
-		cursor    *string
-		budget    *RateLimit
+	issues, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (criticalPathConnection, *RateLimit, error) {
+			return f.queryLabeled(ctx, token, owner, name, label, first, after)
+		},
+		func(c criticalPathConnection) ([]criticalPathNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n criticalPathNode) Issue { return n.toIssue(label) },
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(issues); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryLabeled(ctx, token, owner, name, label, first, cursor)
-		if qerr != nil {
-			return IssueListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue(label))
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(issues) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return IssueListResult{}, err
 	}
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -424,51 +393,21 @@ func (f *GraphQLFetcher) queryLabeled(ctx context.Context, token, owner, name, l
 	if after != nil {
 		vars["after"] = *after
 	}
-	repo, budget, err := f.do(ctx, token, criticalPathIssuesQuery, vars, owner, name)
-	if err != nil {
-		return criticalPathConnection{}, nil, err
-	}
-	var data struct {
-		Issues criticalPathConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return criticalPathConnection{}, nil, fmt.Errorf("decoding GitHub critical-path issues for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[criticalPathConnection](ctx, f, token, criticalPathIssuesQuery, vars, owner, name, "issues", "critical-path issues")
 }
 
 // queryActivity fetches one page of the open-and-closed activity window for the
 // trajectory reduction, decoding the shared spine's payload into the lean
 // activity connection.
 func (f *GraphQLFetcher) queryActivity(ctx context.Context, token, owner, name string, first int, after *string) (activityConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, activityQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return activityConnection{}, nil, err
-	}
-	var data struct {
-		Issues activityConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return activityConnection{}, nil, fmt.Errorf("decoding GitHub activity for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[activityConnection](ctx, f, token, activityQuery, queryVars(owner, name, first, after), owner, name, "issues", "activity")
 }
 
 // queryPRActivity fetches one page of the open-and-closed/merged pull-request
 // activity window for the PR-trajectory reduction, decoding the shared spine's
 // payload into the lean PR-activity connection.
 func (f *GraphQLFetcher) queryPRActivity(ctx context.Context, token, owner, name string, first int, after *string) (prActivityConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, prActivityQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return prActivityConnection{}, nil, err
-	}
-	var data struct {
-		PullRequests prActivityConnection `json:"pullRequests"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return prActivityConnection{}, nil, fmt.Errorf("decoding GitHub pull-request activity for %s/%s: %w", owner, name, derr)
-	}
-	return data.PullRequests, budget, nil
+	return decodeConnection[prActivityConnection](ctx, f, token, prActivityQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull-request activity")
 }
 
 // queryVars builds the GraphQL variables shared by both fetch shapes; after is
@@ -565,6 +504,144 @@ func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[s
 	return *d.Repository, budget, nil
 }
 
+// cursorState is the page-cursor state the paginate helpers read, built from an
+// already-decoded connection's PageInfo — not unmarshaled from the wire, so it is not
+// a decode type and needs no query-contract registration.
+type cursorState struct {
+	HasNextPage bool
+	EndCursor   string
+}
+
+// paginateFloor drives the floor-stop cursor loop shared by the activity paginators
+// and is the single home for their truncation contract. It pages newest-update-first
+// until a node sorts before the window floor (beforeFloor) — proving coverage, since
+// DESC order puts everything in-window ahead of it — or the connection drains.
+// Truncated is left true on every unproven exit (the fetch cap, the page guard, an
+// empty or stalled cursor), so lower-bound counts are never reported as complete.
+// Termination is guaranteed by maxPages, not the cursor guards; those guards bound
+// duplicate accumulation. It is a free function, not a method, because Go forbids
+// type parameters on methods; the paginators are methods that delegate to it.
+func paginateFloor[C any, N any, E any](
+	ctx context.Context,
+	fetchLimit int,
+	fetchPage func(ctx context.Context, first int, after *string) (C, *RateLimit, error),
+	nodesOf func(C) ([]N, cursorState),
+	beforeFloor func(N) bool,
+	project func(N) E,
+) ([]E, bool, *RateLimit, error) {
+	var (
+		elements     []E
+		cursor       *string
+		budget       *RateLimit
+		crossedFloor bool // saw a node before the floor: everything in-window precedes it
+		exhausted    bool // drained the connection: nothing more to fetch
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(elements); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := fetchPage(ctx, first, cursor)
+		if qerr != nil {
+			return nil, false, nil, qerr
+		}
+		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
+		nodes, page := nodesOf(conn)
+		for _, nd := range nodes {
+			if beforeFloor(nd) {
+				crossedFloor = true
+				break
+			}
+			elements = append(elements, project(nd))
+		}
+		if crossedFloor {
+			break
+		}
+		if !page.HasNextPage {
+			exhausted = true // connection drained: coverage is complete
+			break
+		}
+		if page.EndCursor == "" {
+			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
+		}
+		if cursor != nil && *cursor == page.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
+		}
+		next := page.EndCursor
+		cursor = &next
+		if len(elements) >= fetchLimit {
+			break
+		}
+	}
+	// Truncated unless coverage was proven: either the floor was crossed or the
+	// connection was drained. Every other exit leaves the window unproven.
+	return elements, !crossedFloor && !exhausted, budget, nil
+}
+
+// paginateOpenSet drives the budget-clamped cursor loop shared by the open-set
+// paginators (issues, labeled issues, milestones, pull requests) and is the single
+// home for their pagination contract. It pages until the connection is exhausted, the
+// fetchLimit backstop is hit, or a cursor fails to advance, returning the collected
+// elements, the connection's exact TotalCount captured every page (last-page-wins, so
+// a shrinking backlog never reports a stale total) as the caller's TotalOpen
+// truncation seam, and the freshest budget. There is no floor and no Truncated flag —
+// the caller derives truncation from len(elements) < totalOpen. Termination is
+// guaranteed by maxPages; the cursor guard bounds duplicate accumulation. A free
+// function, since Go forbids type parameters on methods.
+func paginateOpenSet[C any, N any, E any](
+	ctx context.Context,
+	fetchLimit int,
+	fetchPage func(ctx context.Context, first int, after *string) (C, *RateLimit, error),
+	pageOf func(C) (nodes []N, total int, info cursorState),
+	project func(N) E,
+) ([]E, int, *RateLimit, error) {
+	var (
+		elements  []E
+		totalOpen int
+		cursor    *string
+		// budget tracks the most recent page's rateLimit (nil included), so the
+		// freshest observation wins and a final page that omits it clears a stale
+		// earlier value rather than reporting an optimistic one.
+		budget *RateLimit
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(elements); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := fetchPage(ctx, first, cursor)
+		if qerr != nil {
+			return nil, 0, nil, qerr
+		}
+		budget = pageBudget
+		nodes, total, page := pageOf(conn)
+		totalOpen = total
+		for _, n := range nodes {
+			elements = append(elements, project(n))
+		}
+		if !page.HasNextPage || page.EndCursor == "" {
+			break
+		}
+		if cursor != nil && *cursor == page.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever
+		}
+		next := page.EndCursor
+		cursor = &next
+		if len(elements) >= fetchLimit {
+			break // safety backstop reached; TotalOpen stays exact so truncation is visible
+		}
+	}
+	return elements, totalOpen, budget, nil
+}
+
 // ListIssuesUpdatedSince fetches issues (open and closed) updated at or after
 // `since`, newest-update-first, up to fetchLimit, for the trajectory reduction.
 // It pages until it observes an issue updated before `since` — the window floor,
@@ -583,61 +660,21 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 	if err != nil {
 		return IssueActivityResult{}, err
 	}
-
-	var (
-		activities   []IssueActivity
-		cursor       *string
-		budget       *RateLimit
-		crossedFloor bool // saw an issue updated before the floor: everything in-window precedes it
-		exhausted    bool // drained the connection: nothing more to fetch
+	activities, truncated, budget, err := paginateFloor(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (activityConnection, *RateLimit, error) {
+			return f.queryActivity(ctx, token, owner, name, first, after)
+		},
+		func(c activityConnection) ([]issueActivityNode, cursorState) {
+			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n issueActivityNode) bool { return n.UpdatedAt.Before(since) },
+		issueActivityNode.toActivity,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(activities); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryActivity(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return IssueActivityResult{}, qerr
-		}
-		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
-		for _, nd := range conn.Nodes {
-			if nd.UpdatedAt.Before(since) {
-				crossedFloor = true
-				break
-			}
-			activities = append(activities, nd.toActivity())
-		}
-		if crossedFloor {
-			break
-		}
-		if !conn.PageInfo.HasNextPage {
-			exhausted = true // connection drained: coverage is complete
-			break
-		}
-		if conn.PageInfo.EndCursor == "" {
-			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(activities) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return IssueActivityResult{}, err
 	}
-	return IssueActivityResult{
-		Activities: activities,
-		// Truncated unless coverage was proven: either the floor was crossed or the
-		// connection was drained. Every other exit leaves the window unproven.
-		Truncated: !crossedFloor && !exhausted,
-		RateLimit: budget,
-	}, nil
+	return IssueActivityResult{Activities: activities, Truncated: truncated, RateLimit: budget}, nil
 }
 
 // ListPullRequestsUpdatedSince fetches the pull requests updated at or after
@@ -657,59 +694,21 @@ func (f *GraphQLFetcher) ListPullRequestsUpdatedSince(ctx context.Context, owner
 	if err != nil {
 		return PullRequestActivityResult{}, err
 	}
-
-	var (
-		activities   []PullRequestActivity
-		cursor       *string
-		budget       *RateLimit
-		crossedFloor bool // saw a PR updated before the floor: everything in-window precedes it
-		exhausted    bool // drained the connection: nothing more to fetch
+	activities, truncated, budget, err := paginateFloor(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (prActivityConnection, *RateLimit, error) {
+			return f.queryPRActivity(ctx, token, owner, name, first, after)
+		},
+		func(c prActivityConnection) ([]prActivityNode, cursorState) {
+			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n prActivityNode) bool { return n.UpdatedAt.Before(since) },
+		prActivityNode.toActivity,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(activities); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryPRActivity(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return PullRequestActivityResult{}, qerr
-		}
-		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
-		for _, nd := range conn.Nodes {
-			if nd.UpdatedAt.Before(since) {
-				crossedFloor = true
-				break
-			}
-			activities = append(activities, nd.toActivity())
-		}
-		if crossedFloor {
-			break
-		}
-		if !conn.PageInfo.HasNextPage {
-			exhausted = true // connection drained: coverage is complete
-			break
-		}
-		if conn.PageInfo.EndCursor == "" {
-			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(activities) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return PullRequestActivityResult{}, err
 	}
-	return PullRequestActivityResult{
-		Activities: activities,
-		Truncated:  !crossedFloor && !exhausted,
-		RateLimit:  budget,
-	}, nil
+	return PullRequestActivityResult{Activities: activities, Truncated: truncated, RateLimit: budget}, nil
 }
 
 // ListOpenMilestones fetches up to fetchLimit open milestones, paginating until
@@ -727,41 +726,18 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 		return MilestoneListResult{}, err
 	}
 
-	var (
-		milestones []Milestone
-		totalOpen  int
-		cursor     *string
-		budget     *RateLimit
+	milestones, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (milestonesConnection, *RateLimit, error) {
+			return f.queryMilestones(ctx, token, owner, name, first, after)
+		},
+		func(c milestonesConnection) ([]milestoneNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		milestoneNode.toMilestone,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(milestones); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryMilestones(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return MilestoneListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			milestones = append(milestones, n.toMilestone())
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(milestones) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return MilestoneListResult{}, err
 	}
 	return MilestoneListResult{Milestones: milestones, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -769,17 +745,7 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 // queryMilestones fetches one page of open milestones, decoding the shared
 // spine's raw repository payload into the milestone connection.
 func (f *GraphQLFetcher) queryMilestones(ctx context.Context, token, owner, name string, first int, after *string) (milestonesConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, milestonesQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return milestonesConnection{}, nil, err
-	}
-	var data struct {
-		Milestones milestonesConnection `json:"milestones"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return milestonesConnection{}, nil, fmt.Errorf("decoding GitHub milestones for %s/%s: %w", owner, name, derr)
-	}
-	return data.Milestones, budget, nil
+	return decodeConnection[milestonesConnection](ctx, f, token, milestonesQuery, queryVars(owner, name, first, after), owner, name, "milestones", "milestones")
 }
 
 // ListOpenPullRequests fetches up to fetchLimit open pull requests, paginating
@@ -795,41 +761,18 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 		return PullRequestListResult{}, err
 	}
 
-	var (
-		prs       []PullRequest
-		totalOpen int
-		cursor    *string
-		budget    *RateLimit
+	prs, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
+			return f.queryPullRequests(ctx, token, owner, name, first, after)
+		},
+		func(c pullRequestsConnection) ([]pullRequestNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		pullRequestNode.toPullRequest,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(prs); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryPullRequests(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return PullRequestListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			prs = append(prs, n.toPullRequest())
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(prs) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return PullRequestListResult{}, err
 	}
 	return PullRequestListResult{PullRequests: prs, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -837,17 +780,7 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 // queryPullRequests fetches one page of open pull requests, decoding the shared
 // spine's raw repository payload into the pull-request connection.
 func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, name string, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return pullRequestsConnection{}, nil, err
-	}
-	var data struct {
-		PullRequests pullRequestsConnection `json:"pullRequests"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return pullRequestsConnection{}, nil, fmt.Errorf("decoding GitHub pull requests for %s/%s: %w", owner, name, derr)
-	}
-	return data.PullRequests, budget, nil
+	return decodeConnection[pullRequestsConnection](ctx, f, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull requests")
 }
 
 // AuthoredActivity counts what `author` authored and engaged with in ownerRepo
