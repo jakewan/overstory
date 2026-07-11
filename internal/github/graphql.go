@@ -346,20 +346,36 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
 
+// decodeConnection executes one repository-rooted GraphQL request and decodes the
+// single named connection field out of the repository payload. It is the shared home
+// for the six single-page wrappers' decode: field is the JSON key the connection sits
+// under ("issues", "milestones", "pullRequests"); subject names the shape for the
+// wrap error. An absent key yields a zero T with no error, matching the single-field
+// anonymous-struct decode it replaces (where an absent key simply leaves the field
+// zero). It is a free function, not a method, because Go forbids type parameters on
+// methods; the wrappers stay methods that delegate to it.
+func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, token, query string, vars map[string]any, owner, name, field, subject string) (T, *RateLimit, error) {
+	var conn T
+	repo, budget, err := f.do(ctx, token, query, vars, owner, name)
+	if err != nil {
+		return conn, nil, err
+	}
+	var fields map[string]json.RawMessage
+	if derr := json.Unmarshal(repo, &fields); derr != nil {
+		return conn, nil, fmt.Errorf("decoding GitHub %s for %s/%s: %w", subject, owner, name, derr)
+	}
+	if raw, ok := fields[field]; ok {
+		if derr := json.Unmarshal(raw, &conn); derr != nil {
+			return conn, nil, fmt.Errorf("decoding GitHub %s for %s/%s: %w", subject, owner, name, derr)
+		}
+	}
+	return conn, budget, nil
+}
+
 // query fetches one page of the open-issue grooming window, decoding the shared
 // spine's raw repository payload into the open-issue connection.
 func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (issuesConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, issuesQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return issuesConnection{}, nil, err
-	}
-	var data struct {
-		Issues issuesConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return issuesConnection{}, nil, fmt.Errorf("decoding GitHub issues for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[issuesConnection](ctx, f, token, issuesQuery, queryVars(owner, name, first, after), owner, name, "issues", "issues")
 }
 
 // ListOpenIssuesWithLabel fetches up to fetchLimit open issues carrying the given
@@ -420,55 +436,26 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 // shared spine's raw repository payload into the lean critical-path connection. The
 // label rides as a variable (not in queryVars, which the unlabeled shapes share).
 func (f *GraphQLFetcher) queryLabeled(ctx context.Context, token, owner, name, label string, first int, after *string) (criticalPathConnection, *RateLimit, error) {
+	// The label rides as a variable (not in queryVars, which the unlabeled shapes share).
 	vars := map[string]any{"owner": owner, "name": name, "label": label, "first": first}
 	if after != nil {
 		vars["after"] = *after
 	}
-	repo, budget, err := f.do(ctx, token, criticalPathIssuesQuery, vars, owner, name)
-	if err != nil {
-		return criticalPathConnection{}, nil, err
-	}
-	var data struct {
-		Issues criticalPathConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return criticalPathConnection{}, nil, fmt.Errorf("decoding GitHub critical-path issues for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[criticalPathConnection](ctx, f, token, criticalPathIssuesQuery, vars, owner, name, "issues", "critical-path issues")
 }
 
 // queryActivity fetches one page of the open-and-closed activity window for the
 // trajectory reduction, decoding the shared spine's payload into the lean
 // activity connection.
 func (f *GraphQLFetcher) queryActivity(ctx context.Context, token, owner, name string, first int, after *string) (activityConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, activityQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return activityConnection{}, nil, err
-	}
-	var data struct {
-		Issues activityConnection `json:"issues"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return activityConnection{}, nil, fmt.Errorf("decoding GitHub activity for %s/%s: %w", owner, name, derr)
-	}
-	return data.Issues, budget, nil
+	return decodeConnection[activityConnection](ctx, f, token, activityQuery, queryVars(owner, name, first, after), owner, name, "issues", "activity")
 }
 
 // queryPRActivity fetches one page of the open-and-closed/merged pull-request
 // activity window for the PR-trajectory reduction, decoding the shared spine's
 // payload into the lean PR-activity connection.
 func (f *GraphQLFetcher) queryPRActivity(ctx context.Context, token, owner, name string, first int, after *string) (prActivityConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, prActivityQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return prActivityConnection{}, nil, err
-	}
-	var data struct {
-		PullRequests prActivityConnection `json:"pullRequests"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return prActivityConnection{}, nil, fmt.Errorf("decoding GitHub pull-request activity for %s/%s: %w", owner, name, derr)
-	}
-	return data.PullRequests, budget, nil
+	return decodeConnection[prActivityConnection](ctx, f, token, prActivityQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull-request activity")
 }
 
 // queryVars builds the GraphQL variables shared by both fetch shapes; after is
@@ -769,17 +756,7 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 // queryMilestones fetches one page of open milestones, decoding the shared
 // spine's raw repository payload into the milestone connection.
 func (f *GraphQLFetcher) queryMilestones(ctx context.Context, token, owner, name string, first int, after *string) (milestonesConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, milestonesQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return milestonesConnection{}, nil, err
-	}
-	var data struct {
-		Milestones milestonesConnection `json:"milestones"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return milestonesConnection{}, nil, fmt.Errorf("decoding GitHub milestones for %s/%s: %w", owner, name, derr)
-	}
-	return data.Milestones, budget, nil
+	return decodeConnection[milestonesConnection](ctx, f, token, milestonesQuery, queryVars(owner, name, first, after), owner, name, "milestones", "milestones")
 }
 
 // ListOpenPullRequests fetches up to fetchLimit open pull requests, paginating
@@ -837,17 +814,7 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 // queryPullRequests fetches one page of open pull requests, decoding the shared
 // spine's raw repository payload into the pull-request connection.
 func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, name string, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
-	repo, budget, err := f.do(ctx, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name)
-	if err != nil {
-		return pullRequestsConnection{}, nil, err
-	}
-	var data struct {
-		PullRequests pullRequestsConnection `json:"pullRequests"`
-	}
-	if derr := json.Unmarshal(repo, &data); derr != nil {
-		return pullRequestsConnection{}, nil, fmt.Errorf("decoding GitHub pull requests for %s/%s: %w", owner, name, derr)
-	}
-	return data.PullRequests, budget, nil
+	return decodeConnection[pullRequestsConnection](ctx, f, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull requests")
 }
 
 // AuthoredActivity counts what `author` authored and engaged with in ownerRepo
