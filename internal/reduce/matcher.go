@@ -77,10 +77,9 @@ func (m LabelMatcher) Match(label string) (string, bool) {
 	return "", false
 }
 
-// MatchesAny reports whether any of the labels matches the matcher. It is the
-// shared any-match predicate the deferred, area, quality, hygiene, bug, and
-// critical-path reductions all need, projected once here so the copies that had
-// grown across those packages cannot drift apart.
+// MatchesAny reports whether any of the labels matches the matcher. It lives here
+// as one shared predicate so the byte-identical copies that had grown across the
+// reduction packages cannot drift apart.
 func (m LabelMatcher) MatchesAny(labels []string) bool {
 	for _, l := range labels {
 		if _, ok := m.Match(l); ok {
