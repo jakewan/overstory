@@ -832,6 +832,50 @@ func TestListOpenIssuesBackstopTruncates(t *testing.T) {
 	}
 }
 
+// TestListOpenIssuesStopsOnStalledCursor pins the open-set stalled-cursor guard.
+// Termination is never at risk here — the loop is bounded by maxPages — so the guard's
+// real job is to stop re-fetching a non-advancing cursor before it accumulates
+// duplicated pages up to that ceiling. The guard breaks *after* the page is appended,
+// so the guarded loop admits exactly one duplicated page (two total) and stops;
+// deleting the guard inflates the count to a maxPages-worth. TotalOpen stays exact.
+func TestListOpenIssuesStopsOnStalledCursor(t *testing.T) {
+	body := `{"data":{"repository":{"issues":{"totalCount":10,"pageInfo":{"hasNextPage":true,"endCursor":"stuck"},"nodes":[
+		{"number":1,"createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+	]}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 250)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 2 {
+		t.Errorf("collected %d issues, want 2 (guard stops after one duplicated page, not maxPages)", len(res.Issues))
+	}
+	if res.TotalOpen != 10 {
+		t.Errorf("TotalOpen = %d, want 10 (exact count preserved)", res.TotalOpen)
+	}
+}
+
+// TestListOpenIssuesStopsOnEmptyCursorWithNextPage pins the EndCursor=="" disjunct of
+// the open-set exit in isolation. Every "complete" fixture sets both hasNextPage:false
+// and endCursor:"", so a page claiming more pages (hasNextPage:true) but carrying no
+// cursor to fetch them is otherwise unexercised; it must stop after the first page.
+func TestListOpenIssuesStopsOnEmptyCursorWithNextPage(t *testing.T) {
+	body := `{"data":{"repository":{"issues":{"totalCount":10,"pageInfo":{"hasNextPage":true,"endCursor":""},"nodes":[
+		{"number":1,"createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+	]}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 250)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 1 {
+		t.Errorf("collected %d issues, want 1 (no cursor to advance, stop after first page)", len(res.Issues))
+	}
+	if res.TotalOpen != 10 {
+		t.Errorf("TotalOpen = %d, want 10", res.TotalOpen)
+	}
+}
+
 func TestListOpenIssuesErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1139,6 +1183,33 @@ func TestListIssuesUpdatedSinceTruncatesOnUnusableCursor(t *testing.T) {
 	}
 	if !res.Truncated {
 		t.Error("Truncated = false, want true (hasNextPage with no cursor is unproven coverage)")
+	}
+}
+
+// TestListIssuesUpdatedSinceStopsOnStalledCursor pins the floor paginator's
+// stalled-cursor guard, untested until now — TruncatesOnUnusableCursor above hits the
+// empty-cursor leg (endCursor:""), not the repeated-non-empty-cursor leg. With all
+// nodes in-window (no floor crossed) and a non-advancing cursor, the guard breaks
+// after one duplicated page rather than looping to maxPages; Truncated stays true
+// because neither the floor nor exhaustion proved coverage.
+func TestListIssuesUpdatedSinceStopsOnStalledCursor(t *testing.T) {
+	since := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	body := `{"data":{"repository":{"issues":{
+		"pageInfo":{"hasNextPage":true,"endCursor":"stuck"},
+		"nodes":[
+			{"number":1,"createdAt":"2026-04-15T00:00:00Z","closedAt":null,"updatedAt":"2026-05-01T00:00:00Z"}
+		]
+	}}}}`
+	srv := jsonServer(t, http.StatusOK, body)
+	res, err := fetcherTo(srv.URL, "tok").ListIssuesUpdatedSince(context.Background(), "acme/widgets", since, 100)
+	if err != nil {
+		t.Fatalf("ListIssuesUpdatedSince: %v", err)
+	}
+	if len(res.Activities) != 2 {
+		t.Errorf("collected %d activities, want 2 (guard stops after one duplicated page, not maxPages)", len(res.Activities))
+	}
+	if !res.Truncated {
+		t.Error("Truncated = false, want true (stalled cursor is unproven coverage)")
 	}
 }
 
