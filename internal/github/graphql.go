@@ -552,6 +552,84 @@ func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[s
 	return *d.Repository, budget, nil
 }
 
+// cursorState is the page-cursor state the paginate helpers read, built from an
+// already-decoded connection's PageInfo — not unmarshaled from the wire, so it is not
+// a decode type and needs no query-contract registration.
+type cursorState struct {
+	HasNextPage bool
+	EndCursor   string
+}
+
+// paginateFloor drives the floor-stop cursor loop shared by the activity paginators
+// and is the single home for their truncation contract. It pages newest-update-first
+// until a node sorts before the window floor (beforeFloor) — proving coverage, since
+// DESC order puts everything in-window ahead of it — or the connection drains.
+// Truncated is left true on every unproven exit (the fetch cap, the page guard, an
+// empty or stalled cursor), so lower-bound counts are never reported as complete.
+// Termination is guaranteed by maxPages, not the cursor guards; those guards bound
+// duplicate accumulation. It is a free function, not a method, because Go forbids
+// type parameters on methods; the paginators are methods that delegate to it.
+func paginateFloor[C any, N any, E any](
+	ctx context.Context,
+	fetchLimit int,
+	fetchPage func(ctx context.Context, first int, after *string) (C, *RateLimit, error),
+	nodesOf func(C) ([]N, cursorState),
+	beforeFloor func(N) bool,
+	project func(N) E,
+) ([]E, bool, *RateLimit, error) {
+	var (
+		elements     []E
+		cursor       *string
+		budget       *RateLimit
+		crossedFloor bool // saw a node before the floor: everything in-window precedes it
+		exhausted    bool // drained the connection: nothing more to fetch
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(elements); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := fetchPage(ctx, first, cursor)
+		if qerr != nil {
+			return nil, false, nil, qerr
+		}
+		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
+		nodes, page := nodesOf(conn)
+		for _, nd := range nodes {
+			if beforeFloor(nd) {
+				crossedFloor = true
+				break
+			}
+			elements = append(elements, project(nd))
+		}
+		if crossedFloor {
+			break
+		}
+		if !page.HasNextPage {
+			exhausted = true // connection drained: coverage is complete
+			break
+		}
+		if page.EndCursor == "" {
+			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
+		}
+		if cursor != nil && *cursor == page.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
+		}
+		next := page.EndCursor
+		cursor = &next
+		if len(elements) >= fetchLimit {
+			break
+		}
+	}
+	// Truncated unless coverage was proven: either the floor was crossed or the
+	// connection was drained. Every other exit leaves the window unproven.
+	return elements, !crossedFloor && !exhausted, budget, nil
+}
+
 // ListIssuesUpdatedSince fetches issues (open and closed) updated at or after
 // `since`, newest-update-first, up to fetchLimit, for the trajectory reduction.
 // It pages until it observes an issue updated before `since` — the window floor,
@@ -570,61 +648,21 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 	if err != nil {
 		return IssueActivityResult{}, err
 	}
-
-	var (
-		activities   []IssueActivity
-		cursor       *string
-		budget       *RateLimit
-		crossedFloor bool // saw an issue updated before the floor: everything in-window precedes it
-		exhausted    bool // drained the connection: nothing more to fetch
+	activities, truncated, budget, err := paginateFloor(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (activityConnection, *RateLimit, error) {
+			return f.queryActivity(ctx, token, owner, name, first, after)
+		},
+		func(c activityConnection) ([]issueActivityNode, cursorState) {
+			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n issueActivityNode) bool { return n.UpdatedAt.Before(since) },
+		issueActivityNode.toActivity,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(activities); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryActivity(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return IssueActivityResult{}, qerr
-		}
-		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
-		for _, nd := range conn.Nodes {
-			if nd.UpdatedAt.Before(since) {
-				crossedFloor = true
-				break
-			}
-			activities = append(activities, nd.toActivity())
-		}
-		if crossedFloor {
-			break
-		}
-		if !conn.PageInfo.HasNextPage {
-			exhausted = true // connection drained: coverage is complete
-			break
-		}
-		if conn.PageInfo.EndCursor == "" {
-			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(activities) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return IssueActivityResult{}, err
 	}
-	return IssueActivityResult{
-		Activities: activities,
-		// Truncated unless coverage was proven: either the floor was crossed or the
-		// connection was drained. Every other exit leaves the window unproven.
-		Truncated: !crossedFloor && !exhausted,
-		RateLimit: budget,
-	}, nil
+	return IssueActivityResult{Activities: activities, Truncated: truncated, RateLimit: budget}, nil
 }
 
 // ListPullRequestsUpdatedSince fetches the pull requests updated at or after
@@ -644,59 +682,21 @@ func (f *GraphQLFetcher) ListPullRequestsUpdatedSince(ctx context.Context, owner
 	if err != nil {
 		return PullRequestActivityResult{}, err
 	}
-
-	var (
-		activities   []PullRequestActivity
-		cursor       *string
-		budget       *RateLimit
-		crossedFloor bool // saw a PR updated before the floor: everything in-window precedes it
-		exhausted    bool // drained the connection: nothing more to fetch
+	activities, truncated, budget, err := paginateFloor(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (prActivityConnection, *RateLimit, error) {
+			return f.queryPRActivity(ctx, token, owner, name, first, after)
+		},
+		func(c prActivityConnection) ([]prActivityNode, cursorState) {
+			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n prActivityNode) bool { return n.UpdatedAt.Before(since) },
+		prActivityNode.toActivity,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(activities); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryPRActivity(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return PullRequestActivityResult{}, qerr
-		}
-		budget = pageBudget // last page wins, including nil, so a stale budget is cleared
-		for _, nd := range conn.Nodes {
-			if nd.UpdatedAt.Before(since) {
-				crossedFloor = true
-				break
-			}
-			activities = append(activities, nd.toActivity())
-		}
-		if crossedFloor {
-			break
-		}
-		if !conn.PageInfo.HasNextPage {
-			exhausted = true // connection drained: coverage is complete
-			break
-		}
-		if conn.PageInfo.EndCursor == "" {
-			break // more pages exist but no cursor to fetch them: coverage unproven, leave truncated
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever (coverage unproven)
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(activities) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return PullRequestActivityResult{}, err
 	}
-	return PullRequestActivityResult{
-		Activities: activities,
-		Truncated:  !crossedFloor && !exhausted,
-		RateLimit:  budget,
-	}, nil
+	return PullRequestActivityResult{Activities: activities, Truncated: truncated, RateLimit: budget}, nil
 }
 
 // ListOpenMilestones fetches up to fetchLimit open milestones, paginating until
