@@ -115,7 +115,7 @@ func ReduceQuality(issues []github.Issue, totalOpen int, params QualityParams, l
 
 		missingCats := make([]string, 0, len(cats))
 		for _, cm := range cats {
-			if !matchesAny(cm.matcher, is.Labels) {
+			if !cm.matcher.MatchesAny(is.Labels) {
 				missingCats = append(missingCats, cm.name)
 			}
 		}
@@ -166,16 +166,6 @@ func ReduceQuality(issues []github.Issue, totalOpen int, params QualityParams, l
 	}
 	facts.FlaggedIssues = flagged
 	return facts
-}
-
-// matchesAny reports whether any of the issue's labels matches the category.
-func matchesAny(m reduce.LabelMatcher, labels []string) bool {
-	for _, l := range labels {
-		if _, ok := m.Match(l); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // failedChecks counts the distinct grooming checks an issue failed, ranking how

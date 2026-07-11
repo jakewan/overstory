@@ -140,7 +140,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 	// issue, not only another candidate.
 	prioritized := make(map[int]bool, len(issues))
 	for _, is := range issues {
-		if is.Milestone != nil || anyMatch(bugMatcher, is.Labels) {
+		if is.Milestone != nil || bugMatcher.MatchesAny(is.Labels) {
 			prioritized[is.Number] = true
 		}
 	}
@@ -164,7 +164,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			Number:             is.Number,
 			Title:              is.Title,
 			URL:                is.URL,
-			IsBug:              anyMatch(bugMatcher, is.Labels),
+			IsBug:              bugMatcher.MatchesAny(is.Labels),
 			Milestone:          milestone,
 			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),

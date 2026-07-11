@@ -77,6 +77,19 @@ func (m LabelMatcher) Match(label string) (string, bool) {
 	return "", false
 }
 
+// MatchesAny reports whether any of the labels matches the matcher. It is the
+// shared any-match predicate the deferred, area, quality, hygiene, bug, and
+// critical-path reductions all need, projected once here so the copies that had
+// grown across those packages cannot drift apart.
+func (m LabelMatcher) MatchesAny(labels []string) bool {
+	for _, l := range labels {
+		if _, ok := m.Match(l); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // NormalizeLabel folds a label name for case-insensitive matching. GitHub label
 // names are case-sensitive at creation but matched case-insensitively, so a
 // manifest "deferred" must match an issue's "DEFERRED".

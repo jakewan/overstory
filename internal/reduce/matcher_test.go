@@ -93,3 +93,24 @@ func TestLabelMatcherEmpty(t *testing.T) {
 		t.Error("empty matcher matched, want no match")
 	}
 }
+
+func TestLabelMatcherMatchesAny(t *testing.T) {
+	m := NewLabelMatcher([]string{"bug", "deferred"}, []PrefixRule{{"area", "/"}})
+	for _, tc := range []struct {
+		name   string
+		labels []string
+		want   bool
+	}{
+		{"empty label set", nil, false},
+		{"single explicit match", []string{"bug"}, true},
+		{"match among several", []string{"docs", "area/core", "wontfix"}, true},
+		{"no label matches", []string{"docs", "wontfix"}, false},
+		{"whitespace-only never matches", []string{"  ", "\t"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.MatchesAny(tc.labels); got != tc.want {
+				t.Errorf("MatchesAny(%q) = %v, want %v", tc.labels, got, tc.want)
+			}
+		})
+	}
+}

@@ -92,8 +92,8 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 			AgeDays:      reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays: reduce.DaysSince(now, is.LastActivityAt),
 		}
-		deferred := anyMatch(deferredMatcher, is.Labels)
-		if !anyMatch(areaMatcher, is.Labels) {
+		deferred := deferredMatcher.MatchesAny(is.Labels)
+		if !areaMatcher.MatchesAny(is.Labels) {
 			missingArea = append(missingArea, hi)
 		}
 		if is.Milestone == nil && hi.AgeDays >= params.UnmilestonedAgeDays {
