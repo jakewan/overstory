@@ -304,44 +304,18 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		return IssueListResult{}, err
 	}
 
-	var (
-		issues    []Issue
-		totalOpen int
-		cursor    *string
-		// budget tracks the most recent page's rateLimit (nil included), so the
-		// freshest observation wins and a final page that omits it clears a stale
-		// earlier value rather than reporting an optimistic one.
-		budget *RateLimit
+	issues, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (issuesConnection, *RateLimit, error) {
+			return f.query(ctx, token, owner, name, first, after)
+		},
+		func(c issuesConnection) ([]issueNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n issueNode) Issue { return n.toIssue(owner + "/" + name) },
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(issues); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.query(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return IssueListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue(owner+"/"+name))
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(issues) >= fetchLimit {
-			break // safety backstop reached; TotalOpen stays exact so truncation is visible
-		}
+	if err != nil {
+		return IssueListResult{}, err
 	}
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -393,41 +367,18 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 		return IssueListResult{}, err
 	}
 
-	var (
-		issues    []Issue
-		totalOpen int
-		cursor    *string
-		budget    *RateLimit
+	issues, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (criticalPathConnection, *RateLimit, error) {
+			return f.queryLabeled(ctx, token, owner, name, label, first, after)
+		},
+		func(c criticalPathConnection) ([]criticalPathNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		func(n criticalPathNode) Issue { return n.toIssue(label) },
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(issues); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryLabeled(ctx, token, owner, name, label, first, cursor)
-		if qerr != nil {
-			return IssueListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			issues = append(issues, n.toIssue(label))
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(issues) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return IssueListResult{}, err
 	}
 	return IssueListResult{Issues: issues, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -630,6 +581,66 @@ func paginateFloor[C any, N any, E any](
 	return elements, !crossedFloor && !exhausted, budget, nil
 }
 
+// paginateOpenSet drives the budget-clamped cursor loop shared by the open-set
+// paginators (issues, labeled issues, milestones, pull requests) and is the single
+// home for their pagination contract. It pages until the connection is exhausted, the
+// fetchLimit backstop is hit, or a cursor fails to advance, returning the collected
+// elements, the connection's exact TotalCount captured every page (last-page-wins, so
+// a shrinking backlog never reports a stale total) as the caller's TotalOpen
+// truncation seam, and the freshest budget. There is no floor and no Truncated flag —
+// the caller derives truncation from len(elements) < totalOpen. Termination is
+// guaranteed by maxPages; the cursor guard bounds duplicate accumulation. A free
+// function, since Go forbids type parameters on methods.
+func paginateOpenSet[C any, N any, E any](
+	ctx context.Context,
+	fetchLimit int,
+	fetchPage func(ctx context.Context, first int, after *string) (C, *RateLimit, error),
+	pageOf func(C) (nodes []N, total int, info cursorState),
+	project func(N) E,
+) ([]E, int, *RateLimit, error) {
+	var (
+		elements  []E
+		totalOpen int
+		cursor    *string
+		// budget tracks the most recent page's rateLimit (nil included), so the
+		// freshest observation wins and a final page that omits it clears a stale
+		// earlier value rather than reporting an optimistic one.
+		budget *RateLimit
+	)
+	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
+	for range maxPages {
+		first := pageSize
+		if remaining := fetchLimit - len(elements); remaining < first {
+			first = remaining
+		}
+		if first <= 0 {
+			break
+		}
+		conn, pageBudget, qerr := fetchPage(ctx, first, cursor)
+		if qerr != nil {
+			return nil, 0, nil, qerr
+		}
+		budget = pageBudget
+		nodes, total, page := pageOf(conn)
+		totalOpen = total
+		for _, n := range nodes {
+			elements = append(elements, project(n))
+		}
+		if !page.HasNextPage || page.EndCursor == "" {
+			break
+		}
+		if cursor != nil && *cursor == page.EndCursor {
+			break // cursor failed to advance; stop rather than loop forever
+		}
+		next := page.EndCursor
+		cursor = &next
+		if len(elements) >= fetchLimit {
+			break // safety backstop reached; TotalOpen stays exact so truncation is visible
+		}
+	}
+	return elements, totalOpen, budget, nil
+}
+
 // ListIssuesUpdatedSince fetches issues (open and closed) updated at or after
 // `since`, newest-update-first, up to fetchLimit, for the trajectory reduction.
 // It pages until it observes an issue updated before `since` — the window floor,
@@ -714,41 +725,18 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 		return MilestoneListResult{}, err
 	}
 
-	var (
-		milestones []Milestone
-		totalOpen  int
-		cursor     *string
-		budget     *RateLimit
+	milestones, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (milestonesConnection, *RateLimit, error) {
+			return f.queryMilestones(ctx, token, owner, name, first, after)
+		},
+		func(c milestonesConnection) ([]milestoneNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		milestoneNode.toMilestone,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(milestones); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryMilestones(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return MilestoneListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			milestones = append(milestones, n.toMilestone())
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(milestones) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return MilestoneListResult{}, err
 	}
 	return MilestoneListResult{Milestones: milestones, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
@@ -772,41 +760,18 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 		return PullRequestListResult{}, err
 	}
 
-	var (
-		prs       []PullRequest
-		totalOpen int
-		cursor    *string
-		budget    *RateLimit
+	prs, totalOpen, budget, err := paginateOpenSet(
+		ctx, fetchLimit,
+		func(ctx context.Context, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
+			return f.queryPullRequests(ctx, token, owner, name, first, after)
+		},
+		func(c pullRequestsConnection) ([]pullRequestNode, int, cursorState) {
+			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
+		},
+		pullRequestNode.toPullRequest,
 	)
-	maxPages := fetchLimit/pageSize + 2 // loop guard against a misbehaving connection
-	for range maxPages {
-		first := pageSize
-		if remaining := fetchLimit - len(prs); remaining < first {
-			first = remaining
-		}
-		if first <= 0 {
-			break
-		}
-		conn, pageBudget, qerr := f.queryPullRequests(ctx, token, owner, name, first, cursor)
-		if qerr != nil {
-			return PullRequestListResult{}, qerr
-		}
-		budget = pageBudget
-		totalOpen = conn.TotalCount
-		for _, n := range conn.Nodes {
-			prs = append(prs, n.toPullRequest())
-		}
-		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
-			break
-		}
-		if cursor != nil && *cursor == conn.PageInfo.EndCursor {
-			break // cursor failed to advance; stop rather than loop forever
-		}
-		next := conn.PageInfo.EndCursor
-		cursor = &next
-		if len(prs) >= fetchLimit {
-			break
-		}
+	if err != nil {
+		return PullRequestListResult{}, err
 	}
 	return PullRequestListResult{PullRequests: prs, TotalOpen: totalOpen, RateLimit: budget}, nil
 }
