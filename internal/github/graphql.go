@@ -1058,7 +1058,7 @@ func parseRESTBudget(hdr http.Header) *RateLimit {
 // a page number blind — stops cleanly at the last page.
 func nextLink(hdr http.Header) string {
 	for _, link := range hdr.Values("Link") {
-		for _, part := range strings.Split(link, ",") {
+		for part := range strings.SplitSeq(link, ",") {
 			segs := strings.Split(part, ";")
 			if len(segs) < 2 {
 				continue
