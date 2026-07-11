@@ -1,9 +1,9 @@
 // Package reduce holds the primitives shared across overstory's reduction
 // packages (backlog grooming and project-summary orientation): label
-// classification, day arithmetic, and the rate-limit fact shape. They live here
-// rather than in any one reduction package so a second consumer reuses them
-// without depending on the first — the dependency arrow points from each
-// reduction into reduce, never between reductions.
+// classification, day arithmetic, the rate-limit fact shape, and its per-batch
+// budget aggregation. They live here rather than in any one reduction package so
+// a second consumer reuses them without depending on the first — the dependency
+// arrow points from each reduction into reduce, never between reductions.
 package reduce
 
 import (

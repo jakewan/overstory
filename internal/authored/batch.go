@@ -99,42 +99,22 @@ func ReduceBatch(entries []BatchEntry, author string, since, until time.Time) Ba
 	}
 }
 
-// aggregateBudget reduces the per-repo budgets to the single pacing signal a
-// caller should heed, mirroring the single-repo trajectory degrade: a throttle
-// anywhere wins (report Remaining 0 with the earliest known reset, so a caller is
-// never told it has budget while GitHub is throttling — the 0 is a throttle
-// marker, not a literal primary-budget reading); otherwise the tightest successful
-// budget (smallest Remaining, ties broken by the earliest reset); otherwise nil
-// when no fetch carried a budget.
+// aggregateBudget maps this batch's entries to the shared budget aggregator: a
+// throttle wins (Remaining 0, earliest reset), else the tightest successful
+// budget, else nil. RateLimit is carried only for an available entry, exactly
+// reproducing the original skip of any unavailable or budget-less entry. The
+// budget here is the GraphQL points pool.
 func aggregateBudget(entries []BatchEntry) *reduce.RateLimitFacts {
-	throttled := false
-	var earliestReset time.Time
+	sources := make([]reduce.BudgetSource, 0, len(entries))
 	for _, e := range entries {
-		if e.Unavailable != UnavailableRateLimited {
-			continue
+		s := reduce.BudgetSource{
+			RateLimited: e.Unavailable == UnavailableRateLimited,
+			ResetAt:     e.ResetAt,
 		}
-		throttled = true
-		if !e.ResetAt.IsZero() && (earliestReset.IsZero() || e.ResetAt.Before(earliestReset)) {
-			earliestReset = e.ResetAt
+		if e.Unavailable == "" {
+			s.RateLimit = e.Result.RateLimit
 		}
+		sources = append(sources, s)
 	}
-	if throttled {
-		return &reduce.RateLimitFacts{Remaining: 0, ResetAt: earliestReset}
-	}
-
-	var tightest *github.RateLimit
-	for _, e := range entries {
-		if e.Unavailable != "" || e.Result.RateLimit == nil {
-			continue
-		}
-		b := e.Result.RateLimit
-		if tightest == nil || b.Remaining < tightest.Remaining ||
-			(b.Remaining == tightest.Remaining && b.ResetAt.Before(tightest.ResetAt)) {
-			tightest = b
-		}
-	}
-	if tightest == nil {
-		return nil
-	}
-	return &reduce.RateLimitFacts{Remaining: tightest.Remaining, ResetAt: tightest.ResetAt}
+	return reduce.AggregateBudget(sources)
 }
