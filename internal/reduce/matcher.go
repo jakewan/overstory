@@ -6,7 +6,10 @@
 // reduction into reduce, never between reductions.
 package reduce
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // PrefixRule identifies a label family by a prefix and delimiter: a label matches
 // when it starts (case-insensitively) with prefix+delimiter, and the projected
@@ -52,13 +55,22 @@ func (m LabelMatcher) Match(label string) (string, bool) {
 	}
 	for _, p := range m.prefixes {
 		// Lowercase (but do not trim) the prefix+delimiter so a meaningful
-		// delimiter like ": " is preserved; norm and trimmed share a length, so
-		// slicing trimmed by the matched prefix length stays aligned.
+		// delimiter like ": " is preserved.
 		pfx := strings.ToLower(p.Prefix + p.Delimiter)
 		if pfx == "" || !strings.HasPrefix(norm, pfx) {
 			continue
 		}
-		if name := strings.TrimSpace(trimmed[len(pfx):]); name != "" {
+		// Project the suffix from the original-cased label, not norm, so the area
+		// display name keeps its casing. strings.ToLower maps runes 1:1, so the
+		// matched prefix spans one original rune per pfx rune — advance that many
+		// runes. (Slicing trimmed by len(pfx) mis-cuts, because ToLower is not
+		// byte-length-preserving: the Kelvin sign U+212A and İ both shrink.)
+		rest := trimmed
+		for range pfx {
+			_, sz := utf8.DecodeRuneInString(rest)
+			rest = rest[sz:]
+		}
+		if name := strings.TrimSpace(rest); name != "" {
 			return name, true
 		}
 	}

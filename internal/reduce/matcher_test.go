@@ -40,6 +40,34 @@ func TestLabelMatcherPrefixDelimiters(t *testing.T) {
 	}
 }
 
+func TestLabelMatcherPrefixLowercaseByteLength(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		rule      PrefixRule
+		label     string
+		wantName  string
+		wantMatch bool
+	}{
+		// strings.ToLower maps runes 1:1 (simple mapping, not full casefold), and
+		// several capitals shrink in byte length: the Kelvin sign U+212A -> "k"
+		// (3 -> 1 byte) and dotted-capital-I U+0130 -> "i" (2 -> 1). Slicing the
+		// original label by the *lowercased* prefix length then cut mid-rune (the
+		// pre-fix bug returned "\xaa/networking" and left the delimiter on as
+		// "/core"); the fix advances one original rune per prefix rune, so the
+		// suffix stays intact and original-cased.
+		{"multibyte prefix rune shrinks", PrefixRule{"k", "/"}, "K/networking", "networking", true},
+		{"multibyte leading label rune shrinks", PrefixRule{"i", "/"}, "İ/core", "core", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewLabelMatcher(nil, []PrefixRule{tc.rule})
+			name, ok := m.Match(tc.label)
+			if ok != tc.wantMatch || name != tc.wantName {
+				t.Errorf("Match(%q) = (%q,%v), want (%q,%v)", tc.label, name, ok, tc.wantName, tc.wantMatch)
+			}
+		})
+	}
+}
+
 func TestLabelMatcherMultiplePrefixes(t *testing.T) {
 	m := NewLabelMatcher(nil, []PrefixRule{{"area", "/"}, {"Component", ": "}})
 	if name, ok := m.Match("Component: Hooks"); !ok || name != "Hooks" {

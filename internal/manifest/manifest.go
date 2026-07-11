@@ -298,12 +298,9 @@ func (r *Resolver) Resolve(ownerRepo string) (Config, bool, error) {
 
 func (r *Resolver) discover() ([]string, error) {
 	if len(r.files) > 0 {
-		for _, p := range r.files {
-			if _, err := os.Stat(p); err != nil {
-				return nil, fmt.Errorf("manifest file %q from OVERSTORY_MANIFESTS: %w", p, err)
-			}
-		}
-		return r.files, nil
+		return dedupeBySameFile(r.files, func(p string, err error) error {
+			return fmt.Errorf("manifest file %q from OVERSTORY_MANIFESTS: %w", p, err)
+		})
 	}
 	if r.root == "" {
 		return nil, nil
@@ -317,7 +314,39 @@ func (r *Resolver) discover() ([]string, error) {
 		paths = append(paths, matches...)
 	}
 	sort.Strings(paths) // deterministic order so a duplicate-key error names files stably
-	return paths, nil
+	return dedupeBySameFile(paths, func(p string, err error) error {
+		return fmt.Errorf("statting manifest %q in %q: %w", p, r.root, err)
+	})
+}
+
+// dedupeBySameFile collapses paths that resolve to the same physical file — a path
+// repeated in OVERSTORY_MANIFESTS, or two symlinks in the drop-in directory that
+// alias one manifest — to a single representative, keeping the first occurrence so
+// the input order (user order for the env list, sorted for the glob) is preserved.
+// Without it, an aliased file counts as several carrying files and trips the
+// "defined in multiple files" guard, whose real target is one key split across
+// distinct files. wrapStatErr contextualizes a stat failure per discovery source.
+func dedupeBySameFile(paths []string, wrapStatErr func(p string, err error) error) ([]string, error) {
+	var kept []string
+	var infos []os.FileInfo
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return nil, wrapStatErr(p, err)
+		}
+		dup := false
+		for _, seen := range infos {
+			if os.SameFile(fi, seen) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			infos = append(infos, fi)
+			kept = append(kept, p)
+		}
+	}
+	return kept, nil
 }
 
 // fileConfig and stalenessFile decode a manifest entry. Pointer fields

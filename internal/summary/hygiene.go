@@ -92,6 +92,7 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 			AgeDays:      reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays: reduce.DaysSince(now, is.LastActivityAt),
 		}
+		deferred := anyMatch(deferredMatcher, is.Labels)
 		if !anyMatch(areaMatcher, is.Labels) {
 			missingArea = append(missingArea, hi)
 		}
@@ -101,10 +102,10 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 		// Staleness means neglected, not merely inactive: a deferred issue is quiet
 		// by design, so it is excluded here and surfaced under the deferred signals
 		// instead — keeping this orientation read consistent with the grooming read.
-		if hi.InactiveDays >= params.StaleThresholdDays && !anyMatch(deferredMatcher, is.Labels) {
+		if hi.InactiveDays >= params.StaleThresholdDays && !deferred {
 			stale = append(stale, hi)
 		}
-		if anyMatch(deferredMatcher, is.Labels) && len(strings.TrimSpace(is.BodyText)) < params.ContextBodyLength {
+		if deferred && len(strings.TrimSpace(is.BodyText)) < params.ContextBodyLength {
 			deferredNoCtx = append(deferredNoCtx, hi)
 		}
 	}

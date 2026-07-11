@@ -1,11 +1,14 @@
 // Package github is overstory's in-process GitHub data layer. It fetches a
-// repository's issues via the GitHub GraphQL API, authenticated with the
-// operator's existing gh credentials, and reduces each issue to the fields a
-// reduction needs. Two fetch shapes exist: the open-issue grooming window
-// (ListOpenIssues — open issues by least-recent activity, with a derived
-// last-human-activity time so label, assignment, and bot churn don't read as
-// activity), and a lean open-and-closed activity window keyed on recent updates
-// (ListIssuesUpdatedSince) that feeds the creation-vs-closure trajectory.
+// repository's issues and pull requests, authenticated with the operator's
+// existing gh credentials, and reduces each to the fields a reduction needs. The
+// Fetcher interface spans several fetch families: open-set grooming windows (open
+// issues by least-recent activity — with a derived last-human-activity time so
+// label, assignment, and bot churn don't read as activity — plus open milestones
+// and open pull requests), lean open-and-closed activity windows keyed on recent
+// updates that feed the creation-vs-closure trajectories, per-author
+// authored-activity counts over a time window, and the repository's issue/PR
+// state-mutation event stream. Most families use the GraphQL API; the event stream
+// is REST-sourced, having no GraphQL equivalent.
 //
 // Data is fetched in-process over net/http (no heavy client dependency); the
 // only subprocess is `gh auth token` for credential bootstrap. The Fetcher
