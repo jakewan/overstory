@@ -837,7 +837,7 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 	}
 	if sd.User == nil {
 		// A null user is not a GraphQL error, so classify it here: surfacing it as
-		// six zeros would be indistinguishable from a real-but-inactive user.
+		// every count would be a zero indistinguishable from a real-but-inactive user.
 		return AuthoredActivityResult{}, fmt.Errorf("%q in %s/%s: %w", author, owner, name, ErrAuthorNotFound)
 	}
 

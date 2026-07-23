@@ -185,8 +185,8 @@ func Defaults() Config {
 			{Prefix: "area", Delimiter: ":"},
 			{Prefix: "area", Delimiter: "-"},
 		}},
-		// The default keeps the universal "body must be non-empty" check on out of the
-		// box; RequiredCategories has no default — label families are
+		// The default is the smallest length that still rejects an empty body, keeping
+		// that universal check on out of the box; RequiredCategories has no default — label families are
 		// repo-specific, like Deferred.
 		Quality: QualityConfig{MinBodyLength: 1},
 		// The default links clearly-similar titles while leaving paraphrases that share
@@ -197,8 +197,9 @@ func Defaults() Config {
 		// nodes are lean and it only has to reach back as far as the widest window — so
 		// it needs no room to page the whole open backlog the way staleness does.
 		Trajectory: TrajectoryConfig{Windows: []int{7, 30, 90}, FetchLimit: 500},
-		// Orientation defaults: an idle PR reads as stale, an aged unmilestoned issue is
-		// a hygiene signal, and "bug" is the generic bug label. The fetch caps mirror the
+		// Orientation defaults, calibrated in weeks rather than days: a PR idle that long
+		// reads as stale, an unmilestoned issue older still is a hygiene signal, and "bug"
+		// is the generic bug label. The fetch caps mirror the
 		// issue window (PRs) and a generous open-milestone ceiling.
 		Summary: SummaryConfig{
 			PRStalenessDays:     14,
@@ -221,8 +222,8 @@ func Defaults() Config {
 				"Overview", "Summary", "Ikigai", "History", "Completion", "Out of scope",
 			},
 		},
-		// The default keeps the ~2x wire payload (the SDK serializes twice) comfortably
-		// under a typical 25k-token client cap across plausible bytes-per-token ratios,
+		// The default keeps the doubled wire payload (see reduce.ApplyByteBudget for why
+		// it doubles) comfortably under a typical client token cap across plausible bytes-per-token ratios,
 		// while leaving the common small response untouched. The cap is the client's and
 		// is not verifiable here; if it is lower than assumed the call fails loudly at the
 		// client rather than returning wrong data. Tunable per repo.
