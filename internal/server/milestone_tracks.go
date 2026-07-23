@@ -72,8 +72,8 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 
 		// Bound the total response the same way the composite tools do, but over the
 		// leaf lists only: each track's members. Trimming members preserves every
-		// milestone and track headline (the per-milestone and per-track summary #84
-		// asks to keep) and keeps one non-overlapping unit per trimmable list — a
+		// milestone and track headline — the summary a caller orients from, which the
+		// bound must never cost them — and keeps one non-overlapping unit per list; a
 		// whole-track unit would double-count its members' bytes and dangle a pointer
 		// into a dropped track. The verbatim per-milestone Description is not trimmable,
 		// so the bound is best-effort over a prose-dominated floor.

@@ -14,7 +14,7 @@ import (
 
 // bulkyDeferredIssues builds n stale, deferred issues with enough per-item detail
 // (labels, body refs, native edges) that the composite response is large enough
-// to breach a small size budget — the large-repo condition #74 is about.
+// to breach a small size budget — the large-repo condition the bound exists for.
 func bulkyDeferredIssues(n int) []github.Issue {
 	issues := make([]github.Issue, 0, n)
 	for i := 1; i <= n; i++ {
