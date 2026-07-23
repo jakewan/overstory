@@ -53,7 +53,7 @@ jobs:
 
       # go-version-file keeps the Go version single-sourced in go.mod;
       # setup-go@v6 enables module caching by default.
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -74,7 +74,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
