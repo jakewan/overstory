@@ -1145,7 +1145,7 @@ func TestBacklogReviewDeferredNotConfigured(t *testing.T) {
 
 // TestBacklogReviewStalenessExcludesDeferred pins the core of #28: a deferred
 // issue is a third state, neither stale nor fresh. The fixture populates all
-// four partition cells — deferred-and-stale, deferred-and-fresh, plain-stale,
+// each partition cell — deferred-and-stale, deferred-and-fresh, plain-stale,
 // plain-fresh — and the three counts must partition the fetched window exactly.
 func TestBacklogReviewStalenessExcludesDeferred(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")

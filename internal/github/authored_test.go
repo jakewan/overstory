@@ -89,7 +89,7 @@ func TestAuthoredActivityMapsSixCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AuthoredActivity: %v", err)
 	}
-	// The alias order (s0..s4) maps to the six categories; pin it so a reorder is
+	// The alias order maps positionally onto the categories; pin it so a reorder is
 	// caught (a mis-mapped count silently misleads the audit).
 	for _, tc := range []struct {
 		name string

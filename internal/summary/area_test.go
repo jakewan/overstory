@@ -38,7 +38,7 @@ func TestReduceAreaInventorySplitsActiveAndDeferred(t *testing.T) {
 
 // TestReduceAreaInventoryDisplayNameMatchesBacklog pins that the canonical display
 // name for an area is the lexicographically-smallest original form across *all*
-// matching labels — the same rule backlog.ReduceAreaBalance applies — so the two
+// matching labels — the rule reduce.AreaClassifier holds for both reads — so the two
 // tools never disagree on the same area's name. Here one issue carries an explicit
 // "Core" and a prefix "area/core", both normalizing to key "core"; the smaller
 // original form is "Core", not the per-issue last-seen "core".

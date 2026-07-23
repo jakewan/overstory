@@ -429,8 +429,9 @@ func TestResolveExplicitFilesMissing(t *testing.T) {
 }
 
 func TestDefaultsQuality(t *testing.T) {
-	// MinBodyLength 1 keeps the universal non-empty check on out of the box; the
-	// flag predicate is BodyLength < MinBodyLength, so 1 flags empty bodies.
+	// The flag predicate is BodyLength < MinBodyLength, so the smallest positive
+	// threshold flags exactly the empty bodies — the universal non-empty check,
+	// active without configuration.
 	if d := Defaults(); d.Quality.MinBodyLength != 1 {
 		t.Errorf("Quality.MinBodyLength default = %d, want 1", d.Quality.MinBodyLength)
 	}

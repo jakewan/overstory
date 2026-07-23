@@ -9,8 +9,7 @@ import (
 	"time"
 )
 
-// The GraphQL queries are raw string constants and the wire-decode structs are
-// separate: a field requested in one but renamed or mistyped in the other
+// The GraphQL query strings and the wire-decode structs are separate: a field requested in one but renamed or mistyped in the other
 // compiles cleanly and silently zero-values at runtime. These tests are the
 // compile-adjacent guard against that drift — they assert every json field a
 // decode struct reads is actually requested in its query. They cover the

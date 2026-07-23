@@ -125,8 +125,8 @@ func ReduceStaleness(issues []github.Issue, totalOpen, thresholdDays, listLimit 
 
 // bucketize counts the stale issues into threshold-relative inactivity bands —
 // [t,2t), [2t,3t), [3t,∞) — so the bands stay meaningful for any repo's
-// threshold. The three bands are always present (count 0 when empty) for a
-// stable output shape.
+// threshold. Every band is always present (count 0 when empty) for a stable
+// output shape.
 func bucketize(stale []StaleIssue, threshold int) []StalenessBucket {
 	buckets := []StalenessBucket{
 		{MinDays: threshold, MaxDays: 2 * threshold},

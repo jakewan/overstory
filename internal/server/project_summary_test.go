@@ -60,7 +60,7 @@ func summaryIssue(num int, ms *github.MilestoneRef, labels ...string) github.Iss
 
 // TestProjectSummaryPopulatesBlocks is the end-to-end acceptance: a fetcher
 // returning issues, milestones, and PRs yields a populated summary across all
-// five blocks, both secondary blocks available.
+// every block present, both secondary blocks available.
 func TestProjectSummaryPopulatesBlocks(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n  areaBalance:\n    prefixes:\n      - prefix: area\n        delimiter: \"/\"\n")
 	fetcher := fakeFetcher{

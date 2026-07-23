@@ -23,9 +23,8 @@ import (
 
 // Per-category fidelity labels. They state each count's known blind spots in
 // plain English so the consumer can weight them honestly rather than treat every
-// number as exact. The two engagement categories and the two authored-search
-// categories share the search index's lag; commits carry their own attribution
-// limits.
+// number as exact. The engagement and authored-search categories share the search
+// index's lag; commits carry their own attribution limits.
 const (
 	fidelityCommits  = "default-branch commits whose author is identity-linked to this user; misses squash-merged and email-unlinked commits"
 	fidelityOpened   = "search-index count; approximate and lags for recent windows"
@@ -35,7 +34,7 @@ const (
 )
 
 // Facts is the authored-activity reduction's output: review-level identity (the
-// repo, the author, the window, and the generation time) plus the six decomposed
+// repo, the author, the window, and the generation time) plus the decomposed
 // counts. Repo and GeneratedAt describe the whole read and are stamped by the
 // server handler, mirroring the other tools; the reduction fills the author,
 // window, and counts. RateLimit is the fetch's budget snapshot, omitted when none
@@ -50,7 +49,7 @@ type Facts struct {
 	RateLimit   *reduce.RateLimitFacts `json:"rateLimit,omitempty"`
 }
 
-// Counts is the six decomposed authored/engagement counts, kept separate (never
+// Counts is the decomposed authored/engagement counts, kept separate (never
 // summed) so the consumer owns any weighting. Each is a Count carrying the number
 // and its fidelity label.
 type Counts struct {

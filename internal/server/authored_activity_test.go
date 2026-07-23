@@ -49,10 +49,10 @@ func authoredFetcher(result github.AuthoredActivityResult, err error) fakeFetche
 	return fakeFetcher{authoredResult: result, authoredErr: err}
 }
 
-// TestAuthoredActivitySurfacesSixDecomposedCounts pins the happy path: each of
-// the six author/engagement counts surfaces with its own per-category fidelity
+// TestAuthoredActivitySurfacesDecomposedCounts pins the happy path: every
+// author/engagement count surfaces with its own per-category fidelity
 // label, and the window/author/identity are echoed for the consumer.
-func TestAuthoredActivitySurfacesSixDecomposedCounts(t *testing.T) {
+func TestAuthoredActivitySurfacesDecomposedCounts(t *testing.T) {
 	result := github.AuthoredActivityResult{
 		CommitsAuthored:     12,
 		IssuesOpened:        3,
@@ -159,7 +159,7 @@ func TestAuthoredActivityRateLimitedNamesResetInstant(t *testing.T) {
 }
 
 // TestAuthoredActivityUnknownAuthor pins that an unresolved login surfaces as a
-// named error (not six silent zeros indistinguishable from an inactive user).
+// named error (not silent zeros indistinguishable from an inactive user).
 func TestAuthoredActivityUnknownAuthor(t *testing.T) {
 	srv := New(WithFetcher(authoredFetcher(github.AuthoredActivityResult{}, github.ErrAuthorNotFound)), WithClock(func() time.Time { return fixedClock }))
 

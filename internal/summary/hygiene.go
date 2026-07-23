@@ -25,7 +25,7 @@ type HygieneParams struct {
 	ContextBodyLength   int
 }
 
-// HygieneFacts is the hygiene-signals block: four orientation signals over the
+// HygieneFacts is the hygiene-signals block: the orientation signals over the
 // fetched open issues, each a count plus a capped list. The signals are not
 // disjoint — one issue can trip several — so the counts need not sum to anything.
 // OpenIssueCount stays exact when the window truncates (FetchTruncated).
@@ -59,8 +59,8 @@ type HygieneIssue struct {
 	InactiveDays int    `json:"inactiveDays"`
 }
 
-// ReduceHygiene reduces the fetched open issues to the four hygiene signals as of
-// now, each in a single pass. The predicates:
+// ReduceHygiene reduces the fetched open issues to the hygiene signals as of now,
+// each in a single pass. The predicates:
 //   - missingArea: the issue matches no configured area.
 //   - unmilestonedAged: the issue has no milestone AND its age is at or beyond
 //     UnmilestonedAgeDays (a fresh unmilestoned issue is normal in-flight work).
