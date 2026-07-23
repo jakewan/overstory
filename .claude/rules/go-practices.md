@@ -52,3 +52,13 @@ This server speaks JSON-RPC over stdio.
 
 - Exported types, functions, and packages carry godoc comments beginning with the symbol's name (`// New builds …`). The `revive` `exported` lint rule enforces this — a missing or malformed comment fails CI.
 - Comments explain **why** — rationale, constraints — not **what** the code already says.
+
+### Comment durability
+
+Explaining *why* is one axis; surviving an edit made elsewhere is a second, independent one. A comment can be pure rationale and still rot — a paragraph justifying a set of page sizes by doing arithmetic over them is exactly that. So a comment must not restate a fact whose authority lives somewhere else. The durable forms:
+
+- **Name the identifier, not its value.** `bounded by labelPageSize` survives a retune; `bounded to 25 labels` does not. This runs alongside the manifest rule under § MCP server, and the two are distinguished by what the value *is*: extract a Go constant when it is fetch mechanics (page sizes, byte budgets, protocol bounds); push it to the manifest when it encodes a repository's convention (labels, thresholds, formats).
+- **Never do arithmetic over values that can move independently** — assert it in a test instead, so the machine recomputes what a comment can only assert. Exception: an illustrative worked example is teaching, not a claim about the current state — a walkthrough of why an off-by-one would misfire is pedagogy, and where the arithmetic rests on a third party's undocumented limit there is nothing to assert against.
+- **Name an enumeration, not its cardinality.** "the authored count categories" costs nothing when a seventh is added; "the six categories" is wrong in every comment that says it. Exception: keep the count where it carries the sentence's meaning — a test asserting each of N cases is distinct.
+- **An issue or PR reference must not be load-bearing for understanding a constraint.** State the constraint; cite the issue only as provenance, if at all. A reader should never need a round trip to GitHub to learn what the code must do. This does not reach an issue number that is test data (`// #1 is referenced by #2`) or a syntax example — those describe local content and cannot go stale.
+- **State an external-system assumption with its source, and with what happens if it's wrong.** Claims about GitHub's API, the MCP SDK, or a dependency's behavior can't be verified locally and rot invisibly when the third party moves. Naming the source lets a reader re-check it; naming the failure mode tells them whether it matters — "this cap matches GitHub's documented limit, but correctness doesn't rest on it, because the truncation flag catches an overflow either way" is the shape.
