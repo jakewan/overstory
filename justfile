@@ -35,6 +35,18 @@ tidy:
 verify:
     go mod verify
 
+# Fail if go.mod/go.sum are not tidy (reports the diff, does not rewrite)
+tidy-check:
+    go mod tidy -diff
+
+# Scan dependencies and the standard library for known vulnerabilities
+vuln:
+    go tool govulncheck ./...
+
+# Report mise-managed tools with newer versions available
+toolchain-outdated:
+    mise outdated
+
 # Clean build artifacts
 clean:
     rm -rf bin/

@@ -42,6 +42,7 @@ jobs:
             docs:
               - 'docs/**'
               - 'mise.toml'
+              - 'mise.lock'
               - '.github/workflows/ci.yml'
 
   test:
@@ -62,6 +63,12 @@ jobs:
       # `go build` won't re-hash an already-extracted module directory. go.sum
       # itself is enforced unconditionally by the go command; this is not that.
       - run: go mod verify
+
+      # Duplicates `just tidy-check` deliberately — this job installs neither
+      # mise nor just, so the raw command is the only form available here. Keep
+      # the two in step, as with the golangci-lint version pin below.
+      - name: Check go.mod tidiness
+        run: go mod tidy -diff
 
       - run: go build ./...
 
@@ -95,6 +102,15 @@ jobs:
       # mise.toml, so CI builds the docs with the same toolchain as local
       # development. `just docs-build` runs mdbook, which invokes the linkcheck2
       # renderer; a broken link or structure fails the build.
+      #
+      # mise itself is version-pinned rather than floating: it is the component
+      # that verifies every other tool's checksum against mise.lock, so letting
+      # it drift would let the verifier change under the repository between
+      # runs. Because mise.lock is present, the action runs `mise install
+      # --locked`, which refuses any tool lacking a recorded URL for the
+      # platform.
       - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.7
 
       - run: just docs-build
