@@ -1,5 +1,12 @@
 ---
-paths: mise.toml, mise.lock, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml, .github/workflows/vuln.yml
+paths:
+  - "mise.toml"
+  - "mise.lock"
+  - "go.mod"
+  - "lefthook.yml"
+  - ".golangci.yml"
+  - ".github/workflows/ci.yml"
+  - ".github/workflows/vuln.yml"
 ---
 
 # Toolchain / CI Parity

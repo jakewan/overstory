@@ -88,7 +88,7 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when Cla
 - `.claude/rules/pr-waste-patterns.md` — what counts as reviewer-distracting waste in a diff.
 - `.claude/rules/no-personal-details.md` — keep personal/identifying details out of this public repo.
 - `.claude/rules/markdown-practices.md` — authoring conventions for the docs book (path-conditioned to `docs/src/`).
-- `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep.
+- `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep (loaded when Claude reads a pinned-toolchain file: `mise.toml`, `go.mod`, the CI workflows, and their siblings).
 - `.claude/rules/design-fork-adjudication.md` — how value-laden design forks are settled here.
 - `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
 - `SECURITY.md` — reporting channel, plus the credential, supply-chain, and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it; it also asserts what CI scans, pins, and verifies, so a change to the workflows, `mise.lock`, or the Dependabot config should be checked against it too.

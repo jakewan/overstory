@@ -1,5 +1,7 @@
 ---
-paths: docs/src/**/*.md
+paths:
+  - "docs/src/*.md"
+  - "docs/src/**/*.md"
 ---
 
 # Markdown Practices
