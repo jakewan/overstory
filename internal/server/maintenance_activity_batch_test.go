@@ -56,19 +56,19 @@ func TestMaintenanceActivityBatchSurfacesPerRepoResults(t *testing.T) {
 	at := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	r := fixedClock.Add(30 * time.Minute)
 	fetcher := fakeFetcher{eventsByRepo: map[string]eventsCanned{
-		"acme/widgets":  {result: eventsWithBudget([]github.IssueEvent{mEvent(1, "labeled", "octocat", at, 100, false)}, 4900, r)},
+		"acme/widgets":  {result: eventsWithBudget([]github.IssueEvent{mEvent(1, "labeled", "alice", at, 100, false)}, 4900, r)},
 		"ghost/missing": {err: github.ErrRepoNotFound},
 	}}
 	srv := New(WithFetcher(fetcher), WithClock(func() time.Time { return fixedClock }))
 
 	facts := decodeMaintenanceBatchFacts(t, callMaintenanceActivityBatch(t, srv, map[string]any{
 		"repos":  []any{"acme/widgets", "ghost/missing"},
-		"author": "octocat",
+		"author": "alice",
 		"since":  "2026-05-01T00:00:00Z",
 	}))
 
-	if facts.Author != "octocat" || !facts.GeneratedAt.Equal(fixedClock) {
-		t.Errorf("identity = {%q, %v}, want {octocat, %v}", facts.Author, facts.GeneratedAt, fixedClock)
+	if facts.Author != "alice" || !facts.GeneratedAt.Equal(fixedClock) {
+		t.Errorf("identity = {%q, %v}, want {alice, %v}", facts.Author, facts.GeneratedAt, fixedClock)
 	}
 	if len(facts.Repos) != 2 {
 		t.Fatalf("len(Repos) = %d, want 2", len(facts.Repos))
@@ -137,7 +137,7 @@ func TestMaintenanceActivityBatchBackpressureStopsLaunchAfterThrottle(t *testing
 	handler := maintenanceActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 1, maintenanceBatchPerRepoTimeout)
 
 	_, facts, err := handler(context.Background(), nil, maintenanceActivityBatchInput{
-		Repos: []string{"acme/a", "acme/b", "acme/c", "acme/d"}, Author: "octocat", Since: "2026-05-01T00:00:00Z",
+		Repos: []string{"acme/a", "acme/b", "acme/c", "acme/d"}, Author: "alice", Since: "2026-05-01T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -171,12 +171,12 @@ func TestMaintenanceActivityBatchPerRepoTimeoutDegradesSlowRepo(t *testing.T) {
 	at := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	fetcher := fakeFetcher{eventsByRepo: map[string]eventsCanned{
 		"acme/slow": {block: true},
-		"acme/fast": {result: github.IssueEventsResult{Events: []github.IssueEvent{mEvent(1, "labeled", "octocat", at, 7, false)}}},
+		"acme/fast": {result: github.IssueEventsResult{Events: []github.IssueEvent{mEvent(1, "labeled", "alice", at, 7, false)}}},
 	}}
 	handler := maintenanceActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 2, 50*time.Millisecond)
 
 	_, facts, err := handler(context.Background(), nil, maintenanceActivityBatchInput{
-		Repos: []string{"acme/slow", "acme/fast"}, Author: "octocat", Since: "2026-05-01T00:00:00Z",
+		Repos: []string{"acme/slow", "acme/fast"}, Author: "alice", Since: "2026-05-01T00:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v (a per-repo timeout must not fail the batch)", err)
@@ -202,7 +202,7 @@ func TestMaintenanceActivityBatchCancelledContextErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, err := handler(ctx, nil, maintenanceActivityBatchInput{
-		Repos: []string{"acme/widgets"}, Author: "octocat", Since: "2026-05-01T00:00:00Z",
+		Repos: []string{"acme/widgets"}, Author: "alice", Since: "2026-05-01T00:00:00Z",
 	})
 	if err == nil {
 		t.Fatal("err = nil, want a cancellation error (not a fabricated success)")
@@ -248,7 +248,7 @@ func TestMaintenanceActivityBatchReposSerializeAsArray(t *testing.T) {
 	srv := New(WithFetcher(fetcher), WithClock(func() time.Time { return fixedClock }))
 
 	res := callMaintenanceActivityBatch(t, srv, map[string]any{
-		"repos": []any{"acme/widgets"}, "author": "octocat", "since": "2026-05-01T00:00:00Z",
+		"repos": []any{"acme/widgets"}, "author": "alice", "since": "2026-05-01T00:00:00Z",
 	})
 	raw, err := json.Marshal(res.StructuredContent)
 	if err != nil {

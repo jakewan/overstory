@@ -83,7 +83,11 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 - `.claude/rules/pr-conventions.md` — PR descriptions, commit format, changelog policy, branch freshness, fix-vs-defer.
 - `.claude/rules/pr-waste-patterns.md` — what counts as reviewer-distracting waste in a diff.
 - `.claude/rules/no-personal-details.md` — keep personal/identifying details out of this public repo.
+- `.claude/rules/markdown-practices.md` — authoring conventions for the docs book (path-conditioned to `docs/src/`).
+- `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep.
+- `.claude/rules/design-fork-adjudication.md` — how value-laden design forks are settled here.
 - `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
+- `SECURITY.md` — reporting channel, plus the credential and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it.
 - `.github/copilot-instructions.md` — review guidance for GitHub Copilot.
 
 [bdd]: https://en.wikipedia.org/wiki/Behavior-driven_development

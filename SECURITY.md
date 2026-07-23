@@ -4,6 +4,8 @@
 
 Please report security issues privately through GitHub's [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability) on this repository's **Security** tab, rather than opening a public issue.
 
+If that route is unavailable to you for any reason, open a regular issue saying only that you have a security report and how to reach you — no details — and you'll get a private channel back. Never put the details in a public issue.
+
 Include what you did, what happened, and what you expected — a reproduction is the most useful thing you can send. Please allow time for a fix before disclosing publicly.
 
 ## Supported versions
@@ -15,7 +17,7 @@ Overstory is in early development and cuts no tagged releases yet, so the suppor
 Overstory does not manage credentials of its own. It authenticates to GitHub by shelling out to `gh auth token` once per process, inheriting whatever authentication the operator's [`gh`](https://cli.github.com/) CLI already holds. Consequences worth knowing:
 
 - **The server's access equals the operator's `gh` access.** It can read any repository that token can read, including private ones. It never widens that scope, and it requests no scopes of its own.
-- **The token is held in memory only** — fetched lazily on first use and cached for the life of the process. Nothing is written to disk, and no token is embedded in a manifest or config file.
+- **The token is held in memory only** — fetched lazily on first use and, once obtained, cached for the life of the process. Nothing is written to disk, and no token is embedded in a manifest or config file.
 - **The token is never logged and never appears in a returned error.** When `gh` fails, the error is classified (not installed, or not authenticated) without echoing the subprocess's stderr, which can carry sensitive detail.
 - **The server is read-only against GitHub.** It issues queries; it does not create, edit, close, or label anything.
 
