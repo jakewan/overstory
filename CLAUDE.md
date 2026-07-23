@@ -69,7 +69,7 @@ Formatting is enforced by golangci-lint's configured formatters (`gofmt`, `goimp
 
 This project uses [BDD][bdd]-style/outside-in [TDD][tdd] for non-trivial code: write a failing behavior test from the caller's perspective first, let it drive the API, then implement the minimum to pass and refactor under the test's safety net. Tests use the standard `testing` package (no external frameworks), favor table-driven cases, exercise tool behavior through an in-memory MCP client/server session, and isolate filesystem state with `t.TempDir()`. Skip the ceremony for trivial work (typos, single-line fixes, documentation, these instruction files).
 
-Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when editing Go).
+Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when Claude reads a Go file).
 
 ## Key design decisions
 
@@ -82,12 +82,13 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 
 ## Conventions in this repo
 
-- `.claude/rules/go-practices.md` — Go authoring conventions (path-conditioned to Go files).
+- `.claude/rules/comment-conventions.md` — repo-wide comment conventions (why-not-what, comment durability); always loaded.
+- `.claude/rules/go-practices.md` — Go authoring conventions (loaded when Claude reads a Go file).
 - `.claude/rules/pr-conventions.md` — PR descriptions, commit format, changelog policy, branch freshness, fix-vs-defer.
 - `.claude/rules/pr-waste-patterns.md` — what counts as reviewer-distracting waste in a diff.
 - `.claude/rules/no-personal-details.md` — keep personal/identifying details out of this public repo.
 - `.claude/rules/markdown-practices.md` — authoring conventions for the docs book (path-conditioned to `docs/src/`).
-- `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep.
+- `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep (loaded when Claude reads a pinned-toolchain file: `mise.toml`, `go.mod`, the CI workflows, and their siblings).
 - `.claude/rules/design-fork-adjudication.md` — how value-laden design forks are settled here.
 - `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
 - `SECURITY.md` — reporting channel, plus the credential, supply-chain, and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it; it also asserts what CI scans, pins, and verifies, so a change to the workflows, `mise.lock`, or the Dependabot config should be checked against it too.
