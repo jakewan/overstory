@@ -18,4 +18,9 @@ mdbook = "0.5.3"
 # mdbook-linkcheck2 is an mdbook renderer backend; it links against mdbook's
 # crate version (mdbook-driver/mdbook-renderer), so bump it together with
 # `mdbook` above — see .claude/rules/toolchain-ci-parity.md.
-"github:marxin/mdbook-linkcheck2" = "0.12.2"
+#
+# Restricted to linux because upstream publishes an x86_64-unknown-linux-gnu
+# asset and nothing else. Without the restriction `mise install` has no
+# candidate to resolve on macOS or arm64; with it, mise skips the tool there and
+# provisions the rest, so only `just docs-build` is unavailable off linux.
+"github:marxin/mdbook-linkcheck2" = { version = "0.12.2", os = ["linux"] }

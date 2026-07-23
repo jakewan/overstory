@@ -18,7 +18,7 @@ just install           # build and install to ~/.local/bin/overstory
 
 `just install` builds the binary and installs it to `~/.local/bin/overstory`. Ensure `~/.local/bin` is on your `PATH`. To build without installing, `just build` writes the binary to `bin/overstory`.
 
-Building the binary needs only Go and just, which is why they are named explicitly above. A bare `mise install` provisions the full development toolchain from `mise.toml`, including the documentation renderer — and one of its components, `mdbook-linkcheck2`, publishes a Linux x86-64 binary and nothing else, so that form can fail on macOS or arm64. Contributors who need the docs toolchain should read `CONTRIBUTING.md`; to install the binary, the two tools above are enough on any platform.
+Building the binary needs only Go and just, which is why they are named explicitly above — a bare `mise install` also works and simply provisions the full development toolchain from `mise.toml`. Contributors who want that fuller setup should read `CONTRIBUTING.md`.
 
 ## Register it as an MCP server
 

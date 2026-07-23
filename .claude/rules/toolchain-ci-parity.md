@@ -29,7 +29,7 @@ What a stale lock does depends on where it runs, and the difference is the trap.
 Two more facts worth knowing before editing either file:
 
 - A platform absent from the lock gets written in by whoever first installs on it, so an install from a new platform also produces a diff to review.
-- `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its lock entry covers the linux platforms only. That is the artifact's own limit, not an incomplete lock.
+- `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its `mise.toml` entry carries `os = ["linux"]` and its lock entry covers the linux platforms only. Both follow from the artifact's own limit; neither is an incomplete lock. If upstream ever ships other platforms, the `os` restriction is what has to be relaxed before `mise lock` will record them.
 
 ## The mise version is one atomic value across both workflows
 

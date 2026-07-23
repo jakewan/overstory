@@ -24,13 +24,13 @@ Contributions should stay within this focused scope. If you're unsure whether so
 Tool versions are managed by [mise](https://mise.jdx.dev/). After cloning:
 
 ```bash
-mise install        # Install Go, golangci-lint, just, lefthook, mdbook, mdbook-linkcheck2
+mise install        # Install Go, golangci-lint, just, lefthook, mdbook (+ linkcheck2 on Linux)
 just hooks          # Install git hooks (lefthook)
 ```
 
 Tool versions come from `mise.toml`, and their checksums from the committed `mise.lock` — `mise install` verifies downloads against it. If you change a version pin, run `mise lock` and commit the updated lockfile in the same change.
 
-One platform caveat: the documentation toolchain is Linux-only today. `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` binary and no others, so a bare `mise install` cannot provision it on macOS or arm64. Name the tools you need instead — `mise install go just golangci-lint lefthook` covers everything except `just docs-build`, which needs a Linux x86-64 machine or a container.
+One platform caveat: `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` binary and no others, so `mise.toml` restricts it to Linux and mise skips it elsewhere. `mise install` provisions the rest of the toolchain normally on macOS and arm64; only `just docs-build` is unavailable there, and it needs a Linux x86-64 machine or a container.
 
 ### Build, Test, Lint
 
