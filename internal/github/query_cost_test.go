@@ -14,16 +14,16 @@ import (
 // property of the query's *shape*, not of its page sizes alone.
 //
 // That is why this computes the cost from the query text rather than summing the
-// page-size constants. A sum over labelPageSize + commentPageSize + ... is blind
-// to depth — moving labels(first:25) inside subIssues(first:50) leaves every
-// constant untouched while the real cost rises by 125,000 — so it would report
-// headroom that does not exist.
+// page-size constants. A sum is blind to depth: moving one connection inside
+// another leaves every constant untouched while the real cost multiplies, so it
+// would report headroom that does not exist.
 //
 // nodeCostBudget is set for early warning rather than cliff-avoidance. GitHub's
-// documented ceiling is ~500,000 against a current cost near 22,600; a budget at
-// the ceiling would stay green until the query were roughly twenty times heavier,
-// by which point the points cost of every call has already grown. This fires when
-// the query grows materially, which is the moment worth a second look. If GitHub
+// documented ceiling is far above where these queries sit, so a budget at the
+// ceiling would stay green until the query were many times heavier — by which
+// point the points cost of every call has already grown. This fires when the
+// query grows materially, which is the moment worth a second look. The tests log
+// each query's current score rather than pinning it here. If GitHub
 // lowers the real ceiling below this figure the test still passes and the API
 // starts rejecting calls — the failure is loud and immediate at the fetch, not
 // silent, so the budget's staleness degrades to a worse error message rather than
@@ -74,8 +74,6 @@ func TestQueryNodeCostSeesNesting(t *testing.T) {
 		t.Fatalf("nested: %v", err)
 	}
 
-	// Siblings: 100 + 100×50 + 100×25 = 7,600.
-	// Nested:   100 + 100×50 + 100×50×25 = 130,100.
 	if wantSib := 100 + 100*50 + 100*25; sibCost != wantSib {
 		t.Errorf("sibling cost = %d, want %d", sibCost, wantSib)
 	}

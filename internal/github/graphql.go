@@ -49,8 +49,8 @@ const (
 	// rather than drop edges silently.
 	crossRefPageSize = 25
 	// depEdgePageSize bounds each native dependency connection — blockedBy,
-	// blocking, and subIssues. GitHub documents a 50-edge limit per relationship,
-	// so in practice the window covers the full set. Correctness does not rest on
+	// blocking, and subIssues. It matches the per-relationship edge limit GitHub
+	// documents, so in practice the window covers the full set. Correctness does not rest on
 	// that being current: each connection's truncation flag compares totalCount to
 	// the fetched nodes, so a bounded set is never reported as complete regardless
 	// of the real cap.
