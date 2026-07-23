@@ -21,13 +21,13 @@ func TestReduceBatchPreservesOrderAndGroupsPerRepo(t *testing.T) {
 	until := base.Add(time.Hour)
 	entries := []BatchEntry{
 		{Repo: "acme/a", Result: eventsResult([]github.IssueEvent{
-			ev(1, "labeled", "jakewan", 5, 100, false),
+			ev(1, "labeled", "alice", 5, 100, false),
 			ev(2, "labeled", "other", 6, 100, false), // dropped: wrong actor
 		}, 4000, until)},
 		{Repo: "acme/b", Unavailable: UnavailableNotFound},
 		{Repo: "acme/c", Result: eventsResult(nil, 4900, until)}, // available, no items
 	}
-	facts := ReduceBatch(entries, "jakewan", since, until)
+	facts := ReduceBatch(entries, "alice", since, until)
 
 	if len(facts.Repos) != 3 {
 		t.Fatalf("len(Repos) = %d, want 3", len(facts.Repos))
@@ -50,8 +50,8 @@ func TestReduceBatchPreservesOrderAndGroupsPerRepo(t *testing.T) {
 	if !c.Available || len(c.Items) != 0 {
 		t.Errorf("Repos[2] = %+v, want available with no items", c)
 	}
-	if facts.Author != "jakewan" {
-		t.Errorf("Author = %q, want jakewan", facts.Author)
+	if facts.Author != "alice" {
+		t.Errorf("Author = %q, want alice", facts.Author)
 	}
 }
 

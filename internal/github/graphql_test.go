@@ -1372,15 +1372,15 @@ func eventsBudgetHeaders(remaining string, resetEpoch int64) map[string]string {
 func TestListIssueEventsDecodesPayloadPerType(t *testing.T) {
 	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	body := `[
-		{"id":10,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"jakewan"},
+		{"id":10,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"alice"},
 		 "issue":{"number":100,"title":"an issue","pull_request":null},"label":{"name":"reductions"},"performed_via_github_app":null},
-		{"id":11,"event":"milestoned","created_at":"2026-06-10T01:00:00Z","actor":{"login":"jakewan"},
+		{"id":11,"event":"milestoned","created_at":"2026-06-10T01:00:00Z","actor":{"login":"alice"},
 		 "issue":{"number":100,"title":"an issue"},"milestone":{"title":"Round 6"}},
-		{"id":12,"event":"assigned","created_at":"2026-06-10T02:00:00Z","actor":{"login":"jakewan"},
-		 "issue":{"number":100,"title":"an issue"},"assignee":{"login":"jakewan"}},
-		{"id":13,"event":"renamed","created_at":"2026-06-10T03:00:00Z","actor":{"login":"jakewan"},
+		{"id":12,"event":"assigned","created_at":"2026-06-10T02:00:00Z","actor":{"login":"alice"},
+		 "issue":{"number":100,"title":"an issue"},"assignee":{"login":"bob"}},
+		{"id":13,"event":"renamed","created_at":"2026-06-10T03:00:00Z","actor":{"login":"alice"},
 		 "issue":{"number":100,"title":"an issue"},"rename":{"from":"old","to":"new"},"performed_via_github_app":{"id":42}},
-		{"id":14,"event":"closed","created_at":"2026-06-10T04:00:00Z","actor":{"login":"jakewan"},
+		{"id":14,"event":"closed","created_at":"2026-06-10T04:00:00Z","actor":{"login":"alice"},
 		 "issue":{"number":200,"title":"a pr","pull_request":{"url":"u"}}}
 	]`
 	srv := jsonServerWithHeaders(t, http.StatusOK, eventsBudgetHeaders("4990", 1750000000), body)
@@ -1395,14 +1395,16 @@ func TestListIssueEventsDecodesPayloadPerType(t *testing.T) {
 	for _, e := range res.Events {
 		byID[e.EventID] = e
 	}
-	if e := byID[10]; e.Type != "labeled" || e.Label != "reductions" || e.Actor != "jakewan" || e.IssueNumber != 100 || e.IssueIsPR || e.ViaAutomation {
+	if e := byID[10]; e.Type != "labeled" || e.Label != "reductions" || e.Actor != "alice" || e.IssueNumber != 100 || e.IssueIsPR || e.ViaAutomation {
 		t.Errorf("labeled event = %+v", e)
 	}
 	if e := byID[11]; e.Milestone != "Round 6" {
 		t.Errorf("milestoned.Milestone = %q, want Round 6", e.Milestone)
 	}
-	if e := byID[12]; e.Assignee != "jakewan" {
-		t.Errorf("assigned.Assignee = %q, want jakewan", e.Assignee)
+	// Assignee is deliberately a different login from the actor, so a decoder that
+	// crossed the two adjacent, identically-shaped login blocks would fail here.
+	if e := byID[12]; e.Assignee != "bob" {
+		t.Errorf("assigned.Assignee = %q, want bob", e.Assignee)
 	}
 	if e := byID[13]; e.RenameFrom != "old" || e.RenameTo != "new" || !e.ViaAutomation {
 		t.Errorf("renamed event = %+v, want from/to set and ViaAutomation true", e)

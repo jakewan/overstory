@@ -57,6 +57,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Re-hashes the restored module cache so a corrupted or tampered cache entry
+      # can't be built against — setup-go restores a cache keyed on go.sum, and
+      # `go build` won't re-hash an already-extracted module directory. go.sum
+      # itself is enforced unconditionally by the go command; this is not that.
+      - run: go mod verify
+
       - run: go build ./...
 
       - run: go test -race ./...
