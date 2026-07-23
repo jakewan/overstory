@@ -43,9 +43,14 @@ tidy-check:
 vuln:
     go tool govulncheck ./...
 
-# Report mise-managed tools with newer versions available
+# Report mise-managed tools with newer versions available.
+# --bump is required, not cosmetic: every pin in mise.toml is an exact version,
+# and plain `mise outdated` compares against the latest release matching the
+# requested spec — which for an exact pin is always the pin itself, so it
+# reports "up to date" no matter how far upstream has moved. --local keeps a
+# contributor's global mise config out of the report.
 toolchain-outdated:
-    mise outdated
+    mise outdated --bump --local
 
 # Clean build artifacts
 clean:

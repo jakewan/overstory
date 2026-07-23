@@ -1,4 +1,4 @@
-# Record every tool's resolved URL, size, and checksum in mise.lock, which is
+# Record every tool's resolved URL and checksum in mise.lock, which is
 # committed. The docs job executes a prebuilt binary from a third-party
 # repository, so pinning a tag is not enough — the lockfile is what makes CI run
 # the exact bytes that were reviewed. Regenerate it (`mise lock`) in the same

@@ -22,14 +22,25 @@ Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries
 
 ## mise.lock moves with every mise.toml pin
 
-`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL, size, and checksum per platform. It is committed, and `jdx/mise-action` runs `mise install --locked` whenever it is present — which fails outright on any tool without a recorded URL for the runner's platform. So a pin changed in `mise.toml` without regenerating the lock does not drift quietly; it breaks installation, or (for a tool whose entry still resolves) silently installs the old version against the new config.
+`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL and checksum per platform. It is committed, and `jdx/mise-action` runs `mise install --locked` whenever it is present — which fails outright on any tool without a recorded URL for the runner's platform. So a pin changed in `mise.toml` without regenerating the lock does not drift quietly; it breaks installation, or (for a tool whose entry still resolves) silently installs the old version against the new config.
 
-Run `mise lock` and commit the result in the same commit as any `mise.toml` version change. Two related facts worth knowing before editing either file:
+Run `mise lock` and commit the result in the same commit as any `mise.toml` version change. Three related facts worth knowing before editing either file:
 
-- `mise install` does **not** create or repair the lockfile — only `mise lock` does.
+- **`mise lock` creates the lockfile; `mise install` updates an existing one in place.** So a local install after a pin bump does not fail — it silently rewrites `mise.lock`, and you get a lockfile diff you did not ask for. Review it rather than assuming your install could not have touched it. The "installation fails" consequence above is a *CI* invariant: it comes from `--locked`, which `jdx/mise-action` applies and a local `mise install` does not.
+- A platform absent from the lock gets written in by whoever first installs on it — so an install from a platform the lock does not yet cover also produces a diff to review.
 - `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its lock entry covers the linux platforms only. That is the artifact's own limit, not an incomplete lock.
 
-The mise version in `jdx/mise-action`'s `version:` is pinned for the same reason the tools are: mise is what verifies every other tool against this lockfile, so a floating mise means a floating verifier.
+## The mise version is one atomic value across both workflows
+
+`jdx/mise-action`'s `version:` is pinned in `.github/workflows/ci.yml` (docs job) and `.github/workflows/vuln.yml` (toolchain-report job). Keep them identical: mise is the component that verifies every other tool against `mise.lock`, so a floating mise means a floating verifier, and two different mises mean two different verifiers.
+
+This pin is also the toolchain component with the *least* automated coverage in the repository. Dependabot's `github-actions` ecosystem updates the `jdx/mise-action@v4` tag but never reads the action's `version:` input; `mise outdated` reads `mise.toml`, where mise itself does not appear. Nothing reports it — it moves only when a human moves it, which is why it belongs in the manual review posture recorded in `SECURITY.md`.
+
+## The govulncheck tool dependency reaches the built binary
+
+`govulncheck` is a `go.mod` tool dependency, so its requirements participate in the main module's version resolution. That is not confined to tooling: adding it raised `golang.org/x/sys` (via `golang.org/x/telemetry`), and `golang.org/x/sys/cpu` is linked into `cmd/overstory`. Every future update of `x/vuln` or its dependencies can do the same.
+
+The consequence for review: a bump that looks like tooling can change the shipped binary's build list. Check `go list -deps ./cmd/overstory` when a govulncheck update moves a shared dependency, and do not describe such a change as CI-only without checking.
 
 ## mdbook and mdbook-linkcheck2 versions move together
 

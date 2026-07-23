@@ -12,11 +12,13 @@ A linear path from a cloned repository to a registered MCP server an agent can c
 From the repository root:
 
 ```sh
-mise install     # provision the pinned toolchain (Go, just, ...)
-just install     # build and install to ~/.local/bin/overstory
+mise install go just   # provision the toolchain needed to build
+just install           # build and install to ~/.local/bin/overstory
 ```
 
 `just install` builds the binary and installs it to `~/.local/bin/overstory`. Ensure `~/.local/bin` is on your `PATH`. To build without installing, `just build` writes the binary to `bin/overstory`.
+
+Building the binary needs only Go and just, which is why they are named explicitly above. A bare `mise install` provisions the full development toolchain from `mise.toml`, including the documentation renderer — and one of its components, `mdbook-linkcheck2`, publishes a Linux x86-64 binary and nothing else, so that form can fail on macOS or arm64. Contributors who need the docs toolchain should read `CONTRIBUTING.md`; to install the binary, the two tools above are enough on any platform.
 
 ## Register it as an MCP server
 

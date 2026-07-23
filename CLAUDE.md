@@ -40,7 +40,7 @@ Further reductions and the packages they need arrive in their own changes — do
 Tool versions are managed by [mise](https://mise.jdx.dev/) (`mise.toml`, with checksums in the committed `mise.lock` — regenerate it with `mise lock` whenever a pin changes); tasks run through [just](https://github.com/casey/just) (`justfile`). One-time setup:
 
 ```sh
-mise install     # install pinned Go, golangci-lint, just, lefthook, mdbook
+mise install     # install pinned Go, golangci-lint, just, lefthook, mdbook, mdbook-linkcheck2
 just hooks       # install git hooks (lefthook)
 ```
 

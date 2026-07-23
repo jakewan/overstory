@@ -60,10 +60,14 @@ jobs:
           # Report on the pinned versions; do not install them.
           install: false
 
-      # Advisory only. The mise-managed toolchain is under no update bot (no
-      # ecosystem covers mise.toml), so this run is the mechanism behind the
-      # manual review posture recorded in SECURITY.md — a dated, visible
-      # currency report rather than a cadence nobody is reminded of.
+      # The mise-managed toolchain is under no update bot (no ecosystem covers
+      # mise.toml), so this run is the mechanism behind the manual review
+      # posture recorded in SECURITY.md.
+      #
+      # --bump is load-bearing. Every pin in mise.toml is an exact version, and
+      # plain `mise outdated` compares against the latest release matching the
+      # requested spec — for an exact pin, itself. Without --bump this step
+      # reports "All tools are up to date" every week regardless of upstream,
+      # which is worse than no report at all.
       - name: Report outdated toolchain pins
-        continue-on-error: true
-        run: mise outdated
+        run: mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY"
