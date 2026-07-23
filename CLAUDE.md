@@ -37,7 +37,7 @@ Further reductions and the packages they need arrive in their own changes — do
 
 ## Build, test, lint
 
-Tool versions are managed by [mise](https://mise.jdx.dev/) (`mise.toml`); tasks run through [just](https://github.com/casey/just) (`justfile`). One-time setup:
+Tool versions are managed by [mise](https://mise.jdx.dev/) (`mise.toml`, with checksums in the committed `mise.lock` — regenerate it with `mise lock` whenever a pin changes); tasks run through [just](https://github.com/casey/just) (`justfile`). One-time setup:
 
 ```sh
 mise install     # install pinned Go, golangci-lint, just, lefthook, mdbook
@@ -52,7 +52,10 @@ just test        # go test ./...
 just lint        # golangci-lint run ./...
 just fmt         # gofmt -w .
 just tidy        # go mod tidy
+just tidy-check  # fail if go.mod/go.sum are not tidy (CI runs the same check)
 just verify      # go mod verify
+just vuln        # govulncheck over dependencies and the standard library
+just toolchain-outdated  # report mise-managed tools with newer versions
 just install     # build and install to ~/.local/bin
 just docs-build  # build the documentation book to docs/book/
 just docs-serve  # serve the documentation book locally with live reload
@@ -87,7 +90,7 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 - `.claude/rules/toolchain-ci-parity.md` — keeping the pinned local toolchain and CI in lockstep.
 - `.claude/rules/design-fork-adjudication.md` — how value-laden design forks are settled here.
 - `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
-- `SECURITY.md` — reporting channel, plus the credential and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it.
+- `SECURITY.md` — reporting channel, plus the credential, supply-chain, and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it; it also asserts what CI scans, pins, and verifies, so a change to the workflows, `mise.lock`, or the Dependabot config should be checked against it too.
 - `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1, with conduct reports routed the same way security reports are.
 - `.github/copilot-instructions.md` — review guidance for GitHub Copilot.
 

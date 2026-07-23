@@ -28,16 +28,29 @@ mise install        # Install Go, golangci-lint, just, lefthook, mdbook
 just hooks          # Install git hooks (lefthook)
 ```
 
+Tool versions come from `mise.toml`, and their checksums from the committed `mise.lock` — `mise install` verifies downloads against it. If you change a version pin, run `mise lock` and commit the updated lockfile in the same change.
+
+One platform caveat: the documentation toolchain is Linux-only today. `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` binary and no others, so `mise install` cannot provision it on macOS or arm64. Everything except `just docs-build` works normally on those platforms.
+
 ### Build, Test, Lint
 
 All commands go through [just](https://github.com/casey/just):
 
 ```bash
-just build    # Build binary to bin/
-just test     # Run all tests
-just lint     # Run golangci-lint
-just install  # Install the binary to ~/.local/bin
+just build              # Build binary to bin/
+just test               # Run all tests
+just lint               # Run golangci-lint
+just vuln               # Scan dependencies and stdlib for known vulnerabilities
+just tidy-check         # Fail if go.mod/go.sum are not tidy
+just toolchain-outdated # Report mise-managed tools with newer versions
+just install            # Install the binary to ~/.local/bin
 ```
+
+### Dependencies and the toolchain
+
+Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand, prompted by the weekly scan's outdated-tool report, by a CI toolchain failure, or by release preparation. `just toolchain-outdated` runs that check locally.
+
+Several pins move in pairs; `.claude/rules/toolchain-ci-parity.md` records which and why. `SECURITY.md` describes the full supply-chain posture, including what the scanning does and does not guarantee.
 
 ### Testing Approach
 

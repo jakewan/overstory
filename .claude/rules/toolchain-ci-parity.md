@@ -1,5 +1,5 @@
 ---
-paths: mise.toml, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml
+paths: mise.toml, mise.lock, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml, .github/workflows/vuln.yml
 ---
 
 # Toolchain / CI Parity
@@ -18,7 +18,18 @@ CI installs Go via `actions/setup-go` with `go-version-file: go.mod`, so the `go
 - A `.0` floor (`go 1.26.0`) pins CI to the oldest 1.26 patch, drifting behind it.
 - The exact patch (`go 1.26.4`) makes CI install the same Go developers run. This is also what `go mod init`/`go mod tidy` write by default.
 
-Bump `go.mod` and `mise.toml` together on a Go upgrade.
+Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries a second consequence: `govulncheck` reports standard-library advisories against the Go on `PATH`, so whichever pin a given run resolves decides what the vulnerability scan considers vulnerable. CI's scan job uses `setup-go` from `go.mod`, a developer's `just vuln` uses mise's — they agree only while the two pins do.
+
+## mise.lock moves with every mise.toml pin
+
+`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL, size, and checksum per platform. It is committed, and `jdx/mise-action` runs `mise install --locked` whenever it is present — which fails outright on any tool without a recorded URL for the runner's platform. So a pin changed in `mise.toml` without regenerating the lock does not drift quietly; it breaks installation, or (for a tool whose entry still resolves) silently installs the old version against the new config.
+
+Run `mise lock` and commit the result in the same commit as any `mise.toml` version change. Two related facts worth knowing before editing either file:
+
+- `mise install` does **not** create or repair the lockfile — only `mise lock` does.
+- `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its lock entry covers the linux platforms only. That is the artifact's own limit, not an incomplete lock.
+
+The mise version in `jdx/mise-action`'s `version:` is pinned for the same reason the tools are: mise is what verifies every other tool against this lockfile, so a floating mise means a floating verifier.
 
 ## mdbook and mdbook-linkcheck2 versions move together
 
