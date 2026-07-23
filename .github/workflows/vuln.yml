@@ -69,5 +69,21 @@ jobs:
       # requested spec — for an exact pin, itself. Without --bump this step
       # reports "All tools are up to date" every week regardless of upstream,
       # which is worse than no report at all.
+      #
+      # The step fails when there is something to report, and that is the whole
+      # notification mechanism: `mise outdated` exits 0 either way, and GitHub
+      # notifies on failed scheduled runs and stays silent on successful ones —
+      # so a step that always succeeds is a report nobody is told about. A red
+      # weekly run is the review trigger; clear it by bumping the pins (and
+      # regenerating mise.lock), or by deciding not to. Nothing is blocked
+      # either way: this workflow is not a required check.
       - name: Report outdated toolchain pins
-        run: mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY"
+        # `shell: bash` adds pipefail, without which a mise failure in the
+        # reporting pipeline would be masked by tee's exit status.
+        shell: bash
+        run: |
+          mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$(mise outdated --bump --local --json)" != "{}" ]; then
+            echo "::error::Toolchain pins are behind upstream — review per SECURITY.md"
+            exit 1
+          fi

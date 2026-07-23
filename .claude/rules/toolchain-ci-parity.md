@@ -22,12 +22,13 @@ Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries
 
 ## mise.lock moves with every mise.toml pin
 
-`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL and checksum per platform. It is committed, and `jdx/mise-action` runs `mise install --locked` whenever it is present — which fails outright on any tool without a recorded URL for the runner's platform. So a pin changed in `mise.toml` without regenerating the lock does not drift quietly; it breaks installation, or (for a tool whose entry still resolves) silently installs the old version against the new config.
+`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL and checksum per platform. It is committed, and the two files must move together: run `mise lock` and commit the result in the same commit as any `mise.toml` version change.
 
-Run `mise lock` and commit the result in the same commit as any `mise.toml` version change. Three related facts worth knowing before editing either file:
+What a stale lock does depends on where it runs, and the difference is the trap. **In CI** it fails loudly — `jdx/mise-action` runs `mise install --locked`, which refuses any tool lacking a recorded URL for the runner's platform. **Locally** it fails silently in the other direction: `mise install` updates an existing lockfile in place, so a bump followed by an install quietly rewrites `mise.lock` and hands you a diff you did not ask for. Review that diff rather than assuming your install could not have touched it. (`mise lock` is what *creates* the lockfile; `mise install` only maintains one that exists.)
 
-- **`mise lock` creates the lockfile; `mise install` updates an existing one in place.** So a local install after a pin bump does not fail — it silently rewrites `mise.lock`, and you get a lockfile diff you did not ask for. Review it rather than assuming your install could not have touched it. The "installation fails" consequence above is a *CI* invariant: it comes from `--locked`, which `jdx/mise-action` applies and a local `mise install` does not.
-- A platform absent from the lock gets written in by whoever first installs on it — so an install from a platform the lock does not yet cover also produces a diff to review.
+Two more facts worth knowing before editing either file:
+
+- A platform absent from the lock gets written in by whoever first installs on it, so an install from a new platform also produces a diff to review.
 - `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its lock entry covers the linux platforms only. That is the artifact's own limit, not an incomplete lock.
 
 ## The mise version is one atomic value across both workflows

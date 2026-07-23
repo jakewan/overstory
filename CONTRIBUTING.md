@@ -48,7 +48,7 @@ just install            # Install the binary to ~/.local/bin
 
 ### Dependencies and the toolchain
 
-Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand, prompted by the weekly scan's outdated-tool report, by a CI toolchain failure, or by release preparation. `just toolchain-outdated` runs that check locally.
+Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand. The weekly scheduled run fails when a pin is behind upstream, and that failure is the prompt; `just toolchain-outdated` runs the same check locally. Clearing it means bumping the pins and regenerating `mise.lock`, or deciding the bump can wait. It gates nothing — that workflow is not a required check.
 
 Several pins move in pairs; `.claude/rules/toolchain-ci-parity.md` records which and why. `SECURITY.md` describes the full supply-chain posture, including what the scanning does and does not guarantee.
 
