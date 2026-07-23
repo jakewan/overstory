@@ -31,14 +31,14 @@ func TestReduceFiltersByActorEventSetAndWindow(t *testing.T) {
 	since := base
 	until := base.Add(time.Hour)
 	events := []github.IssueEvent{
-		ev(1, "labeled", "jakewan", 10, 100, false),     // kept
+		ev(1, "labeled", "octocat", 10, 100, false),     // kept
 		ev(2, "labeled", "someoneelse", 11, 100, false), // dropped: wrong actor
-		ev(3, "subscribed", "jakewan", 12, 100, false),  // dropped: not a mutation
-		ev(4, "labeled", "jakewan", -5, 101, false),     // dropped: before since
-		ev(5, "labeled", "jakewan", 90, 102, false),     // dropped: after until
-		ev(6, "closed", "JakeWan", 20, 100, false),      // kept: actor case-folds
+		ev(3, "subscribed", "octocat", 12, 100, false),  // dropped: not a mutation
+		ev(4, "labeled", "octocat", -5, 101, false),     // dropped: before since
+		ev(5, "labeled", "octocat", 90, 102, false),     // dropped: after until
+		ev(6, "closed", "OctoCat", 20, 100, false),      // kept: actor case-folds
 	}
-	facts := Reduce(github.IssueEventsResult{Events: events}, "jakewan", since, until)
+	facts := Reduce(github.IssueEventsResult{Events: events}, "octocat", since, until)
 
 	if len(facts.Items) != 1 {
 		t.Fatalf("len(Items) = %d, want 1 (only issue 100 survives)", len(facts.Items))
@@ -53,8 +53,8 @@ func TestReduceFiltersByActorEventSetAndWindow(t *testing.T) {
 	if !facts.Since.Equal(since) || !facts.Until.Equal(until) {
 		t.Errorf("window = [%v,%v], want [%v,%v]", facts.Since, facts.Until, since, until)
 	}
-	if facts.Author != "jakewan" {
-		t.Errorf("Author = %q, want jakewan", facts.Author)
+	if facts.Author != "octocat" {
+		t.Errorf("Author = %q, want octocat", facts.Author)
 	}
 }
 

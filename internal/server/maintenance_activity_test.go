@@ -64,9 +64,9 @@ func decodeMaintenanceFacts(t *testing.T, res *mcp.CallToolResult) maintenance.F
 func TestMaintenanceActivityGroupsAndStampsFacts(t *testing.T) {
 	at := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	reset := fixedClock.Add(time.Hour)
-	labeled := mEvent(2, "labeled", "jakewan", at, 100, false)
+	labeled := mEvent(2, "labeled", "octocat", at, 100, false)
 	labeled.Label = "reductions"
-	closed := mEvent(3, "closed", "jakewan", at.Add(time.Hour), 100, false)
+	closed := mEvent(3, "closed", "octocat", at.Add(time.Hour), 100, false)
 	fetcher := fakeFetcher{eventsResult: github.IssueEventsResult{
 		Events:    []github.IssueEvent{labeled, closed},
 		RateLimit: &github.RateLimit{Remaining: 4900, ResetAt: reset},
@@ -76,15 +76,15 @@ func TestMaintenanceActivityGroupsAndStampsFacts(t *testing.T) {
 	facts := decodeMaintenanceFacts(t, callMaintenanceActivity(t, srv, map[string]any{
 		"owner":  "acme",
 		"repo":   "widgets",
-		"author": "jakewan",
+		"author": "octocat",
 		"since":  "2026-05-01T00:00:00Z",
 	}))
 
 	if facts.Repo != "acme/widgets" {
 		t.Errorf("Repo = %q, want acme/widgets", facts.Repo)
 	}
-	if facts.Author != "jakewan" {
-		t.Errorf("Author = %q, want jakewan", facts.Author)
+	if facts.Author != "octocat" {
+		t.Errorf("Author = %q, want octocat", facts.Author)
 	}
 	if !facts.GeneratedAt.Equal(fixedClock) {
 		t.Errorf("GeneratedAt = %v, want %v", facts.GeneratedAt, fixedClock)
@@ -140,7 +140,7 @@ func TestMaintenanceActivityThrottleSurfacesRetry(t *testing.T) {
 	srv := New(WithFetcher(fetcher), WithClock(func() time.Time { return fixedClock }))
 
 	res := callMaintenanceActivity(t, srv, map[string]any{
-		"owner": "acme", "repo": "widgets", "author": "jakewan", "since": "2026-05-01T00:00:00Z",
+		"owner": "acme", "repo": "widgets", "author": "octocat", "since": "2026-05-01T00:00:00Z",
 	})
 	if !res.IsError {
 		t.Fatal("IsError = false, want true for a throttled fetch")
@@ -182,14 +182,14 @@ func TestMaintenanceActivityValidatesInput(t *testing.T) {
 func TestMaintenanceActivityReadsNoManifest(t *testing.T) {
 	at := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
 	fetcher := fakeFetcher{eventsResult: github.IssueEventsResult{
-		Events: []github.IssueEvent{mEvent(1, "labeled", "jakewan", at, 1, false)},
+		Events: []github.IssueEvent{mEvent(1, "labeled", "octocat", at, 1, false)},
 	}}
 	// No WithManifestRoot/WithManifestFiles: discovery would fall through to defaults,
 	// and the tool must not depend on any manifest match.
 	srv := New(WithFetcher(fetcher), WithClock(func() time.Time { return fixedClock }), WithManifestFiles([]string{}))
 
 	facts := decodeMaintenanceFacts(t, callMaintenanceActivity(t, srv, map[string]any{
-		"owner": "unknown", "repo": "unconfigured", "author": "jakewan", "since": "2026-05-01T00:00:00Z",
+		"owner": "unknown", "repo": "unconfigured", "author": "octocat", "since": "2026-05-01T00:00:00Z",
 	}))
 	if len(facts.Items) != 1 {
 		t.Errorf("len(Items) = %d, want 1 (manifest-blind tool still reduces)", len(facts.Items))
