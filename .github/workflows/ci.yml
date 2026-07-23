@@ -57,6 +57,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Confirms the module cache's dependency contents match go.sum's hashes
+      # before anything builds against them.
+      - run: go mod verify
+
       - run: go build ./...
 
       - run: go test -race ./...
