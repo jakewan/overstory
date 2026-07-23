@@ -185,21 +185,23 @@ func Defaults() Config {
 			{Prefix: "area", Delimiter: ":"},
 			{Prefix: "area", Delimiter: "-"},
 		}},
-		// MinBodyLength 1 keeps the universal "body must be non-empty" check on out
-		// of the box; RequiredCategories has no default — label families are
-		// repo-specific, like Deferred.
+		// The default is the smallest length that still rejects an empty body, so the
+		// universal non-empty check is active without any configuration.
+		// RequiredCategories has no default — label families are repo-specific, like
+		// Deferred.
 		Quality: QualityConfig{MinBodyLength: 1},
-		// 0.5 links clearly-similar titles while leaving paraphrases that share only
-		// a word or two below the bar; tunable per repo.
+		// The default links clearly-similar titles while leaving paraphrases that share
+		// only a word or two below the bar; tunable per repo.
 		Overlap: OverlapConfig{TitleSimilarityThreshold: 0.5},
 		// Weekly/monthly/quarterly lookbacks read the backlog's near-term, mid-term,
-		// and long-term trend out of the box. FetchLimit is higher than staleness's
-		// (the nodes are lean and span closed issues over up to the widest window).
+		// and long-term trend out of the box. The fetch spans closed issues too, but its
+		// nodes are lean and it only has to reach back as far as the widest window — so
+		// it needs no room to page the whole open backlog the way staleness does.
 		Trajectory: TrajectoryConfig{Windows: []int{7, 30, 90}, FetchLimit: 500},
-		// Orientation defaults: a PR idle two weeks reads as stale, an unmilestoned
-		// issue older than a month is a hygiene signal, and "bug" is the generic bug
-		// label. The fetch caps mirror the issue window (PRs) and a generous
-		// open-milestone ceiling.
+		// Orientation defaults, calibrated in weeks rather than days: a PR idle that long
+		// reads as stale, an unmilestoned issue older still is a hygiene signal, and "bug"
+		// is the generic bug label. The fetch caps mirror the
+		// issue window (PRs) and a generous open-milestone ceiling.
 		Summary: SummaryConfig{
 			PRStalenessDays:     14,
 			UnmilestonedAgeDays: 30,
@@ -207,8 +209,8 @@ func Defaults() Config {
 			MilestoneFetchLimit: 100,
 			BugLabels:           []string{"bug"},
 		},
-		// Recognize `##`/`###` headings and bold run-in labels out of the box; both
-		// degrade to zero tracks on prose/empty descriptions, so default-on is safe.
+		// Recognize section headings and bold run-in labels out of the box; both degrade
+		// to zero tracks on prose/empty descriptions, so default-on is safe.
 		// The stoplist covers common prose-section labels so they aren't read as
 		// tracks; a repo extends it for its own multi-word section headings. The fetch
 		// cap mirrors the summary milestone ceiling.
@@ -221,9 +223,12 @@ func Defaults() Config {
 				"Overview", "Summary", "Ikigai", "History", "Completion", "Out of scope",
 			},
 		},
-		// 20000 bytes per serialization keeps the ~2x wire payload comfortably under a
-		// typical 25k-token cap across plausible bytes-per-token ratios, while leaving
-		// the common (small) response untouched. Tunable per repo.
+		// The default keeps the doubled wire payload (see reduce.ApplyByteBudget for
+		// why it doubles) comfortably under a typical client token cap across
+		// plausible bytes-per-token ratios, while leaving the common small response
+		// untouched. The cap is the client's and
+		// is not verifiable here; if it is lower than assumed the call fails loudly at the
+		// client rather than returning wrong data. Tunable per repo.
 		Response: ResponseConfig{MaxBytes: 20000},
 	}
 }
@@ -659,7 +664,7 @@ func validate(c Config, ownerRepo, file string) error {
 	if c.Trajectory.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: trajectory.fetchLimit must be > 0, got %d", file, ownerRepo, c.Trajectory.FetchLimit)
 	}
-	// The four orientation knobs are all must-be-positive — a zero-day threshold is
+	// The orientation knobs are all must-be-positive — a zero-day threshold is
 	// degenerate and a zero fetch limit fetches nothing — following staleness's <= 0
 	// rule, not minBodyLength's 0-disables. BugLabels needs no check: an empty list
 	// is a valid bug-flagging opt-out, like deferred.Labels.

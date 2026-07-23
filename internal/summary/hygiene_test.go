@@ -17,7 +17,7 @@ func hygieneParams() HygieneParams {
 	}
 }
 
-// TestReduceHygieneSignalPredicates pins each of the four signals against a
+// TestReduceHygieneSignalPredicates pins each hygiene signal against a
 // crafted issue set, so the exact predicate boundaries are locked.
 func TestReduceHygieneSignalPredicates(t *testing.T) {
 	deferredEmpty := mkIssue(4, 1, 1, []string{"area/net", "deferred"}, msRef(1, "m"))

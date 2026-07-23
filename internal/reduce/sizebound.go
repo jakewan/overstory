@@ -46,7 +46,7 @@ type TrimmedBlock struct {
 // facts; closing over the same live facts value the measure closure marshals keeps a
 // single source of truth — there is no copy that could drift from what is serialized.
 //
-// All four closures are required and must be non-nil. ApplyByteBudget calls Restore
+// Every closure is required and must be non-nil. ApplyByteBudget calls Restore
 // unconditionally on the floor-fits branch (to undo the floor probe), so a nil Restore
 // panics there. That is deliberate: nil-guarding Restore to a no-op would instead leave
 // the probed lists emptied and silently over-trim the result — worse than a loud panic.

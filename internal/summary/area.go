@@ -35,9 +35,10 @@ type AreaCount struct {
 // deferred split. An issue is "deferred" when it carries a configured deferred
 // label, "active" otherwise; it counts once per distinct area it matches (so a
 // multi-area issue contributes to each), and into Unclassified when it matches no
-// area. The area taxonomy and deferred labels come from the same manifest
-// conventions the backlog reductions consume. totalOpen keeps OpenIssueCount
-// exact when the window is truncated.
+// area. Classification and canonical naming come from reduce.AreaClassifier,
+// shared with the grooming read so both tools name an area identically; the
+// deferred labels come from the same manifest conventions. totalOpen keeps
+// OpenIssueCount exact when the window is truncated.
 func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []string, areaPrefixes []reduce.PrefixRule, deferredLabels []string) AreaInventoryFacts {
 	facts := AreaInventoryFacts{
 		OpenIssueCount: totalOpen,
@@ -45,40 +46,18 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 		FetchTruncated: len(issues) < totalOpen,
 		Areas:          make([]AreaCount, 0),
 	}
-	areaMatcher := reduce.NewLabelMatcher(areaLabels, areaPrefixes)
+	classifier := reduce.NewAreaClassifier(areaLabels, areaPrefixes)
 	deferredMatcher := reduce.NewLabelMatcher(deferredLabels, nil)
 
-	type bucket struct {
-		display  string
-		active   int
-		deferred int
-	}
-	areas := make(map[string]*bucket)
+	type split struct{ active, deferred int }
+	areas := make(map[string]*split)
 
 	for _, is := range issues {
 		deferred := deferredMatcher.MatchesAny(is.Labels)
 
-		// Distinct area keys on this issue, so a multi-label issue counts once per
-		// area rather than once per matching label.
-		keys := make(map[string]struct{})
-		for _, label := range is.Labels {
-			name, ok := areaMatcher.Match(label)
-			if !ok {
-				continue
-			}
-			key := reduce.NormalizeLabel(name)
-			keys[key] = struct{}{}
-			b, exists := areas[key]
-			if !exists {
-				areas[key] = &bucket{display: name}
-			} else if name < b.display {
-				// Canonical display is the smallest original form across *all*
-				// occurrences (min is order-independent, so accumulation stays
-				// deterministic) — the same rule backlog.ReduceAreaBalance applies,
-				// so the two tools never disagree on one area's name.
-				b.display = name
-			}
-		}
+		// Keys is distinct per issue, so a multi-label issue counts once per area
+		// rather than once per matching label.
+		keys := classifier.Keys(is.Labels)
 		if len(keys) == 0 {
 			if deferred {
 				facts.Unclassified.Deferred++
@@ -88,17 +67,23 @@ func ReduceAreaInventory(issues []github.Issue, totalOpen int, areaLabels []stri
 			continue
 		}
 		for key := range keys {
-			b := areas[key]
+			s, ok := areas[key]
+			if !ok {
+				s = &split{}
+				areas[key] = s
+			}
 			if deferred {
-				b.deferred++
+				s.deferred++
 			} else {
-				b.active++
+				s.active++
 			}
 		}
 	}
 
-	for _, b := range areas {
-		facts.Areas = append(facts.Areas, AreaCount{Area: b.display, Active: b.active, Deferred: b.deferred})
+	for key, s := range areas {
+		facts.Areas = append(facts.Areas, AreaCount{
+			Area: classifier.Display(key), Active: s.active, Deferred: s.deferred,
+		})
 	}
 	// Busiest areas first (active+deferred), tie-break by name for a total order.
 	sort.Slice(facts.Areas, func(i, j int) bool {

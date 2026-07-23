@@ -12,7 +12,7 @@ import (
 // size >= 2 over those reference edges. It is the candidate-consolidation signal —
 // a topic scattered across several open issues — distinct from title similarity.
 //
-// Truncation here has three independent seams. FetchTruncated means the window
+// Truncation here has several independent seams. FetchTruncated means the window
 // itself was capped, so a referencing issue outside it is invisible — an edge to it
 // is undetectable, not merely unlisted, and a caller must not read a non-truncated
 // run as "every cross-reference in the repo"; it is "every cross-reference among

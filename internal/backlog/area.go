@@ -31,12 +31,9 @@ type AreaCount struct {
 	Count int    `json:"count"`
 }
 
-// ReduceAreaBalance reduces the fetched open issues to an area distribution. An
-// issue's labels are mapped through the matcher (explicit list + prefix rules);
-// each matched name is normalized to a canonical key so an explicit form ("Core")
-// and a prefix suffix ("core") collapse into one area. The displayed name is the
-// lexicographically-smallest original form seen for the key (deterministic, and
-// in the common case there is only one form per key). totalOpen keeps
+// ReduceAreaBalance reduces the fetched open issues to an area distribution.
+// Classification and canonical naming come from reduce.AreaClassifier, shared with
+// the orientation read so both tools name an area identically. totalOpen keeps
 // OpenIssueCount exact when the window is truncated.
 func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, prefixes []reduce.PrefixRule) AreaBalanceFacts {
 	facts := AreaBalanceFacts{
@@ -45,34 +42,13 @@ func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, pr
 		FetchTruncated: len(issues) < totalOpen,
 		Areas:          make([]AreaCount, 0),
 	}
-	matcher := reduce.NewLabelMatcher(labels, prefixes)
-
-	type bucket struct {
-		display string
-		count   int
-	}
-	areas := make(map[string]*bucket)
+	classifier := reduce.NewAreaClassifier(labels, prefixes)
+	counts := make(map[string]int)
 
 	for _, is := range issues {
-		// Distinct area keys on this issue, so a multi-label issue counts once per
-		// area and MultiAreaCount reflects distinct areas, not labels.
-		keys := make(map[string]struct{})
-		for _, label := range is.Labels {
-			name, ok := matcher.Match(label)
-			if !ok {
-				continue
-			}
-			key := reduce.NormalizeLabel(name)
-			keys[key] = struct{}{}
-			b, exists := areas[key]
-			if !exists {
-				areas[key] = &bucket{display: name}
-			} else if name < b.display {
-				// Track the canonical display across all occurrences; min is
-				// order-independent, so accumulation stays deterministic.
-				b.display = name
-			}
-		}
+		// Keys is distinct per issue, so a multi-label issue counts once per area and
+		// MultiAreaCount reflects distinct areas, not labels.
+		keys := classifier.Keys(is.Labels)
 		if len(keys) == 0 {
 			facts.Unclassified++
 			continue
@@ -81,12 +57,12 @@ func ReduceAreaBalance(issues []github.Issue, totalOpen int, labels []string, pr
 			facts.MultiAreaCount++
 		}
 		for key := range keys {
-			areas[key].count++
+			counts[key]++
 		}
 	}
 
-	for _, b := range areas {
-		facts.Areas = append(facts.Areas, AreaCount{Area: b.display, Count: b.count})
+	for key, count := range counts {
+		facts.Areas = append(facts.Areas, AreaCount{Area: classifier.Display(key), Count: count})
 	}
 	// Hot spots first; tie-break by display name (unique per key) for a total order.
 	sort.Slice(facts.Areas, func(i, j int) bool {

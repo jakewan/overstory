@@ -41,6 +41,25 @@ const (
 	serverVersion = "0.1.0"
 )
 
+// limitSchema builds the list-limit parameter every manifest-driven tool publishes,
+// taking only the per-tool description. The bound and default live here rather than
+// beside each tool's schema because three copies of one contract is three chances
+// for one to move alone, and a caller has no way to discover that it happened.
+//
+// The minimum is load-bearing: the reductions treat a list limit of 0 as "empty
+// every list", so admitting 0 would return a structurally valid response with every
+// detail list silently blank.
+func limitSchema(description string) *jsonschema.Schema {
+	minLimit, maxLimit := 1.0, 100.0
+	return &jsonschema.Schema{
+		Type:        "integer",
+		Description: description,
+		Default:     json.RawMessage("20"),
+		Minimum:     &minLimit,
+		Maximum:     &maxLimit,
+	}
+}
+
 // config holds the server's resolved dependencies. Options override the
 // production defaults; tests inject fakes for hermetic coverage.
 type config struct {
@@ -167,10 +186,9 @@ var backlogBlockNames = []string{
 // backlogReviewTool publishes the input contract via a hand-written schema. The
 // installed jsonschema-go infers neither defaults nor bounds from struct tags
 // (and would mark every field required), so the schema is written explicitly:
-// owner/repo required, limit optional with a default and 1..100 bounds applied
-// by the SDK before the handler runs.
+// owner/repo required, limit optional with the shared list-limit default and
+// bounds the SDK applies before the handler runs.
 func backlogReviewTool() *mcp.Tool {
-	minLimit, maxLimit := 1.0, 100.0
 	return &mcp.Tool{
 		Name:        "backlog_review",
 		Description: "Survey a GitHub repository's open-issue backlog and return compact structured facts for the caller to render: a staleness block (exact open count, inactivity-band counts, the stalest issues), a deferred-review block (open issues carrying the repo's manifest-declared deferred labels, each with its dependency signals — the heuristic bodyRefs plus the authoritative native blockedBy, blocking, and open sub-issue children with their completion counts), an area-balance block (the issue distribution across the repo's functional areas, identified by manifest-declared labels and prefixes), a quality block (open issues with a too-thin body, no labels, or — when configured — a missing required-label category), an overlap block (groups of open issues with similar titles — candidate duplicates — found over the fetched window), a cross-reference block (groups of open issues that reference one another issue-to-issue via GitHub cross-references — candidate consolidation — found over the fetched window), a dependencies block (open issues classified by their authoritative native blocked-by/blocking edges — convention-free, so it surfaces the dependency structure even when no deferred convention is declared: ready/blocked/provisional counts plus a gates list, the do-first roots that block open downstream work, and a blocked list carrying each issue's blocked-by edges — the authoritative direction the cross-reference mention graph can invert; an issue is blocked by an open blocked-by edge or an open sub-issue gate, provisional when a truncated edge list leaves readiness unconfirmed, and the classification is over the fetched window), a trajectory block (for each manifest-declared lookback window in days, the issues created, closed, and net created-minus-closed — the backlog growing/shrinking signal — over a second open-and-closed fetch; this block is aggregate and not affected by limit, and marks itself unavailable if that fetch fails rather than failing the whole review), a pull-request-trajectory block (for each of the same lookback windows, the pull requests opened, closed, and net opened-minus-closed — the change-request closure-ratio signal for whether the project keeps pace with incoming PRs — over a dedicated open-and-closed/merged PR fetch reusing the trajectory windows; closed counts both merged and closed-without-merge, and the block returns these counts rather than a computed ratio for the caller to derive; like the issue trajectory it is aggregate, not affected by limit, and marks itself unavailable if its fetch fails rather than failing the whole review), and a critical-path block (when the repo's manifest declares an ordered stream list and a critical-path label: each declared stream in order, its open critical-path-labeled issue members, and a per-stream gate-cleared signal — cleared meaning no open critical-path issue remains in the stream, provisional when the fetch window is truncated; absent the convention the block reports itself not configured), and an open-issue-set block (the ascending, distinct set of open issue numbers in the fetched window — the resolvable surface for a deferred issue's stated bodyRefs, so a caller can tell a ref naming a live open issue in this repo from one that does not; same-repo, open, issues-only, and the full window never capped by limit, with a fetchTruncated flag marking when the set is a floor — presence names a live open issue, absence is not proof of resolution, since the ref may be a closed issue, an open PR, a cross-repo reference, or beyond a truncated window). The optional blocks parameter projects a subset: pass an allowlist of block names to return only those (omit it for the full composite), which also skips the secondary fetch backing any unrequested trajectory/prTrajectory block; repo, generatedAt, and openIssueSet are always returned.",
@@ -179,13 +197,7 @@ func backlogReviewTool() *mcp.Tool {
 			Properties: map[string]*jsonschema.Schema{
 				"owner": {Type: "string", Description: "repository owner (user or org)"},
 				"repo":  {Type: "string", Description: "repository name"},
-				"limit": {
-					Type:        "integer",
-					Description: "maximum number of items to list per reduction: issues for staleness, deferred, and quality; overlap groups for overlap; cross-reference groups for crossRef; members per stream for criticalPath",
-					Default:     json.RawMessage("20"),
-					Minimum:     &minLimit,
-					Maximum:     &maxLimit,
-				},
+				"limit": limitSchema("maximum number of items to list per reduction: issues for staleness, deferred, and quality; overlap groups for overlap; cross-reference groups for crossRef; members per stream for criticalPath"),
 				"blocks": {
 					Type:        "array",
 					Description: "optional allowlist of block names to return; omit it (or pass an empty array) for the full composite. Projecting a subset omits the other blocks from the response and skips the secondary GitHub fetch backing any block not requested (trajectory, prTrajectory), saving rate-limit budget when fanning out across many repos. The meta blocks (repo, generatedAt, openIssueSet) are always returned.",
