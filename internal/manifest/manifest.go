@@ -222,9 +222,10 @@ func Defaults() Config {
 				"Overview", "Summary", "Ikigai", "History", "Completion", "Out of scope",
 			},
 		},
-		// The default keeps the doubled wire payload (see reduce.ApplyByteBudget for why
-		// it doubles) comfortably under a typical client token cap across plausible bytes-per-token ratios,
-		// while leaving the common small response untouched. The cap is the client's and
+		// The default keeps the doubled wire payload (see reduce.ApplyByteBudget for
+		// why it doubles) comfortably under a typical client token cap across
+		// plausible bytes-per-token ratios, while leaving the common small response
+		// untouched. The cap is the client's and
 		// is not verifiable here; if it is lower than assumed the call fails loudly at the
 		// client rather than returning wrong data. Tunable per repo.
 		Response: ResponseConfig{MaxBytes: 20000},
