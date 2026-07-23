@@ -2,6 +2,7 @@ package github
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -141,43 +142,28 @@ func queryNodeCost(query string, vars map[string]int) (int, error) {
 // unbound variable is an error rather than a silent zero, because a dropped
 // multiplier understates the cost and would make the budget look satisfied.
 func argPageSize(args string, vars map[string]int) (int, error) {
-	for _, key := range []string{"first:", "last:"} {
-		for at := 0; ; {
-			rel := strings.Index(args[at:], key)
-			if rel < 0 {
-				break
-			}
-			at += rel
-			// Skip the operation signature's variable *declarations*: `$first:Int!`
-			// contains "first:" but declares a type, it does not pass a page size.
-			// Any preceding identifier character means this is not the argument name.
-			if at > 0 && (args[at-1] == '$' || isIdentByte(args[at-1])) {
-				at += len(key)
-				continue
-			}
-			val, _, _ := strings.Cut(strings.TrimSpace(args[at+len(key):]), ",")
-			val, _, _ = strings.Cut(strings.TrimSpace(val), ")")
-			val = strings.TrimSpace(val)
-			if name, ok := strings.CutPrefix(val, "$"); ok {
-				n, bound := vars[name]
-				if !bound {
-					return 0, fmt.Errorf("page size $%s in %q is not bound in vars", name, args)
-				}
-				return n, nil
-			}
-			n, err := strconv.Atoi(val)
-			if err != nil {
-				return 0, fmt.Errorf("page size %q in %q is not a number", val, args)
-			}
-			return n, nil
-		}
+	m := pageSizeArg.FindStringSubmatch(args)
+	if m == nil {
+		return 0, nil
 	}
-	return 0, nil
+	val := m[1]
+	if name, ok := strings.CutPrefix(val, "$"); ok {
+		n, bound := vars[name]
+		if !bound {
+			return 0, fmt.Errorf("page size $%s in %q is not bound in vars", name, args)
+		}
+		return n, nil
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, fmt.Errorf("page size %q in %q is not a number", val, args)
+	}
+	return n, nil
 }
 
-func isIdentByte(b byte) bool {
-	return b == '_' ||
-		(b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9')
-}
+// pageSizeArg matches a first:/last: *argument* and captures its value, which is
+// either a literal or a $variable. The leading class excludes a `$` so the
+// operation signature's variable declarations (`$first:Int!`) do not match — they
+// name a type, they do not pass a page size — and excludes identifier characters
+// so a longer argument name ending in "first" cannot match either.
+var pageSizeArg = regexp.MustCompile(`(?:^|[^$A-Za-z0-9_])(?:first|last)\s*:\s*(\$?[A-Za-z0-9_]+)`)
