@@ -75,10 +75,10 @@ const (
 // event sits on the *referenced* issue's timeline, so source is the issue/PR that
 // referenced this one — an incoming edge, not an outgoing one.
 //
-// On the three native dependency connections: blockedBy is what this issue
-// depends on, blocking is the reverse, and subIssues is its children. All three
-// are IssueConnection, so an edge is always an issue and never a PR, and all
-// three decode through one shared edge node and one shared projection.
+// On the native dependency connections: blockedBy is what this issue depends on,
+// blocking is the reverse, and subIssues is its children. Each is an
+// IssueConnection, so an edge is always an issue and never a PR, and they decode
+// through one shared edge node and one shared projection.
 // repository{ nameWithOwner } discriminates cross-repository edges, which toIssue
 // drops — a foreign repo's issue number would collide with a local one, the same
 // hazard referencedBy guards. state is read here so a reduction can surface only
@@ -212,11 +212,11 @@ const prActivityQuery = `query($owner:String!,$name:String!,$first:Int!,$after:S
   }
 }`
 
-// authoredSearchQuery resolves the author's user id and the five search counts in
+// authoredSearchQuery resolves the author's user id and the aliased search counts in
 // one root-level request (not repository-rooted — search and user are root
 // fields, so this decodes via doRaw, not do). Each search reads only issueCount
-// with first:0, so no nodes are paged — the count comes back directly. The five
-// query strings are passed as variables ($q0..$q4) rather than interpolated, so
+// with first:0, so no nodes are paged — the count comes back directly. The query
+// strings are passed as variables rather than interpolated, so
 // caller-supplied values can never become query structure; the qualifiers inside
 // them (is:issue/is:pr, author:/commenter:/reviewed-by:, the window) are asserted
 // by a dedicated string test, since the query-contract guard cannot see inside a
@@ -335,7 +335,7 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 
 // decodeConnection executes one repository-rooted GraphQL request and decodes the
 // single named connection field out of the repository payload. It is the shared home
-// for the six single-page wrappers' decode: field is the JSON key the connection sits
+// for the single-page wrappers' decode: field is the JSON key the connection sits
 // under ("issues", "milestones", "pullRequests"); subject names the shape for the
 // wrap error. An absent key yields a zero T with no error (as the single-field struct
 // decode it replaces left an absent field zero). The field lookup is case-sensitive —
@@ -797,11 +797,10 @@ func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, na
 }
 
 // AuthoredActivity counts what `author` authored and engaged with in ownerRepo
-// over [since, until]. It runs two requests (≈7 server-side operations: a user
-// resolve plus five searches in the first, a commit-history count in the second;
-// each search has its own index-consistency and secondary-rate-limit exposure):
-// the root-level search/user request resolves the author and reads the five
-// search counts, then — only when the author resolved — the repository-rooted
+// over [since, until]. It runs two requests, and each search inside them carries
+// its own index-consistency and secondary-rate-limit exposure: the root-level
+// search/user request resolves the author and reads the aliased search counts
+// (one server-side operation apiece, plus the user resolve), then — only when the author resolved — the repository-rooted
 // request counts default-branch commits. An unresolved login is ErrAuthorNotFound
 // (naming the login), never coerced to zero counts.
 func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author string, since, until time.Time) (AuthoredActivityResult, error) {
@@ -1092,10 +1091,10 @@ func nextLink(hdr http.Header) string {
 	return ""
 }
 
-// authoredSearchQueries assembles the five GitHub search query strings in the
-// order the authoredSearchQuery aliases consume them (s0..s4). Issues/PRs opened
-// filter on created date (the authored event); reviews and the two engagement
-// categories filter on the item's updated date — an approximation, since search
+// authoredSearchQueries assembles the GitHub search query strings in the order the
+// authoredSearchQuery aliases consume them. Issues/PRs opened filter on created
+// date (the authored event); reviews and the engagement categories filter on the
+// item's updated date — an approximation, since search
 // cannot filter by comment/review date. The -author exclusion isolates attention
 // to others' work — peer review and engagement — from the author's own items: it
 // keeps reviewsSubmitted to peer review (GitHub wraps every inline PR comment in a
@@ -1203,8 +1202,7 @@ type rateLimitNode struct {
 }
 
 // authoredSearchData decodes the root-level authored-activity request: the
-// resolved user (nil when the login doesn't exist) and the five aliased search
-// counts. Each search node carries only issueCount (first:0 paged no nodes).
+// resolved user (nil when the login doesn't exist) and the aliased search counts. Each search node carries only issueCount (first:0 paged no nodes).
 type authoredSearchData struct {
 	User *struct {
 		ID string `json:"id"`

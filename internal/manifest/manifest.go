@@ -659,7 +659,7 @@ func validate(c Config, ownerRepo, file string) error {
 	if c.Trajectory.FetchLimit <= 0 {
 		return fmt.Errorf("manifest %q for %q: trajectory.fetchLimit must be > 0, got %d", file, ownerRepo, c.Trajectory.FetchLimit)
 	}
-	// The four orientation knobs are all must-be-positive — a zero-day threshold is
+	// The orientation knobs are all must-be-positive — a zero-day threshold is
 	// degenerate and a zero fetch limit fetches nothing — following staleness's <= 0
 	// rule, not minBodyLength's 0-disables. BugLabels needs no check: an empty list
 	// is a valid bug-flagging opt-out, like deferred.Labels.

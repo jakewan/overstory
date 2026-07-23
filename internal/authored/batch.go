@@ -55,7 +55,7 @@ type BatchFacts struct {
 }
 
 // RepoActivity is one repo's slot in the batch result: either Available with its
-// six Counts, or unavailable with a reason (and, for a throttle, the ResetAt the
+// Counts, or unavailable with a reason (and, for a throttle, the ResetAt the
 // caller can retry at). Counts and ResetAt are pointers so they omit cleanly in
 // the case they don't apply. Available is always emitted so a caller branches on
 // it explicitly rather than inferring from a missing field.

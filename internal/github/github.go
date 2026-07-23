@@ -251,7 +251,7 @@ type PullRequestActivityResult struct {
 }
 
 // AuthoredActivityResult carries the decomposed authored/engagement counts for
-// one user in one repository over a bounded window: the six categories the
+// one user in one repository over a bounded window: the categories the
 // attention-audit consumer reads, kept as separate numbers (never summed) so the
 // consumer owns any weighting. There is no truncation seam — these are counts,
 // not a bounded list. RateLimit is the budget snapshot from the fetch, or nil
@@ -369,7 +369,7 @@ var (
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")
 	// ErrAuthorNotFound means the requested author login does not resolve to a
-	// GitHub user, so authored-activity counts would be six meaningless zeros
+	// GitHub user, so every authored-activity count would be a meaningless zero,
 	// indistinguishable from a real-but-inactive user — surfaced as an error
 	// rather than coerced to zero.
 	ErrAuthorNotFound = errors.New("author login not found")
