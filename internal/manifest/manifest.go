@@ -185,9 +185,10 @@ func Defaults() Config {
 			{Prefix: "area", Delimiter: ":"},
 			{Prefix: "area", Delimiter: "-"},
 		}},
-		// The default is the smallest length that still rejects an empty body, keeping
-		// that universal check on out of the box; RequiredCategories has no default — label families are
-		// repo-specific, like Deferred.
+		// The default is the smallest length that still rejects an empty body, so the
+		// universal non-empty check is active without any configuration.
+		// RequiredCategories has no default — label families are repo-specific, like
+		// Deferred.
 		Quality: QualityConfig{MinBodyLength: 1},
 		// The default links clearly-similar titles while leaving paraphrases that share
 		// only a word or two below the bar; tunable per repo.
