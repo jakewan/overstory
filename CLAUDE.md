@@ -88,6 +88,7 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 - `.claude/rules/design-fork-adjudication.md` — how value-laden design forks are settled here.
 - `CONTRIBUTING.md` — contributor setup, scope, and PR posture.
 - `SECURITY.md` — reporting channel, plus the credential and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it.
+- `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1, with conduct reports routed the same way security reports are.
 - `.github/copilot-instructions.md` — review guidance for GitHub Copilot.
 
 [bdd]: https://en.wikipedia.org/wiki/Behavior-driven_development

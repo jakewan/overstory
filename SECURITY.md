@@ -25,4 +25,4 @@ Overstory does not manage credentials of its own. It authenticates to GitHub by 
 
 Overstory speaks MCP over stdio and runs as a subprocess of the calling agent. It stores nothing between runs, opens no network listener, and sends repository data nowhere except back to the caller that asked for it. Diagnostics go to stderr; stdout carries only the JSON-RPC protocol stream.
 
-Repository conventions come from operator-supplied manifests read from the local filesystem. Because manifest keys are repository names, a manifest can itself be sensitive metadata — see [Manifests](docs/src/manifest.md) for the layering approach that keeps private repository names out of committed configuration.
+Repository conventions come from operator-supplied manifests read from the local filesystem. Because manifest keys are repository names, a manifest can itself be sensitive metadata — the Manifests page of the documentation book describes the layering approach that keeps private repository names out of committed configuration.
