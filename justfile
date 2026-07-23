@@ -35,6 +35,23 @@ tidy:
 verify:
     go mod verify
 
+# Fail if go.mod/go.sum are not tidy (reports the diff, does not rewrite)
+tidy-check:
+    go mod tidy -diff
+
+# Scan dependencies and the standard library for known vulnerabilities
+vuln:
+    go tool govulncheck ./...
+
+# Report mise-managed tools with newer versions available.
+# --bump is required, not cosmetic: every pin in mise.toml is an exact version,
+# and plain `mise outdated` compares against the latest release matching the
+# requested spec — which for an exact pin is always the pin itself, so it
+# reports "up to date" no matter how far upstream has moved. --local keeps a
+# contributor's global mise config out of the report.
+toolchain-outdated:
+    mise outdated --bump --local
+
 # Clean build artifacts
 clean:
     rm -rf bin/

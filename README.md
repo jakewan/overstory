@@ -38,7 +38,7 @@ Build the book locally with `just docs-build` (or `just docs-serve` for live pre
 Tool versions are managed by [mise](https://mise.jdx.dev/); tasks run through [just](https://github.com/casey/just):
 
 ```sh
-mise install   # install pinned Go, golangci-lint, just, lefthook, mdbook
+mise install   # install pinned Go, golangci-lint, just, lefthook, mdbook (+ linkcheck2 on Linux)
 just hooks     # install git hooks
 just build     # build the binary to bin/
 just test      # run tests

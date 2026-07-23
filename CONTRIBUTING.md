@@ -24,20 +24,33 @@ Contributions should stay within this focused scope. If you're unsure whether so
 Tool versions are managed by [mise](https://mise.jdx.dev/). After cloning:
 
 ```bash
-mise install        # Install Go, golangci-lint, just, lefthook, mdbook
+mise install        # Install Go, golangci-lint, just, lefthook, mdbook (+ linkcheck2 on Linux)
 just hooks          # Install git hooks (lefthook)
 ```
+
+Tool versions come from `mise.toml`, and their checksums from the committed `mise.lock` — `mise install` verifies downloads against it. If you change a version pin, run `mise lock` and commit the updated lockfile in the same change.
+
+One platform caveat: `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` binary and no others, so `mise.toml` restricts it to Linux and mise skips it elsewhere. `mise install` provisions the rest of the toolchain normally on macOS and arm64; only `just docs-build` is unavailable there, and it needs a Linux x86-64 machine or a container.
 
 ### Build, Test, Lint
 
 All commands go through [just](https://github.com/casey/just):
 
 ```bash
-just build    # Build binary to bin/
-just test     # Run all tests
-just lint     # Run golangci-lint
-just install  # Install the binary to ~/.local/bin
+just build              # Build binary to bin/
+just test               # Run all tests
+just lint               # Run golangci-lint
+just vuln               # Scan dependencies and stdlib for known vulnerabilities
+just tidy-check         # Fail if go.mod/go.sum are not tidy
+just toolchain-outdated # Report mise-managed tools with newer versions
+just install            # Install the binary to ~/.local/bin
 ```
+
+### Dependencies and the toolchain
+
+Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand. The weekly scheduled run fails when a pin is behind upstream, and that failure is the prompt; `just toolchain-outdated` runs the same check locally. Clearing it means bumping the pins and regenerating `mise.lock`, or deciding the bump can wait. It gates nothing — that workflow is not a required check.
+
+Several pins move in pairs; `.claude/rules/toolchain-ci-parity.md` records which and why. `SECURITY.md` describes the full supply-chain posture, including what the scanning does and does not guarantee.
 
 ### Testing Approach
 

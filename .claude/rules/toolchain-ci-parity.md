@@ -1,5 +1,5 @@
 ---
-paths: mise.toml, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml
+paths: mise.toml, mise.lock, go.mod, lefthook.yml, .golangci.yml, .github/workflows/ci.yml, .github/workflows/vuln.yml
 ---
 
 # Toolchain / CI Parity
@@ -18,7 +18,30 @@ CI installs Go via `actions/setup-go` with `go-version-file: go.mod`, so the `go
 - A `.0` floor (`go 1.26.0`) pins CI to the oldest 1.26 patch, drifting behind it.
 - The exact patch (`go 1.26.4`) makes CI install the same Go developers run. This is also what `go mod init`/`go mod tidy` write by default.
 
-Bump `go.mod` and `mise.toml` together on a Go upgrade.
+Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries a second consequence: `govulncheck` reports standard-library advisories against the Go on `PATH`, so whichever pin a given run resolves decides what the vulnerability scan considers vulnerable. CI's scan job uses `setup-go` from `go.mod`, a developer's `just vuln` uses mise's — they agree only while the two pins do.
+
+## mise.lock moves with every mise.toml pin
+
+`mise.toml` sets `lockfile = true`, and `mise.lock` records each tool's resolved URL and checksum per platform. It is committed, and the two files must move together: run `mise lock` and commit the result in the same commit as any `mise.toml` version change.
+
+What a stale lock does depends on where it runs, and the difference is the trap. **In CI** it fails loudly — `jdx/mise-action` runs `mise install --locked`, which refuses any tool lacking a recorded URL for the runner's platform. **Locally** it fails silently in the other direction: `mise install` updates an existing lockfile in place, so a bump followed by an install quietly rewrites `mise.lock` and hands you a diff you did not ask for. Review that diff rather than assuming your install could not have touched it. (`mise lock` is what *creates* the lockfile; `mise install` only maintains one that exists.)
+
+Two more facts worth knowing before editing either file:
+
+- A platform absent from the lock gets written in by whoever first installs on it, so an install from a new platform also produces a diff to review.
+- `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its `mise.toml` entry carries `os = ["linux"]` and its lock entry covers the linux platforms only. Both follow from the artifact's own limit; neither is an incomplete lock. If upstream ever ships other platforms, the `os` restriction is what has to be relaxed before `mise lock` will record them.
+
+## The mise version is one atomic value across both workflows
+
+`jdx/mise-action`'s `version:` is pinned in `.github/workflows/ci.yml` (docs job) and `.github/workflows/vuln.yml` (toolchain-report job). Keep them identical: mise is the component that verifies every other tool against `mise.lock`, so a floating mise means a floating verifier, and two different mises mean two different verifiers.
+
+This pin is also the toolchain component with the *least* automated coverage in the repository. Dependabot's `github-actions` ecosystem updates the `jdx/mise-action@v4` tag but never reads the action's `version:` input; `mise outdated` reads `mise.toml`, where mise itself does not appear. Nothing reports it — it moves only when a human moves it, which is why it belongs in the manual review posture recorded in `SECURITY.md`.
+
+## The govulncheck tool dependency reaches the built binary
+
+`govulncheck` is a `go.mod` tool dependency, so its requirements participate in the main module's version resolution. That is not confined to tooling: adding it raised `golang.org/x/sys` (via `golang.org/x/telemetry`), and `golang.org/x/sys/cpu` is linked into `cmd/overstory`. Every future update of `x/vuln` or its dependencies can do the same.
+
+The consequence for review: a bump that looks like tooling can change the shipped binary's build list. Check `go list -deps ./cmd/overstory` when a govulncheck update moves a shared dependency, and do not describe such a change as CI-only without checking.
 
 ## mdbook and mdbook-linkcheck2 versions move together
 
