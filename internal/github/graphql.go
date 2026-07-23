@@ -30,6 +30,33 @@ const (
 	userAgent = "overstory"
 )
 
+// Per-connection page sizes for the issue queries. They live here rather than
+// inline in the query strings so a comment can name the bound instead of
+// restating its value, and so the node-cost budget is computed from them rather
+// than asserted about them.
+const (
+	// labelPageSize bounds the labels read per issue. An issue past it misses a
+	// label in the tail, so the deferred, area, quality, and critical-path signals
+	// can misread it — surfaced, not swallowed: totalCount lets the decode set
+	// LabelsTruncated. Shared by both issue queries so an issue's stream
+	// classification has identical fidelity whichever path fetched it.
+	labelPageSize = 25
+	// commentPageSize bounds the comment window scanned to derive last-human
+	// activity.
+	commentPageSize = 25
+	// crossRefPageSize bounds the cross-reference events read per issue. Modest to
+	// bound query node cost; totalCount lets the decode flag a per-issue truncation
+	// rather than drop edges silently.
+	crossRefPageSize = 25
+	// depEdgePageSize bounds each native dependency connection — blockedBy,
+	// blocking, and subIssues. GitHub documents a 50-edge limit per relationship,
+	// so in practice the window covers the full set. Correctness does not rest on
+	// that being current: each connection's truncation flag compares totalCount to
+	// the fetched nodes, so a bounded set is never reported as complete regardless
+	// of the real cap.
+	depEdgePageSize = 50
+)
+
 // issuesQuery fetches a page of open issues newest-activity-last. owner/name are
 // GraphQL variables, not interpolated, so caller-supplied values can never
 // become query structure. UPDATED_AT ASC is the closest available proxy for
@@ -72,7 +99,7 @@ const (
 // and blockingTruncated truncation flag, and the same state/repository sub-fields
 // for open-state filtering and the cross-repository drop. The two directions decode
 // through one shared edge node and one shared edge projection.
-const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:String){
+var issuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
     issues(states:OPEN, first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
@@ -81,24 +108,24 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
       nodes{
         number title url createdAt bodyText
         milestone{ number title }
-        labels(first:25){ totalCount nodes{ name } }
-        comments(last:25){ nodes{ createdAt author{ __typename login } } }
-        timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:25){
+        labels(first:%[1]d){ totalCount nodes{ name } }
+        comments(last:%[2]d){ nodes{ createdAt author{ __typename login } } }
+        timelineItems(itemTypes:[CROSS_REFERENCED_EVENT], last:%[3]d){
           totalCount
           nodes{ __typename ... on CrossReferencedEvent {
             isCrossRepository
             source{ __typename ... on Issue { number } }
           } }
         }
-        blockedBy(first:50){
+        blockedBy(first:%[4]d){
           totalCount
           nodes{ number state repository{ nameWithOwner } }
         }
-        blocking(first:50){
+        blocking(first:%[4]d){
           totalCount
           nodes{ number state repository{ nameWithOwner } }
         }
-        subIssues(first:50){
+        subIssues(first:%[4]d){
           totalCount
           nodes{ number state repository{ nameWithOwner } }
         }
@@ -106,7 +133,7 @@ const issuesQuery = `query($owner:String!,$name:String!,$first:Int!,$after:Strin
       }
     }
   }
-}`
+}`, labelPageSize, commentPageSize, crossRefPageSize, depEdgePageSize)
 
 // Node-cost headroom: each issue node now carries blockedBy(50) + blocking(50) +
 // subIssues(50) + timelineItems(25) + comments(25) + labels(25). At issues(first:100)
@@ -249,16 +276,16 @@ const commitHistoryQuery = `query($owner:String!,$name:String!,$id:ID!,$since:Gi
 // window's cap, so an issue's stream classification has identical fidelity on
 // either source path. UPDATED_AT ASC mirrors the general window's order (immaterial
 // here — the reduction sorts members by number — but keeps the two queries aligned).
-const criticalPathIssuesQuery = `query($owner:String!,$name:String!,$label:String!,$first:Int!,$after:String){
+var criticalPathIssuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$label:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
     issues(states:OPEN, labels:[$label], first:$first, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}){
       totalCount
       pageInfo{ hasNextPage endCursor }
-      nodes{ number title labels(first:25){ totalCount nodes{ name } } }
+      nodes{ number title labels(first:%d){ totalCount nodes{ name } } }
     }
   }
-}`
+}`, labelPageSize)
 
 // GraphQLFetcher fetches open issues via the GitHub GraphQL API in-process —
 // and, for the maintenance reduction's issue-events stream, the REST API.
