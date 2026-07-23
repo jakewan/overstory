@@ -12,9 +12,9 @@ go = "1.26.5"
 # golangci-lint-action `version:` — treat them as one atomic value so local and
 # CI lint run the same binary against the same config schema.
 golangci-lint = "2.12.2"
-just = "1.52.0"
-lefthook = "2.1.9"
-mdbook = "0.5.3"
+just = "1.57.0"
+lefthook = "2.1.10"
+mdbook = "0.5.4"
 # mdbook-linkcheck2 is an mdbook renderer backend; it links against mdbook's
 # crate version (mdbook-driver/mdbook-renderer), so bump it together with
 # `mdbook` above — see .claude/rules/toolchain-ci-parity.md.
