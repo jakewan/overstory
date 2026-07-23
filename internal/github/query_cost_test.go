@@ -30,17 +30,32 @@ import (
 // to wrong data.
 const nodeCostBudget = 60_000
 
-func TestPagedQueriesStayUnderNodeCostBudget(t *testing.T) {
-	for _, tc := range []struct {
+// pagedQueries is every query that pages a connection, so a guard here covers the
+// family rather than the two that happened to be edited. $first is bound to
+// pageSize at each call site and supplied here: the outermost multiplier is a
+// GraphQL variable and is not in the query text.
+func pagedQueries() []struct {
+	name  string
+	query string
+	vars  map[string]int
+} {
+	v := map[string]int{"first": pageSize}
+	return []struct {
 		name  string
 		query string
 		vars  map[string]int
 	}{
-		// $first is bound to pageSize at the call site, so it is supplied here: the
-		// outermost multiplier is a GraphQL variable and is not in the query text.
-		{"issuesQuery", issuesQuery, map[string]int{"first": pageSize}},
-		{"criticalPathIssuesQuery", criticalPathIssuesQuery, map[string]int{"first": pageSize}},
-	} {
+		{"issuesQuery", issuesQuery, v},
+		{"activityQuery", activityQuery, v},
+		{"milestonesQuery", milestonesQuery, v},
+		{"pullRequestsQuery", pullRequestsQuery, v},
+		{"prActivityQuery", prActivityQuery, v},
+		{"criticalPathIssuesQuery", criticalPathIssuesQuery, v},
+	}
+}
+
+func TestPagedQueriesStayUnderNodeCostBudget(t *testing.T) {
+	for _, tc := range pagedQueries() {
 		t.Run(tc.name, func(t *testing.T) {
 			cost, err := queryNodeCost(tc.query, tc.vars)
 			if err != nil {
@@ -53,6 +68,53 @@ func TestPagedQueriesStayUnderNodeCostBudget(t *testing.T) {
 					"GitHub's ceiling before raising the budget", tc.name, cost, nodeCostBudget)
 			}
 		})
+	}
+}
+
+// TestConnectionPageSizesAreWithinGitHubsCap guards the constraint that actually
+// bites when someone retunes a page size — which naming the constants made easier
+// to do. GitHub rejects first:/last: outside 1..100 with an argument-validation
+// error, so an over-large value fails every live call against every repository
+// while the node-cost budget stays green (250 labels still scores well under it)
+// and the contract tests stay green (they strip argument lists before matching).
+// Nothing else in the package can see it.
+func TestConnectionPageSizesAreWithinGitHubsCap(t *testing.T) {
+	const githubMaxPageSize = 100
+	for _, tc := range pagedQueries() {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, m := range pageSizeArg.FindAllStringSubmatch(tc.query, -1) {
+				val := m[1]
+				if strings.HasPrefix(val, "$") {
+					continue // a variable; its value is the caller's pageSize, checked below
+				}
+				n, err := strconv.Atoi(val)
+				if err != nil {
+					t.Fatalf("page size %q is not a number", val)
+				}
+				if n < 1 || n > githubMaxPageSize {
+					t.Errorf("page size %d is outside GitHub's 1..%d cap — the API rejects "+
+						"the whole query, so every fetch using it fails", n, githubMaxPageSize)
+				}
+			}
+		})
+	}
+	if pageSize < 1 || pageSize > githubMaxPageSize {
+		t.Errorf("pageSize = %d is outside GitHub's 1..%d cap", pageSize, githubMaxPageSize)
+	}
+}
+
+// TestBuiltQueriesHaveNoFormatErrors guards the hazard the extraction introduced:
+// the two interpolated queries are Sprintf format strings now, so a later edit
+// adding a literal `%` to the query body turns it into a verb and ships
+// `%!x(MISSING)` inside the query. The contract tests only ever *add* tokens to an
+// identifier set, so garbage never fails them; GitHub reports it as a syntax error
+// at fetch time.
+func TestBuiltQueriesHaveNoFormatErrors(t *testing.T) {
+	for _, tc := range pagedQueries() {
+		if strings.Contains(tc.query, "%!") {
+			t.Errorf("%s contains a Sprintf format error: %q", tc.name,
+				tc.query[max(0, strings.Index(tc.query, "%!")-40):])
+		}
 	}
 }
 
