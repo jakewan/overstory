@@ -69,7 +69,7 @@ Formatting is enforced by golangci-lint's configured formatters (`gofmt`, `goimp
 
 This project uses [BDD][bdd]-style/outside-in [TDD][tdd] for non-trivial code: write a failing behavior test from the caller's perspective first, let it drive the API, then implement the minimum to pass and refactor under the test's safety net. Tests use the standard `testing` package (no external frameworks), favor table-driven cases, exercise tool behavior through an in-memory MCP client/server session, and isolate filesystem state with `t.TempDir()`. Skip the ceremony for trivial work (typos, single-line fixes, documentation, these instruction files).
 
-Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when editing Go).
+Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when Claude reads a Go file).
 
 ## Key design decisions
 
@@ -82,7 +82,8 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when edi
 
 ## Conventions in this repo
 
-- `.claude/rules/go-practices.md` — Go authoring conventions (path-conditioned to Go files).
+- `.claude/rules/comment-conventions.md` — repo-wide comment conventions (why-not-what, comment durability); always loaded.
+- `.claude/rules/go-practices.md` — Go authoring conventions (loaded when Claude reads a Go file).
 - `.claude/rules/pr-conventions.md` — PR descriptions, commit format, changelog policy, branch freshness, fix-vs-defer.
 - `.claude/rules/pr-waste-patterns.md` — what counts as reviewer-distracting waste in a diff.
 - `.claude/rules/no-personal-details.md` — keep personal/identifying details out of this public repo.
