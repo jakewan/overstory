@@ -25,9 +25,8 @@ type Facts struct {
 	Repo        string    `json:"repo"`
 	GeneratedAt time.Time `json:"generatedAt"`
 	// The orientation-signal blocks are pointers with omitempty so block projection
-	// can omit an unrequested one entirely; see backlog.Facts for the full rationale
-	// (full-composite bytes unchanged; a requested-but-unavailable block stays non-
-	// nil with its Available:false marker).
+	// can omit an unrequested one entirely. backlog.Facts carries the full rationale
+	// for the shape; it is not repeated here, where a copy would drift from it.
 	Milestones      *MilestoneFacts            `json:"milestones,omitempty"`
 	AreaInventory   *AreaInventoryFacts        `json:"areaInventory,omitempty"`
 	Hygiene         *HygieneFacts              `json:"hygiene,omitempty"`
