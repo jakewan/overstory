@@ -58,9 +58,11 @@ type MilestoneTracksFacts struct {
 // not place in a track, so the one drop the reduction makes is visible rather than
 // silent. It counts only references a boundary heading orphaned — references the
 // operator deliberately excluded (prose before the first marker, or prose under a
-// stoplisted label) are suppressed, so a well-configured repository reads zero. It
-// is a parse fact, tallied during the scan, so it never overlaps ListTruncated,
-// which reports members that were assigned and then capped.
+// stoplisted label, whether that label starts a track or only bounds one) are
+// suppressed, so a well-configured repository reads zero. Like Track.Members it
+// counts reference occurrences rather than distinct issues, so the two stay
+// comparable. It is a parse fact, tallied during the scan, so it never overlaps
+// ListTruncated, which reports members that were assigned and then capped.
 type MilestoneTrackSet struct {
 	Number         int     `json:"number"`
 	Title          string  `json:"title"`
@@ -104,16 +106,22 @@ type TrackMember struct {
 //
 // HeadingLevels governs only which headings *start* tracks. Where a track ends is
 // not configurable: an ATX heading closes the open track whenever it is at or above
-// that track's depth, so narrowing or emptying HeadingLevels cannot silently move
-// references from one track into another.
+// that track's depth, and a bold-run-in track — having no depth of its own — takes
+// the pseudo-depth runInDepth assigns it. A deeper heading is a sub-section and
+// stays content. So narrowing or emptying HeadingLevels cannot move references
+// across a sibling-or-shallower section boundary; dropping a deeper level still
+// merges that sub-section's references into the enclosing track, which is the
+// nesting model rather than the leak this decoupling closes.
 type TrackParams struct {
 	HeadingLevels []int
 	BoldRunIn     bool
 	LabelStoplist []string
 }
 
-// maxHeadingLevel is markdown's deepest ATX heading, bounding headingRe and
-// standing in as the depth at which every heading is a boundary.
+// maxHeadingLevel is markdown's deepest ATX heading — a depth no level headingRe
+// yields can exceed, which is what lets runInDepth use it to mean "every heading is
+// a boundary". TestHeadingReRespectsMaxHeadingLevel keeps the two in step, since
+// the pattern spells its own bound.
 const maxHeadingLevel = 6
 
 var (
@@ -228,12 +236,13 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 		if m := headingRe.FindStringSubmatch(line); m != nil {
 			level := len(m[1])
 			sectionDepth = level
+			label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(m[2]), "#"))
+			stoplisted := stop[strings.ToLower(label)]
 			switch {
 			case levels[level]:
 				flush()
-				label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(m[2]), "#"))
 				counting = false
-				if !stop[strings.ToLower(label)] {
+				if !stoplisted {
 					cur = &Track{Label: label}
 					curDepth = level
 				}
@@ -243,7 +252,15 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 				// though it starts no track of its own. Without this a narrowed
 				// headingLevels would silently absorb the next section's references.
 				flush()
-				counting = true
+				// The stoplist reaches boundaries too, not just markers: a label the
+				// operator declared prose opens a region whose references are excluded
+				// by intent, so reporting them would fire on every well-configured repo.
+				counting = !stoplisted
+				if counting {
+					// The heading's own text is discarded, so any reference in it belongs
+					// to no track — the same accounting the section below it gets.
+					unassigned += len(reduce.IssueRefMatches(label))
+				}
 				continue
 			}
 			// A heading deeper than the open track nests inside it, so it stays

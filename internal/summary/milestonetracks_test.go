@@ -132,11 +132,20 @@ func TestParseTracks(t *testing.T) {
 			desc: "## Tracks\n**Alpha**:\n#### Members\n- [x] #1",
 			want: "Alpha||1:x",
 		},
+		// This pair is one fixture under two marker sets: dropping level 3 does move
+		// #1 from its own track into the enclosing one. That is the outline model
+		// working as intended — a sub-section belongs to its parent — and it is the
+		// reason the docs must not claim headingLevels never affects membership.
 		{
 			name:   "sub-heading below a heading-started track stays content",
 			desc:   "## A\n### Sub\n- #1",
 			want:   "A||1:",
 			params: &TrackParams{HeadingLevels: []int{2}, BoldRunIn: true},
+		},
+		{
+			name: "the same sub-heading starts its own track when its level is configured",
+			desc: "## A\n### Sub\n- #1",
+			want: "Sub||1:",
 		},
 		{
 			name:   "shallower heading ends a deeper track",
@@ -220,6 +229,30 @@ func TestParseTracksCountsUnassignedRefs(t *testing.T) {
 			want:      0,
 			listLimit: 2,
 		},
+		{
+			name:   "references under a stoplisted boundary heading do not count",
+			desc:   "**Alpha**: #1\n## Summary\nFollow-up context in #99.",
+			want:   0,
+			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Summary"}},
+		},
+		{
+			name:   "references under a non-stoplisted boundary heading count",
+			desc:   "**Alpha**: #1\n## Follow-ups\nLoose end in #99.",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Summary"}},
+		},
+		{
+			name:   "references on a boundary heading line count",
+			desc:   "### T\n- #1\n## Notes about #42",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name:   "references on a stoplisted boundary heading line do not count",
+			desc:   "### T\n- #1\n## Summary of #42",
+			want:   0,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true, LabelStoplist: []string{"Summary of #42"}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			params := defaultTrackParams()
@@ -234,6 +267,21 @@ func TestParseTracksCountsUnassignedRefs(t *testing.T) {
 				t.Errorf("unassigned refs = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestHeadingReRespectsMaxHeadingLevel asserts mechanically what runInDepth's use
+// of maxHeadingLevel assumes: no heading the parser recognizes is deeper than that
+// constant. Loosening headingRe's own bound without moving the constant would
+// otherwise silently demote the run-in sentinel from "every heading is a boundary"
+// to "all but the deepest".
+func TestHeadingReRespectsMaxHeadingLevel(t *testing.T) {
+	deepest := strings.Repeat("#", maxHeadingLevel)
+	if m := headingRe.FindStringSubmatch(deepest + " Label"); m == nil || len(m[1]) != maxHeadingLevel {
+		t.Errorf("headingRe did not match a depth-%d heading, want it to", maxHeadingLevel)
+	}
+	if m := headingRe.FindStringSubmatch(deepest + "# Label"); m != nil {
+		t.Errorf("headingRe matched a depth-%d heading at level %d, want no match", maxHeadingLevel+1, len(m[1]))
 	}
 }
 
