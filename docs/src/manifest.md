@@ -147,8 +147,10 @@ Conventions the `milestone_tracks` reduction consumes: how the track structure o
 
 **Where a track ends is not configurable.** `headingLevels` governs only which headings *start* a track. An ATX heading bounds the track above it whether or not it starts one, following markdown's usual section nesting — so which headings are boundaries depends on depth, not on your configuration:
 
-- A track started by a heading ends at the next heading of equal or lesser depth. A deeper heading is a sub-section of that track, so its references still belong to the track.
-- A track started by a bold run-in ends at the next heading that is not a sub-heading of the section containing the run-in. Written before any heading, it ends at the first heading of any depth.
+A track ends at the next heading of equal or lesser depth than the track's own. A deeper heading is a sub-section of that track, so its references still belong to the track. What differs between the two marker shapes is only how the track's depth is fixed:
+
+- A track started by a heading takes that heading's depth.
+- A track started by a bold run-in sits one level inside its enclosing section, so under a `##` it behaves like a `###`: a `###` is a sibling and ends it, a `####` is a sub-section and stays content. Written before any heading it has no enclosing section, so the first heading of any depth ends it.
 
 So `headingLevels` cannot move references across a *sibling or shallower* section boundary — that boundary is convention-free, and it is the one that used to leak. Removing a *deeper* level does merge that sub-section's references into the enclosing track, per the first bullet above: a sub-section belongs to its parent, and with no marker to start a track of its own its references stay with the track that contains it. References that fall past a boundary with no track open are reported in the milestone's `unassignedRefs` count rather than silently absorbed by the previous track — except under a stoplisted label, where the operator has already declared the section prose. Setext headings (`Title` underlined with `===`) and raw HTML headings are not recognized as markers or boundaries — the same documented imprecision that applies to references inside HTML blocks.
 

@@ -319,10 +319,11 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 
 // runInDepth is the depth of a track opened by a bold run-in, which carries no
 // heading level of its own. A run-in is a pseudo-heading one level inside the
-// section it sits in, so that section's sub-headings stay content while a
-// sibling-or-shallower heading closes it. At document root there is no enclosing
-// section for a heading to be a sub-heading of, so the first heading of any depth
-// closes the run-in — maxHeadingLevel makes every level satisfy the boundary test.
+// section it sits in, so it closes on a heading at that pseudo-level or shallower —
+// under a `##`, an `###` is its sibling and closes it while a `####` is its
+// sub-section and stays content. At document root there is no enclosing section to
+// sit inside, so the first heading of any depth closes the run-in — maxHeadingLevel
+// makes every level satisfy the boundary test.
 func runInDepth(sectionDepth int) int {
 	if sectionDepth == 0 {
 		return maxHeadingLevel

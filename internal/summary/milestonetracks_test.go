@@ -127,10 +127,19 @@ func TestParseTracks(t *testing.T) {
 			want:   "Alpha|critical-path|1:",
 			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Ikigai", "Why", "History"}},
 		},
+		// A bold run-in sits one level inside its enclosing section, so these two pin
+		// both sides of its depth: a heading at that level is a sibling and closes it,
+		// a deeper one is a sub-section and stays content.
 		{
 			name: "sub-heading below a bold run-in stays content",
 			desc: "## Tracks\n**Alpha**:\n#### Members\n- [x] #1",
 			want: "Alpha||1:x",
+		},
+		{
+			name:   "sibling-level heading closes a bold-run-in track",
+			desc:   "## Tracks\n**Alpha**: #1\n### Notes\n- #2",
+			want:   "Alpha||1:",
+			params: &TrackParams{HeadingLevels: []int{2}, BoldRunIn: true},
 		},
 		// This pair is one fixture under two marker sets: dropping level 3 does move
 		// #1 from its own track into the enclosing one. That is the outline model

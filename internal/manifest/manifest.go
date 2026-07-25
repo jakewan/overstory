@@ -147,9 +147,9 @@ type TrajectoryConfig struct {
 // bold run-in label (`**Label** (status):`) when BoldRunIn is set — carrying issue
 // references. HeadingLevels governs only which headings *start* a track; where one
 // ends is not configurable, following markdown's section nesting instead — an ATX
-// heading of equal or lesser depth closes the track above it, a deeper one is a
-// sub-section whose references stay with it, and a bold-run-in track closes at any
-// heading that is not a sub-heading of its enclosing section. So narrowing
+// heading of equal or lesser depth than the track's own closes it, a deeper one is
+// a sub-section whose references stay with it, and a bold-run-in track takes the
+// depth one level inside its enclosing section. So narrowing
 // HeadingLevels cannot move references across a sibling-or-shallower section
 // boundary. LabelStoplist names labels that are prose sections, not tracks
 // (matched case-insensitively), so a `## Ikigai` or `**Why**:` heading doesn't
