@@ -37,6 +37,9 @@ func TestParseTracks(t *testing.T) {
 		name string
 		desc string
 		want string
+		// params overrides defaultTrackParams for the cases that turn on a
+		// non-default marker set; nil keeps the realistic defaults.
+		params *TrackParams
 	}{
 		{
 			name: "bold run-in with inline members",
@@ -116,9 +119,72 @@ func TestParseTracks(t *testing.T) {
 			desc: "## Active tracks\n\nsome prose, no refs",
 			want: "",
 		},
+		// Heading boundaries (#121). A heading bounds a track whether or not its level
+		// starts one, so membership no longer shifts when headingLevels is narrowed.
+		{
+			name:   "narrative heading bounds a bold-run-in track when no level starts tracks",
+			desc:   "## Tracks\n\n**Alpha** (critical-path): #1\n\n## Summary\n\nFollow-up context in #99.",
+			want:   "Alpha|critical-path|1:",
+			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Ikigai", "Why", "History"}},
+		},
+		// A bold run-in sits one level inside its enclosing section, so these two pin
+		// both sides of its depth: a heading at that level is a sibling and closes it,
+		// a deeper one is a sub-section and stays content.
+		{
+			name: "sub-heading below a bold run-in stays content",
+			desc: "## Tracks\n**Alpha**:\n#### Members\n- [x] #1",
+			want: "Alpha||1:x",
+		},
+		{
+			name:   "sibling-level heading closes a bold-run-in track",
+			desc:   "## Tracks\n**Alpha**: #1\n### Notes\n- #2",
+			want:   "Alpha||1:",
+			params: &TrackParams{HeadingLevels: []int{2}, BoldRunIn: true},
+		},
+		// This pair is one fixture under two marker sets: dropping level 3 does move
+		// #1 from its own track into the enclosing one. That is the outline model
+		// working as intended — a sub-section belongs to its parent — and it is the
+		// reason the docs must not claim headingLevels never affects membership.
+		{
+			name:   "sub-heading below a heading-started track stays content",
+			desc:   "## A\n### Sub\n- #1",
+			want:   "A||1:",
+			params: &TrackParams{HeadingLevels: []int{2}, BoldRunIn: true},
+		},
+		{
+			name: "the same sub-heading starts its own track when its level is configured",
+			desc: "## A\n### Sub\n- #1",
+			want: "Sub||1:",
+		},
+		{
+			name:   "shallower heading ends a deeper track",
+			desc:   "### Track\n- #1\n## Section\n- #2",
+			want:   "Track||1:",
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name: "h1 ends a default-level track",
+			desc: "## A\n- #1\n# Top\n- #2",
+			want: "A||1:",
+		},
+		{
+			name:   "bold run-in at document root ends at the first heading",
+			desc:   "**Alpha**: #1\n## Notes\nmore in #2",
+			want:   "Alpha||1:",
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name: "two consecutive member-carrying headings",
+			desc: "## A\n#1\n## B\n#2",
+			want: "A||1:; B||2:",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tracks, _ := parseTracks(tc.desc, defaultTrackParams(), 100)
+			params := defaultTrackParams()
+			if tc.params != nil {
+				params = *tc.params
+			}
+			tracks, _, _ := parseTracks(tc.desc, params, 100)
 			if got := renderTracks(tracks); got != tc.want {
 				t.Errorf("parseTracks =\n  %q\nwant\n  %q", got, tc.want)
 			}
@@ -126,9 +192,111 @@ func TestParseTracks(t *testing.T) {
 	}
 }
 
+// TestParseTracksCountsUnassignedRefs pins the seam that keeps a boundary heading
+// from dropping references silently (#121): a reference the parser matched inside
+// the track region but could not assign to a track is counted. A reference the
+// operator deliberately excluded — prose before any marker, or prose under a
+// stoplisted label — is not, so the count stays zero on a well-configured repo.
+func TestParseTracksCountsUnassignedRefs(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		desc      string
+		want      int
+		listLimit int
+		params    *TrackParams
+	}{
+		{
+			name:   "reference orphaned by a boundary heading counts",
+			desc:   "### T\n- #1\n## Notes\n- #2",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name: "prose references before the first marker do not count",
+			desc: "Tracking epic: #5\n\n## A\n- #1",
+			want: 0,
+		},
+		{
+			name: "references under a stoplisted label do not count",
+			desc: "## Ikigai\n\nprose mentioning #999\n\n**Foundation** (anchor): #1",
+			want: 0,
+		},
+		{
+			name: "a description with no markers counts nothing",
+			desc: "Issues to resolve for v1.0. Tracking epic: #5.",
+			want: 0,
+		},
+		{
+			name:   "pull-request references are never counted",
+			desc:   "### T\n- #1\n## Notes\nPR #2 and #3",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name:      "members dropped by the list cap do not count",
+			desc:      "**A** (x): #1 #2 #3",
+			want:      0,
+			listLimit: 2,
+		},
+		{
+			name:   "references under a stoplisted boundary heading do not count",
+			desc:   "**Alpha**: #1\n## Summary\nFollow-up context in #99.",
+			want:   0,
+			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Summary"}},
+		},
+		{
+			name:   "references under a non-stoplisted boundary heading count",
+			desc:   "**Alpha**: #1\n## Follow-ups\nLoose end in #99.",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{}, BoldRunIn: true, LabelStoplist: []string{"Summary"}},
+		},
+		{
+			name:   "references on a boundary heading line count",
+			desc:   "### T\n- #1\n## Notes about #42",
+			want:   1,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true},
+		},
+		{
+			name:   "references on a stoplisted boundary heading line do not count",
+			desc:   "### T\n- #1\n## Summary of #42",
+			want:   0,
+			params: &TrackParams{HeadingLevels: []int{3}, BoldRunIn: true, LabelStoplist: []string{"Summary of #42"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := defaultTrackParams()
+			if tc.params != nil {
+				params = *tc.params
+			}
+			limit := tc.listLimit
+			if limit == 0 {
+				limit = 100
+			}
+			if _, _, got := parseTracks(tc.desc, params, limit); got != tc.want {
+				t.Errorf("unassigned refs = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHeadingReRespectsMaxHeadingLevel asserts mechanically what runInDepth's use
+// of maxHeadingLevel assumes: no heading the parser recognizes is deeper than that
+// constant. Loosening headingRe's own bound without moving the constant would
+// otherwise silently demote the run-in sentinel from "every heading is a boundary"
+// to "all but the deepest".
+func TestHeadingReRespectsMaxHeadingLevel(t *testing.T) {
+	deepest := strings.Repeat("#", maxHeadingLevel)
+	if m := headingRe.FindStringSubmatch(deepest + " Label"); m == nil || len(m[1]) != maxHeadingLevel {
+		t.Errorf("headingRe did not match a depth-%d heading, want it to", maxHeadingLevel)
+	}
+	if m := headingRe.FindStringSubmatch(deepest + "# Label"); m != nil {
+		t.Errorf("headingRe matched a depth-%d heading at level %d, want no match", maxHeadingLevel+1, len(m[1]))
+	}
+}
+
 func TestParseTracksAllMarkersDisabledYieldsNoTracks(t *testing.T) {
 	params := TrackParams{HeadingLevels: nil, BoldRunIn: false}
-	tracks, _ := parseTracks("## Heading\n#5\n**Bold** (x): #6", params, 100)
+	tracks, _, _ := parseTracks("## Heading\n#5\n**Bold** (x): #6", params, 100)
 	if len(tracks) != 0 {
 		t.Errorf("tracks = %s, want none (all markers disabled)", renderTracks(tracks))
 	}
@@ -138,7 +306,7 @@ func TestParseTracksTruncatesMembersAndTracks(t *testing.T) {
 	// Two tracks, three members each, listLimit 2: the track list and each member
 	// list cap, and both truncation flags are set.
 	desc := "**A** (x): #1 #2 #3\n**B** (y): #4 #5 #6\n**C** (z): #7 #8 #9"
-	tracks, listTruncated := parseTracks(desc, defaultTrackParams(), 2)
+	tracks, listTruncated, _ := parseTracks(desc, defaultTrackParams(), 2)
 	if !listTruncated {
 		t.Error("track list not flagged truncated, want true (3 tracks capped to 2)")
 	}

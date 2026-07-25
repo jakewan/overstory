@@ -145,7 +145,13 @@ type TrajectoryConfig struct {
 // the track structure operators encode in a milestone's description is recognized.
 // A track is a labeled section — a markdown heading at one of HeadingLevels, or a
 // bold run-in label (`**Label** (status):`) when BoldRunIn is set — carrying issue
-// references. LabelStoplist names labels that are prose sections, not tracks
+// references. HeadingLevels governs only which headings *start* a track; where one
+// ends is not configurable, following markdown's section nesting instead — an ATX
+// heading of equal or lesser depth than the track's own closes it, a deeper one is
+// a sub-section whose references stay with it, and a bold-run-in track takes the
+// depth one level inside its enclosing section. So narrowing
+// HeadingLevels cannot move references across a sibling-or-shallower section
+// boundary. LabelStoplist names labels that are prose sections, not tracks
 // (matched case-insensitively), so a `## Ikigai` or `**Why**:` heading doesn't
 // capture its prose mentions as members. FetchLimit caps how many open milestones
 // are fetched. Unlike Deferred, this has generic defaults — the marker shapes are
@@ -447,7 +453,8 @@ type summaryFile struct {
 // milestoneTracksFile decodes the milestoneTracks block. HeadingLevels and
 // LabelStoplist are pointer-to-slice for the omitted-vs-explicit distinction
 // (omitted inherits the defaults; an explicit value — including empty — replaces
-// them wholesale, so `headingLevels: []` disables heading markers). BoldRunIn is a
+// them wholesale, so `headingLevels: []` stops headings starting tracks, without
+// stopping them bounding one). BoldRunIn is a
 // pointer-to-bool so an explicit `false` (disable bold-run-in markers) is
 // distinguishable from omission, which inherits the true default.
 type milestoneTracksFile struct {
@@ -568,8 +575,8 @@ func mergeConfig(base Config, o fileConfig) Config {
 		}
 	}
 	if o.MilestoneTracks != nil {
-		// Whole-list replace for both slices: an explicit empty headingLevels disables
-		// heading markers, an explicit empty labelStoplist clears the defaults.
+		// Whole-list replace for both slices: an explicit empty headingLevels stops
+		// headings starting tracks, an explicit empty labelStoplist clears the defaults.
 		if o.MilestoneTracks.HeadingLevels != nil {
 			base.MilestoneTracks.HeadingLevels = *o.MilestoneTracks.HeadingLevels
 		}
@@ -682,10 +689,12 @@ func validate(c Config, ownerRepo, file string) error {
 		}
 	}
 	// Heading levels must be valid markdown depths (1..6). Empty is allowed, not a
-	// mistake: it disables heading markers, and bold-run-in is an independent marker
-	// source — unlike trajectory.windows, which always has a default and rejects
-	// empty. (All markers off — empty levels plus boldRunIn:false — is a valid
-	// no-op that yields zero tracks, so it isn't rejected here either.)
+	// mistake: it stops headings starting tracks, and bold-run-in is an independent
+	// marker source — unlike trajectory.windows, which always has a default and
+	// rejects empty. Emptying it does not make headings invisible: a heading still
+	// bounds the track above it, so this setting cannot silently change membership.
+	// (All markers off — empty levels plus boldRunIn:false — is a valid no-op that
+	// yields zero tracks, so it isn't rejected here either.)
 	for i, lvl := range c.MilestoneTracks.HeadingLevels {
 		if lvl < 1 || lvl > 6 {
 			return fmt.Errorf("manifest %q for %q: milestoneTracks.headingLevels[%d] must be in [1,6], got %d", file, ownerRepo, i, lvl)

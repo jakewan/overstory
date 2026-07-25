@@ -161,6 +161,11 @@ func TestProjectSummaryBoundsResponseSize(t *testing.T) {
 // prose) so the irreducible description floor stays below budget and member trimming
 // can actually bring the response under it; a prose-dense description would leave the
 // floor over budget (the honest partial-bound residual, pinned separately below).
+// The heading levels here are load-bearing for the parser, not just the byte count:
+// the `##` container is a default marker level and the run-ins carry no sub-headings,
+// so no heading-boundary rule fires and every track survives to be trimmed. Adding a
+// sub-heading under a run-in would drop tracks, which reads from the failure message
+// like a byte-budget bug rather than a fixture change.
 func bulkyMilestoneTracks(milestones, tracksPer, membersPer int) []github.Milestone {
 	ms := make([]github.Milestone, 0, milestones)
 	ref := 0

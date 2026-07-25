@@ -33,7 +33,7 @@ A repository with no matching entry resolves to the generic defaults.
 Defaults are the base; your entry overrides field by field. The distinction between *omitting* a field and setting it *explicitly empty* is meaningful:
 
 - **Omitted** — inherits the default.
-- **Explicit value** (including an explicit empty list `[]`) — replaces the default. An empty list is how you *opt out* of a default-on reduction (e.g. `summary.bugLabels: []` turns off bug flagging; `areaBalance.prefixes: []` disables the default area prefixes; `milestoneTracks.headingLevels: []` disables heading markers, leaving bold run-in markers).
+- **Explicit value** (including an explicit empty list `[]`) — replaces the default. An empty list is how you *opt out* of a default-on reduction (e.g. `summary.bugLabels: []` turns off bug flagging; `areaBalance.prefixes: []` disables the default area prefixes; `milestoneTracks.headingLevels: []` stops headings starting tracks, leaving bold run-in markers).
 
 `areaBalance` merges its two fields independently (omit `prefixes` to keep the defaults while setting `labels`). List-valued conventions — `deferred.labels`, `quality.requiredCategories`, `trajectory.windows`, `summary.bugLabels`, `milestoneTracks.headingLevels`, `milestoneTracks.labelStoplist`, `criticalPath.streams` — are whole-list replaces, not element merges.
 
@@ -140,10 +140,19 @@ Conventions the `milestone_tracks` reduction consumes: how the track structure o
 
 | Field           | Type       | Default                                                        | Notes                                                                                              |
 | --------------- | ---------- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `headingLevels` | `[]int`    | `[2, 3]`                                                       | Markdown heading depths that start a track. Each in `[1,6]`. An explicit `[]` disables heading markers (valid — `boldRunIn` is independent). |
+| `headingLevels` | `[]int`    | `[2, 3]`                                                       | Markdown heading depths that start a track. Each in `[1,6]`. An explicit `[]` means no heading starts a track (valid — `boldRunIn` is independent); headings still *end* tracks, per the boundary rule below. |
 | `boldRunIn`     | bool       | `true`                                                        | Treat a bold run-in label (`**Label** (status):`) as a track start. Set `false` to disable; distinct from omission. |
 | `fetchLimit`    | int        | `100`                                                         | Cap on open milestones fetched. > 0.                                                               |
-| `labelStoplist` | `[]string` | common prose-section labels (`Why`, `Ikigai`, `History`, …) | Marker labels that are prose sections, not tracks (matched case-insensitively). Extend it for your repo's own section headings. |
+| `labelStoplist` | `[]string` | common prose-section labels (`Why`, `Ikigai`, `History`, …) | Labels that are prose sections, not tracks (matched case-insensitively). A stoplisted label neither starts a track nor reports its references as unassigned when it only bounds one. Extend it for your repo's own section headings. |
+
+**Where a track ends is not configurable.** `headingLevels` governs only which headings *start* a track. An ATX heading bounds the track above it whether or not it starts one, following markdown's usual section nesting — so which headings are boundaries depends on depth, not on your configuration:
+
+A track ends at the next heading of equal or lesser depth than the track's own. A deeper heading is a sub-section of that track, so its references still belong to the track. What differs between the two marker shapes is only how the track's depth is fixed:
+
+- A track started by a heading takes that heading's depth.
+- A track started by a bold run-in sits one level inside its enclosing section, so under a `##` it behaves like a `###`: a `###` is a sibling and ends it, a `####` is a sub-section and stays content. Written before any heading it has no enclosing section, so the first heading of any depth ends it.
+
+So `headingLevels` cannot move references across a *sibling or shallower* section boundary — that boundary is convention-free, and it is the one that used to leak. Removing a *deeper* level does merge that sub-section's references into the enclosing track, per the first bullet above: a sub-section belongs to its parent, and with no marker to start a track of its own its references stay with the track that contains it. References that fall past a boundary with no track open are reported in the milestone's `unassignedRefs` count rather than silently absorbed by the previous track — except under a stoplisted label, where the operator has already declared the section prose. Setext headings (`Title` underlined with `===`) and raw HTML headings are not recognized as markers or boundaries — the same documented imprecision that applies to references inside HTML blocks.
 
 Setting both `headingLevels: []` and `boldRunIn: false` disables all markers — a valid no-op that yields zero tracks for every milestone, not a configuration error.
 

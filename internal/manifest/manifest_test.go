@@ -794,8 +794,9 @@ func TestResolveMilestoneTracksDefaults(t *testing.T) {
 
 func TestResolveMilestoneTracksOverrides(t *testing.T) {
 	dir := t.TempDir()
-	// headingLevels and labelStoplist replace wholesale; boldRunIn:false disables;
-	// fetchLimit overrides; an omitted field would inherit (not exercised here).
+	// headingLevels and labelStoplist replace wholesale; boldRunIn:false turns off the
+	// run-in marker; fetchLimit overrides; an omitted field would inherit (not
+	// exercised here).
 	writeManifest(t, dir, "repos.yml",
 		"acme/widgets:\n  milestoneTracks:\n    headingLevels: [2]\n    boldRunIn: false\n    fetchLimit: 25\n    labelStoplist: [Notes]\n")
 	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
@@ -817,17 +818,18 @@ func TestResolveMilestoneTracksOverrides(t *testing.T) {
 	}
 }
 
-func TestResolveMilestoneTracksEmptyHeadingLevelsDisables(t *testing.T) {
+func TestResolveMilestoneTracksEmptyHeadingLevelsStopsHeadingsStartingTracks(t *testing.T) {
 	dir := t.TempDir()
-	// An explicit empty headingLevels is a valid disable (not a mistake), since
-	// boldRunIn is an independent marker source — unlike trajectory.windows.
+	// An explicit empty headingLevels is valid (not a mistake), since boldRunIn is an
+	// independent marker source — unlike trajectory.windows. It stops headings
+	// starting tracks; it does not stop them bounding one, which the parser decides.
 	writeManifest(t, dir, "repos.yml", "acme/widgets:\n  milestoneTracks:\n    headingLevels: []\n")
 	cfg, _, err := NewResolver(dir, nil).Resolve("acme/widgets")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if len(cfg.MilestoneTracks.HeadingLevels) != 0 {
-		t.Errorf("HeadingLevels = %v, want empty (explicit disable)", cfg.MilestoneTracks.HeadingLevels)
+		t.Errorf("HeadingLevels = %v, want empty (explicit, not inherited)", cfg.MilestoneTracks.HeadingLevels)
 	}
 }
 
