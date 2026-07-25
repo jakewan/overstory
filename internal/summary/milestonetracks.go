@@ -48,17 +48,27 @@ type MilestoneTracksFacts struct {
 // Description is the verbatim milestone description, surfaced for theme/prose
 // rendering (the milestone's stated purpose lives only here). Tracks is the
 // authoritative member structure — it applies the stoplist, PR-exclusion,
-// fenced-code skipping, and member cap — so a client must not re-parse
-// Description for membership, or its counts will diverge from this reduction.
-// Unbounded by design: a milestone description is operator-authored planning
-// prose, so it carries no truncation seam like the other list-shaped fields.
+// fenced-code skipping, heading boundaries, and member cap — so a client must not
+// re-parse Description for membership, or its counts will diverge from this
+// reduction. Unbounded by design: a milestone description is operator-authored
+// planning prose, so it carries no truncation seam like the other list-shaped
+// fields.
+//
+// UnassignedRefs reports how many issue references the parser matched but could
+// not place in a track, so the one drop the reduction makes is visible rather than
+// silent. It counts only references a boundary heading orphaned — references the
+// operator deliberately excluded (prose before the first marker, or prose under a
+// stoplisted label) are suppressed, so a well-configured repository reads zero. It
+// is a parse fact, tallied during the scan, so it never overlaps ListTruncated,
+// which reports members that were assigned and then capped.
 type MilestoneTrackSet struct {
-	Number        int     `json:"number"`
-	Title         string  `json:"title"`
-	URL           string  `json:"url"`
-	Description   string  `json:"description,omitempty"`
-	Tracks        []Track `json:"tracks"`
-	ListTruncated bool    `json:"listTruncated"`
+	Number         int     `json:"number"`
+	Title          string  `json:"title"`
+	URL            string  `json:"url"`
+	Description    string  `json:"description,omitempty"`
+	Tracks         []Track `json:"tracks"`
+	ListTruncated  bool    `json:"listTruncated"`
+	UnassignedRefs int     `json:"unassignedRefs"`
 }
 
 // Track is one parsed track: its Label (the marker text), an optional Status (a
@@ -91,11 +101,20 @@ type TrackMember struct {
 // it, the same way the area/quality reductions take primitives). HeadingLevels are
 // the heading depths that start a track; BoldRunIn enables `**Label** (status):`
 // markers; LabelStoplist names prose-section labels that are not tracks.
+//
+// HeadingLevels governs only which headings *start* tracks. Where a track ends is
+// not configurable: an ATX heading closes the open track whenever it is at or above
+// that track's depth, so narrowing or emptying HeadingLevels cannot silently move
+// references from one track into another.
 type TrackParams struct {
 	HeadingLevels []int
 	BoldRunIn     bool
 	LabelStoplist []string
 }
+
+// maxHeadingLevel is markdown's deepest ATX heading, bounding headingRe and
+// standing in as the depth at which every heading is a boundary.
+const maxHeadingLevel = 6
 
 var (
 	// A markdown heading at column 0 (up to three leading spaces): the hashes and
@@ -129,14 +148,15 @@ func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones in
 
 	sets := make([]MilestoneTrackSet, 0, len(milestones))
 	for _, m := range milestones {
-		tracks, trackListTruncated := parseTracks(m.Description, params, listLimit)
+		tracks, trackListTruncated, unassigned := parseTracks(m.Description, params, listLimit)
 		sets = append(sets, MilestoneTrackSet{
-			Number:        m.Number,
-			Title:         m.Title,
-			URL:           m.URL,
-			Description:   m.Description,
-			Tracks:        tracks,
-			ListTruncated: trackListTruncated,
+			Number:         m.Number,
+			Title:          m.Title,
+			URL:            m.URL,
+			Description:    m.Description,
+			Tracks:         tracks,
+			ListTruncated:  trackListTruncated,
+			UnassignedRefs: unassigned,
 		})
 	}
 	// By number for a stable order independent of fetch ordering, like the
@@ -153,10 +173,11 @@ func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones in
 // parseTracks extracts the ordered tracks from one milestone description. A track
 // is a marker (a heading at a configured level, or a bold run-in label when
 // enabled) whose label is not stoplisted and that carries at least one issue
-// reference before the next marker — so a container heading with no direct members
-// and a prose-section label both yield no track. It returns the tracks and whether
-// the track list was capped at listLimit.
-func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool) {
+// reference before the next marker or boundary heading — so a container heading
+// with no direct members and a prose-section label both yield no track. It returns
+// the tracks, whether the track list was capped at listLimit, and how many issue
+// references a boundary heading orphaned (see MilestoneTrackSet.UnassignedRefs).
+func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool, int) {
 	levels := make(map[int]bool, len(params.HeadingLevels))
 	for _, l := range params.HeadingLevels {
 		levels[l] = true
@@ -168,16 +189,31 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool)
 
 	tracks := make([]Track, 0)
 	var cur *Track // open track candidate; nil means we are in a non-track section
+	// curDepth is the open track's depth, the level at or above which a heading
+	// closes it. Meaningful only while cur is non-nil — every read is guarded by
+	// that, so flush() can reset it to zero without the value ever being compared.
+	curDepth := 0
+	// counting distinguishes the two ways a reference can land outside a track. It
+	// is false in a region the operator deliberately excluded (the preamble before
+	// any marker, or a stoplisted label's section) and true only after a boundary
+	// heading orphaned an open track — the case worth reporting.
+	counting := false
+	unassigned := 0
 	flush := func() {
 		// A candidate is a real track only if it gathered a member: this is the
-		// "≥1 reference before the next marker" rule that drops container headings.
+		// "≥1 reference before the next marker or boundary" rule that drops
+		// container headings.
 		if cur != nil && len(cur.Members) > 0 {
 			tracks = append(tracks, *cur)
 		}
 		cur = nil
+		curDepth = 0
 	}
 
 	inFence := false
+	// sectionDepth is the level of the most recent heading, 0 before any: the
+	// enclosing section a bold run-in nests inside.
+	sectionDepth := 0
 	for _, line := range strings.Split(desc, "\n") {
 		if fenceRe.MatchString(line) {
 			inFence = !inFence
@@ -189,13 +225,29 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool)
 			continue
 		}
 
-		if m := headingRe.FindStringSubmatch(line); m != nil && levels[len(m[1])] {
-			flush()
-			label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(m[2]), "#"))
-			if !stop[strings.ToLower(label)] {
-				cur = &Track{Label: label}
+		if m := headingRe.FindStringSubmatch(line); m != nil {
+			level := len(m[1])
+			sectionDepth = level
+			switch {
+			case levels[level]:
+				flush()
+				label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(m[2]), "#"))
+				counting = false
+				if !stop[strings.ToLower(label)] {
+					cur = &Track{Label: label}
+					curDepth = level
+				}
+				continue
+			case cur != nil && level <= curDepth:
+				// A heading at or above the open track's depth closes its section, even
+				// though it starts no track of its own. Without this a narrowed
+				// headingLevels would silently absorb the next section's references.
+				flush()
+				counting = true
+				continue
 			}
-			continue
+			// A heading deeper than the open track nests inside it, so it stays
+			// content — including any references on the heading line itself.
 		}
 
 		if params.BoldRunIn {
@@ -205,12 +257,14 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool)
 				// a track label — let it fall through to member extraction.
 				if !strings.HasPrefix(label, "#") {
 					flush()
+					counting = false
 					if !stop[strings.ToLower(label)] {
 						status := ""
 						if m[4] >= 0 {
 							status = strings.TrimSpace(strings.Trim(line[m[4]:m[5]], "()"))
 						}
 						cur = &Track{Label: label, Status: status}
+						curDepth = runInDepth(sectionDepth)
 						// Members written inline after the colon belong to this track.
 						addMembers(cur, line[m[1]:])
 					}
@@ -219,9 +273,13 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool)
 			}
 		}
 
-		// A non-marker line contributes its references to the open track, if any.
-		if cur != nil {
+		// A non-marker line contributes its references to the open track — or, where
+		// a boundary heading left none open, to the unassigned tally.
+		switch {
+		case cur != nil:
 			addMembers(cur, line)
+		case counting:
+			unassigned += len(reduce.IssueRefMatches(line))
 		}
 	}
 	flush()
@@ -239,7 +297,20 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool)
 			listTruncated = true
 		}
 	}
-	return tracks, listTruncated
+	return tracks, listTruncated, unassigned
+}
+
+// runInDepth is the depth of a track opened by a bold run-in, which carries no
+// heading level of its own. A run-in is a pseudo-heading one level inside the
+// section it sits in, so that section's sub-headings stay content while a
+// sibling-or-shallower heading closes it. At document root there is no enclosing
+// section for a heading to be a sub-heading of, so the first heading of any depth
+// closes the run-in — maxHeadingLevel makes every level satisfy the boundary test.
+func runInDepth(sectionDepth int) int {
+	if sectionDepth == 0 {
+		return maxHeadingLevel
+	}
+	return sectionDepth + 1
 }
 
 // addMembers appends the issue references found in text to the track, in

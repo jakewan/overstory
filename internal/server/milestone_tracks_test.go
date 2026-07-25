@@ -117,6 +117,44 @@ func TestMilestoneTracksParsesTracks(t *testing.T) {
 	}
 }
 
+// TestMilestoneTracksHeadingsBoundTracksTheyDoNotStart drives #121 through the
+// manifest: with headingLevels emptied, headings no longer start tracks but must
+// still end them, so a narrative section's references stay out of the preceding
+// track's members and surface as unassigned instead. This is the only case that
+// exercises a non-default milestoneTracks entry end-to-end.
+func TestMilestoneTracksHeadingsBoundTracksTheyDoNotStart(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  milestoneTracks:\n    headingLevels: []\n")
+	desc := "## Tracks\n\n" +
+		"**Alpha** (critical-path): #1\n\n" +
+		"## Summary\n\n" +
+		"Follow-up context in #99.\n"
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: []github.Milestone{
+			{Number: 7, Title: "M12", URL: "u7", OpenIssues: 2, Description: desc},
+		},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if !facts.Available {
+		t.Fatalf("Available = false, want true; Unavailable=%q", facts.Unavailable)
+	}
+	if len(facts.Milestones) != 1 {
+		t.Fatalf("got %d milestone sets, want 1", len(facts.Milestones))
+	}
+	set := facts.Milestones[0]
+	if len(set.Tracks) != 1 {
+		t.Fatalf("got %d tracks, want 1 (only the bold run-in): %+v", len(set.Tracks), set.Tracks)
+	}
+	if got := set.Tracks[0].Members; len(got) != 1 || got[0].Number != 1 {
+		t.Errorf("Alpha members = %+v, want only #1 (#99 sits past the ## Summary boundary)", got)
+	}
+	if set.UnassignedRefs != 1 {
+		t.Errorf("UnassignedRefs = %d, want 1 (#99 belongs to no track)", set.UnassignedRefs)
+	}
+}
+
 // TestMilestoneTracksProseDescriptionYieldsNoTracks confirms the common case:
 // a description with no markers reduces to a milestone with zero tracks, cleanly,
 // never an error — the overwhelmingly common shape across real repos.
