@@ -45,7 +45,7 @@ jobs:
       # one pin whose drift the report cannot surface.
       - uses: jdx/mise-action@v4
         with:
-          version: 2026.7.7
+          version: 2026.8.3
           # Report on the pinned versions; do not install them.
           install: false
 
@@ -68,12 +68,56 @@ jobs:
       # records what GitHub does. Nothing is blocked either way: this workflow
       # is not a required check.
       - name: Report outdated toolchain pins
-        # `shell: bash` adds pipefail, without which a mise failure in the
-        # reporting pipeline would be masked by tee's exit status.
+        # `shell: bash` fixes the flag set (-eo pipefail) here rather than
+        # inheriting the platform default, so the failure semantics the guards
+        # below are written against are stated rather than assumed.
         shell: bash
         run: |
-          mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY"
-          if [ "$(mise outdated --bump --local --json)" != "{}" ]; then
+          # Cosmetic: renders the table onto the run page, and deliberately not
+          # allowed to decide the step. Under errexit a mise failure here would
+          # exit before any annotation below, leaving the reporter's own
+          # breakage as the one failure this workflow cannot explain.
+          mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+          # Liveness, asserted against a source whose shape does not move:
+          # `mise ls` enumerates every tool mise.toml declares whether or not it
+          # is installed, so nothing to count means the reporter saw no config
+          # at all — a checkout that landed elsewhere, a renamed mise.toml —
+          # rather than a clean bill. This is the direction that has to fail
+          # loudly, because a green run tells nobody anything: a report gone
+          # blind would stay blind.
+          if ! declared="$(mise ls --local --json)"; then
+            echo "::error::mise could not list the declared pins — the reporter failed, not the pins"
+            exit 1
+          fi
+          if ! count="$(jq -r 'length' <<<"$declared")"; then
+            echo "::error::jq could not read the declared pins — the reporter failed, not the pins"
+            exit 1
+          fi
+          if [ "$count" -eq 0 ]; then
+            echo "::error::mise sees no pinned tools — the reporter failed, not the pins"
+            exit 1
+          fi
+
+          # The verdict, keyed on bump rather than on the payload being empty.
+          # `mise outdated --json` changes shape with installation state, and
+          # this job meets both: it reports without installing, but it consumes
+          # a mise cache that ci.yml's docs job writes, so a cache hit leaves it
+          # installed (only tools that are behind appear; a clean run yields {})
+          # and a miss leaves it uninstalled (an entry per pinned tool, bump
+          # null for the current ones). A non-null bump means that pin trails
+          # upstream in either shape; an emptiness test does not.
+          if ! outdated="$(mise outdated --bump --local --json)"; then
+            echo "::error::mise could not report pin status — the reporter failed, not the pins"
+            exit 1
+          fi
+          if ! behind="$(jq -r 'to_entries[] | select(.value.bump != null) | "\(.key) \(.value.requested) -> \(.value.bump)"' <<<"$outdated")"; then
+            echo "::error::jq could not read the pin status — the reporter failed, not the pins"
+            exit 1
+          fi
+
+          if [ -n "$behind" ]; then
             echo "::error::Toolchain pins are behind upstream — review per SECURITY.md"
+            printf '%s\n' "$behind"
             exit 1
           fi
