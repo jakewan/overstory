@@ -48,7 +48,9 @@ just install            # Install the binary to ~/.local/bin
 
 ### Dependencies and the toolchain
 
-Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand. The weekly scheduled run fails when a pin is behind upstream, and that failure is the prompt; `just toolchain-outdated` runs the same check locally. Clearing it means bumping the pins and regenerating `mise.lock`, or deciding the bump can wait. It gates nothing — that workflow is not a required check.
+Go modules are watched by Dependabot and scanned by `govulncheck` in CI (on every change, and weekly). The mise-managed toolchain has no update bot — no ecosystem covers `mise.toml` — so it is reviewed by hand. The weekly **Toolchain currency** workflow fails when a pin is behind upstream, and that failure is the prompt; `just toolchain-outdated` runs the same query locally, against whatever mise is on your `PATH` rather than the pinned one, and reports without failing. Clearing it means bumping the pins and regenerating `mise.lock`, or deciding the bump can wait. It gates nothing — that workflow is not a required check.
+
+That report has to fail to be seen, because `mise outdated` exits 0 either way. How far the failure actually travels is a per-user setting rather than something this repository controls: [with GitHub Actions notifications enabled you are notified about every completed run you triggered](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs), and failed-only is an option you select. For a scheduled run the person notified is the workflow's creator, transferring to whoever last changed its cron — or, if it was disabled and re-enabled, to whoever re-enabled it. So treat the run list as the reliable surface and notifications as a convenience.
 
 Several pins move in pairs; `.claude/rules/toolchain-ci-parity.md` records which and why. `SECURITY.md` describes the full supply-chain posture, including what the scanning does and does not guarantee.
 

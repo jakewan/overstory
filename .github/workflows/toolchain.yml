@@ -1,0 +1,79 @@
+name: Toolchain currency
+
+# Separate from the vulnerability scan on purpose. That workflow reports a
+# published advisory, where red is rare and urgent; this one reports that a pin
+# trails upstream, where red is routine. A scheduled or dispatched run is titled
+# by its workflow in the run list, so one workflow carrying both concerns leaves
+# a red result meaning either thing. Splitting them lets the title name the
+# concern. (Check runs are named by job, not by workflow — the required checks
+# on this repository are `test` and `lint`, both jobs in ci.yml — so this is
+# about the run list, not the checks UI.)
+#
+# The two also have opposite trajectories: vuln.yml is deliberately shaped so it
+# could be promoted to a required check, which this report is not.
+on:
+  schedule:
+    # Weekly. Scheduled workflows stop firing in a repository that goes quiet —
+    # SECURITY.md § Build and CI supply chain carries the condition and what a
+    # gap in these runs does and does not mean.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No cancel-in-progress: a manual dispatch and the weekly cron share the default
+# branch's ref, and cancelling the scheduled run because someone probed the
+# report would drop the run that exists to fire when nothing else does.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  toolchain-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # mise provisions the whole toolchain including a prebuilt binary from a
+      # third-party repository, and there is no reason to execute that on every
+      # pull request just to produce a report — hence scheduled and manual runs
+      # only, and install: false here.
+      #
+      # Dependabot bumps this action's tag but never reads its version: input,
+      # so the mise release pinned here moves only when a maintainer moves it —
+      # and it is the binary that computes the report below, which makes it the
+      # one pin whose drift the report cannot surface.
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.7.7
+          # Report on the pinned versions; do not install them.
+          install: false
+
+      # The mise-managed toolchain is under no update bot (no ecosystem covers
+      # mise.toml), so this run is the mechanism behind the manual review
+      # posture recorded in SECURITY.md.
+      #
+      # --bump is load-bearing. Every pin in mise.toml is an exact version, and
+      # plain `mise outdated` compares against the latest release matching the
+      # requested spec — for an exact pin, itself. Without --bump this step
+      # reports "All tools are up to date" every week regardless of upstream,
+      # which is worse than no report at all.
+      #
+      # The step fails when there is something to report, because `mise
+      # outdated` exits 0 whether or not a pin has moved — a step that always
+      # succeeds is green in the run list and green in whatever notification
+      # arrives, indistinguishable from a clean report. How far that failure
+      # actually travels depends on a per-user notification setting outside this
+      # repository's control; CONTRIBUTING.md § Dependencies and the toolchain
+      # records what GitHub does. Nothing is blocked either way: this workflow
+      # is not a required check.
+      - name: Report outdated toolchain pins
+        # `shell: bash` adds pipefail, without which a mise failure in the
+        # reporting pipeline would be masked by tee's exit status.
+        shell: bash
+        run: |
+          mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$(mise outdated --bump --local --json)" != "{}" ]; then
+            echo "::error::Toolchain pins are behind upstream — review per SECURITY.md"
+            exit 1
+          fi
