@@ -7,6 +7,7 @@ paths:
   - ".golangci.yml"
   - ".github/workflows/ci.yml"
   - ".github/workflows/vuln.yml"
+  - ".github/workflows/toolchain.yml"
 ---
 
 # Toolchain / CI Parity
@@ -40,7 +41,7 @@ Two more facts worth knowing before editing either file:
 
 ## The mise version is one atomic value across both workflows
 
-`jdx/mise-action`'s `version:` is pinned in `.github/workflows/ci.yml` (docs job) and `.github/workflows/vuln.yml` (toolchain-report job). Keep them identical: mise is the component that verifies every other tool against `mise.lock`, so a floating mise means a floating verifier, and two different mises mean two different verifiers.
+`jdx/mise-action`'s `version:` is pinned in `.github/workflows/ci.yml` (docs job) and `.github/workflows/toolchain.yml` (toolchain-report job). Keep them identical: mise is the component that verifies every other tool against `mise.lock`, so a floating mise means a floating verifier, and two different mises mean two different verifiers.
 
 This pin is also the toolchain component with the *least* automated coverage in the repository. Dependabot's `github-actions` ecosystem updates the `jdx/mise-action@v4` tag but never reads the action's `version:` input; `mise outdated` reads `mise.toml`, where mise itself does not appear. Nothing reports it — it moves only when a human moves it, which is why it belongs in the manual review posture recorded in `SECURITY.md`.
 

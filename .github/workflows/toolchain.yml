@@ -1,0 +1,159 @@
+name: Toolchain currency
+
+# Separate from the vulnerability scan on purpose. That workflow reports a
+# published advisory, where red is rare and urgent; this one reports that a pin
+# trails upstream, where red is routine. A scheduled or dispatched run is titled
+# by its workflow in the run list, so one workflow carrying both concerns leaves
+# a red result meaning either thing. Splitting them lets the title name the
+# concern. (Check runs are named by job, not by workflow — the required checks
+# on this repository are `test` and `lint`, both jobs in ci.yml — so this is
+# about the run list, not the checks UI.)
+#
+# The two also have opposite trajectories: vuln.yml is deliberately shaped so it
+# could be promoted to a required check, which this report is not.
+on:
+  schedule:
+    # Weekly. Scheduled workflows stop firing in a repository that goes quiet —
+    # SECURITY.md § Build and CI supply chain carries the condition and what a
+    # gap in these runs does and does not mean.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No cancel-in-progress: a manual dispatch and the weekly cron share the default
+# branch's ref, and cancelling the scheduled run because someone probed the
+# report would drop the run that exists to fire when nothing else does.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  toolchain-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # mise provisions the whole toolchain including a prebuilt binary from a
+      # third-party repository, and there is no reason to execute that on every
+      # pull request just to produce a report — hence scheduled and manual runs
+      # only, and install: false here.
+      #
+      # cache: false is what makes the report's payload deterministic, and the
+      # coverage check below depends on it. `mise outdated --json` reports only
+      # the tools that are behind when they are installed, but an entry per
+      # declared pin when they are not — and restoring the cache ci.yml's docs
+      # job writes would install them, making the shape a function of another
+      # workflow's recent history. Uninstalled, "reported fewer pins than are
+      # declared" is a readable signal; installed, it is the normal case.
+      #
+      # Dependabot bumps this action's tag but never reads its version: input,
+      # so the mise release pinned here moves only when a maintainer moves it —
+      # and it is the binary that computes the report below, which makes it the
+      # one pin whose drift the report cannot surface.
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.8.3
+          # Report on the pinned versions; do not install them.
+          install: false
+          cache: false
+
+      # The mise-managed toolchain is under no update bot (no ecosystem covers
+      # mise.toml), so this run is the mechanism behind the manual review
+      # posture recorded in SECURITY.md.
+      #
+      # --bump is load-bearing. Every pin in mise.toml is an exact version, and
+      # plain `mise outdated` compares against the latest release matching the
+      # requested spec — for an exact pin, itself. Without --bump this step
+      # reports "All tools are up to date" every week regardless of upstream,
+      # which is worse than no report at all.
+      #
+      # The step fails when there is something to report, because `mise
+      # outdated` exits 0 whether or not a pin has moved — a step that always
+      # succeeds is green in the run list and green in whatever notification
+      # arrives, indistinguishable from a clean report. How far that failure
+      # actually travels depends on a per-user notification setting outside this
+      # repository's control; CONTRIBUTING.md § Dependencies and the toolchain
+      # records what GitHub does. Nothing is blocked either way: this workflow
+      # is not a required check.
+      #
+      # The harder direction is the silent one. `mise outdated` treats an
+      # unreachable or rejecting upstream as a warning on stderr: it drops the
+      # affected tool from the payload and still exits 0. Left unchecked that
+      # yields a green run in which nothing was actually compared — and because
+      # a green run prompts nobody, it would stay that way. So the guards below
+      # assert coverage, not just liveness, before reading any verdict.
+      - name: Report outdated toolchain pins
+        # `shell: bash` fixes the flag set (-eo pipefail) here rather than
+        # inheriting the platform default, so the failure semantics the guards
+        # below are written against are stated rather than assumed.
+        shell: bash
+        run: |
+          # Every guard names its own cause: sharing one message would
+          # misattribute the reporter's breakage to the pins, which is the
+          # confusion this step exists to avoid.
+          fail() { echo "::error::$1 — the reporter failed, not the pins"; exit 1; }
+
+          # Cosmetic: renders the table onto the run page, and deliberately not
+          # allowed to decide the step. Under errexit a mise failure here would
+          # exit before any annotation below, leaving the reporter's own
+          # breakage as the one failure this workflow cannot explain.
+          mise outdated --bump --local | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+          # What mise.toml declares. `mise ls` enumerates every declared tool
+          # whether or not it is installed, so this is the denominator the
+          # report has to cover — and nothing to count means mise saw no config
+          # at all rather than a clean bill.
+          if ! declared="$(mise ls --local --json)"; then
+            fail "mise could not list the declared pins"
+          fi
+          if ! count="$(jq -r 'length' <<<"$declared")"; then
+            fail "jq could not read the declared pins"
+          fi
+          # Validated before arithmetic: jq exits 0 with empty output on empty
+          # input, and `[ "" -eq 0 ]` errors rather than returning false — which
+          # inside `if` reads as "condition not met" and would skip this guard.
+          if ! [[ "$count" =~ ^[0-9]+$ ]] || [ "$count" -eq 0 ]; then
+            fail "mise sees no pinned tools"
+          fi
+
+          if ! outdated="$(mise outdated --bump --local --json)" || [ -z "$outdated" ]; then
+            fail "mise could not report pin status"
+          fi
+          if ! reported="$(jq -r 'length' <<<"$outdated")"; then
+            fail "jq could not read the pin status"
+          fi
+          if ! [[ "$reported" =~ ^[0-9]+$ ]]; then
+            fail "mise reported an unreadable pin count"
+          fi
+
+          # Coverage. Because nothing is installed (cache: false above), mise
+          # reports one entry per declared pin, so a short payload means it gave
+          # up on a tool — the upstream lookup failed — and the pins it dropped
+          # were never compared against anything.
+          if [ "$reported" -ne "$count" ]; then
+            fail "mise reported $reported of $count declared pins, so some were never checked"
+          fi
+          if ! unresolved="$(jq -r 'to_entries[] | select(.value.latest == null) | .key' <<<"$outdated")"; then
+            fail "jq could not read the resolved versions"
+          fi
+          if [ -n "$unresolved" ]; then
+            fail "mise resolved no upstream version for: $(tr '\n' ' ' <<<"$unresolved")"
+          fi
+
+          # The verdict, keyed on bump rather than on the payload being empty:
+          # uninstalled, every declared pin is present and a current one carries
+          # a null bump, so emptiness would never distinguish clean from behind.
+          # Verified against the mise release pinned above, which is where to
+          # re-check it — a renamed or dropped bump field would leave this
+          # matching nothing while the coverage guards still pass, so a run that
+          # stops failing across a mise upgrade is the symptom to distrust.
+          if ! behind="$(jq -r 'to_entries[] | select(.value.bump != null) | "\(.key) \(.value.requested) -> \(.value.bump)"' <<<"$outdated")"; then
+            fail "jq could not read the pin status"
+          fi
+
+          if [ -n "$behind" ]; then
+            echo "::error::Toolchain pins are behind upstream — review per SECURITY.md"
+            printf '%s\n' "$behind" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
