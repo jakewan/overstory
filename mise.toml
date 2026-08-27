@@ -7,20 +7,21 @@
 lockfile = true
 
 [tools]
-go = "1.26.5"
+go = "1.27.0"
 # The golangci-lint version is pinned identically here and in the CI workflow's
 # golangci-lint-action `version:` — treat them as one atomic value so local and
 # CI lint run the same binary against the same config schema.
-golangci-lint = "2.12.2"
+golangci-lint = "2.13.1"
 just = "1.58.0"
-lefthook = "2.1.10"
+lefthook = "2.1.11"
 mdbook = "0.5.4"
-# mdbook-linkcheck2 is an mdbook renderer backend; it links against mdbook's
-# crate version (mdbook-driver/mdbook-renderer), so bump it together with
-# `mdbook` above — see .claude/rules/toolchain-ci-parity.md.
+# mdbook-linkcheck2 is an mdbook renderer backend: it links against mdbook's
+# renderer crates (mdbook-driver/mdbook-renderer), so the pair is compatible
+# only within a matching crate minor. Check that before moving either pin and
+# confirm with `just docs-build` — see .claude/rules/toolchain-ci-parity.md.
 #
 # Restricted to linux because upstream publishes an x86_64-unknown-linux-gnu
 # asset and nothing else. Without the restriction `mise install` has no
 # candidate to resolve on macOS or arm64; with it, mise skips the tool there and
 # provisions the rest, so only `just docs-build` is unavailable off linux.
-"github:marxin/mdbook-linkcheck2" = { version = "0.12.2", os = ["linux"] }
+"github:marxin/mdbook-linkcheck2" = { version = "0.13.0", os = ["linux"] }

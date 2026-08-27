@@ -89,7 +89,7 @@ jobs:
       # intentional duplication of the pin in mise.toml. Keep the two in lockstep.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          version: v2.13.1
 
   docs:
     needs: detect-changes
