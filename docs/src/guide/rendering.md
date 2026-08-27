@@ -58,7 +58,7 @@ No open PRs.
 2. **#41** — the open-source release audit; aged but lower-friction than picking a reductions direction.
 ```
 
-Two things to notice. The factual sections (`Active Milestones`, `Hygiene Signals`, `Open PRs`) are a near-mechanical projection of the blocks — the skill renders `count` and `issues` straight through, and renders `None` / `No open PRs` when a block is empty so the reader can see the check actually ran (the one carve-out is `missingArea`, whose `areaLabelsObserved` companion tells the skill whether the count is a gap to close or a sign that the configured area taxonomy matched nothing at all). `What's Next`, by contrast, is *caller judgment*: the `recommendations` block supplies neutral per-issue inputs (`isBug`, `ageDays`, `inactiveDays`, and the milestone when present) and a neutral pre-sort, but the ranking into "do this first" is the skill's, not the server's. The server reduces; the caller ranks and renders.
+Two things to notice. The factual sections (`Active Milestones`, `Hygiene Signals`, `Open PRs`) are a near-mechanical projection of the blocks — the skill renders `count` and `issues` straight through, and renders `None` / `No open PRs` when a block is empty so the reader can see the check actually ran (the one carve-out is `missingArea`, whose `areaLabelsObserved` companion reports that no configured area label was observed at all — a reading the skill must interpret rather than treat as settled). `What's Next`, by contrast, is *caller judgment*: the `recommendations` block supplies neutral per-issue inputs (`isBug`, `ageDays`, `inactiveDays`, and the milestone when present) and a neutral pre-sort, but the ranking into "do this first" is the skill's, not the server's. The server reduces; the caller ranks and renders.
 
 ## Truncation is a floor, not a ceiling
 
@@ -69,9 +69,11 @@ Truncation is surfaced explicitly, never silently, so the caller can tell incomp
 - `fetchTruncated` — the scan window didn't cover every open issue, so counts themselves are a floor. The open-issue fetch paginates the full open set, so this normally fires only when a repository exceeds the `staleness.fetchLimit` safety backstop.
 - `listTruncated` — more matches exist than were listed under the call's `limit`.
 - `membershipTruncated` — on a milestone, its listed members are a floor relative to its open count.
-- `labelTruncatedCount` — on the `hygiene` block, how many fetched issues had their own label list capped. Orthogonal to `fetchTruncated`: that one bounds which issues were seen, this one bounds how much of each was seen, and every label-driven signal in the block is provisional for that many issues.
+- `labelTruncatedCount` — on the `hygiene` block, how many fetched issues had their own label list capped. Orthogonal to `fetchTruncated`: that one bounds which issues were seen, this one bounds how much of each was seen.
 
-When any of these is set, the render must say so — "showing 25 of 60+; this is a lower bound, not the full set" — rather than presenting the capped list as exhaustive. The failure mode this guards against is a caller reading a truncated `missingArea` list of 25 issues and reporting "25 issues need an area label" when the real count is higher and the window simply stopped. The flags are part of the contract precisely so the caller never has to guess; rendering them is not optional polish.
+The first three are floors. `labelTruncatedCount` is **not** — it is a classification error running in both directions, so it needs its own uncertainty model. A hidden `area/` label makes `missingArea` *overcount* (an issue reported as missing an area it carries); a hidden deferred label makes `stale` *overcount* and `deferredWithoutContext` *undercount*. Render it as "these counts may be wrong in either direction for N issues", never as a lower bound. `unmilestonedAged` is unaffected, being decided by milestone and age rather than by a label.
+
+When any of the three floors is set, the render must say so — "showing 25 of 60+; this is a lower bound, not the full set" — rather than presenting the capped list as exhaustive. The failure mode this guards against is a caller reading a truncated `missingArea` list of 25 issues and reporting "25 issues need an area label" when the real count is higher and the window simply stopped. The flags are part of the contract precisely so the caller never has to guess; rendering them is not optional polish.
 
 ## Adopting a render skill
 

@@ -34,11 +34,15 @@ type HygieneFacts struct {
 	FetchedCount   int  `json:"fetchedCount"`
 	FetchTruncated bool `json:"fetchTruncated"`
 	// LabelTruncatedCount is how many fetched open issues had their own label list
-	// capped by the fetch (github.Issue.LabelsTruncated). It floors every label-driven
-	// signal in this block, not only the area observation: an issue whose area label
-	// fell in the dropped tail is counted as missing an area it actually carries, one
-	// whose deferred label fell there reads as neglected rather than parked, and
-	// AreaLabelsObserved can read false on a repository that does classify by area.
+	// capped by the fetch (github.Issue.LabelsTruncated). It qualifies every
+	// label-decided signal in this block, not only the area observation: an issue
+	// whose area label fell in the dropped tail is counted as missing an area it
+	// actually carries, one whose deferred label fell there reads as neglected rather
+	// than parked, and AreaLabelsObserved can read false on a repository that does
+	// classify by area. UnmilestonedAged is untouched, being decided by milestone and
+	// age rather than by a label. Unlike FetchTruncated this is not a floor — a
+	// dropped label makes MissingArea and Stale overcount while
+	// DeferredWithoutContext undercounts, so the error runs in both directions.
 	// A positive value makes those readings provisional for that many issues — the
 	// same axis the critical-path reduction surfaces alongside its own fetch
 	// truncation, and orthogonal to FetchTruncated, which bounds which issues were
