@@ -22,9 +22,9 @@ The `golangci-lint` version is pinned in two places: `mise.toml` (the local bina
 
 CI installs Go via `actions/setup-go` with `go-version-file: go.mod`, so the `go` directive in `go.mod` — not `mise.toml` — chooses the CI toolchain. Pin it to the same patch version as the `go` pin in `mise.toml`:
 
-- A minor-only floor (`go 1.26`) lets CI float to the latest 1.26.x, drifting ahead of the pinned dev toolchain.
-- A `.0` floor (`go 1.26.0`) pins CI to the oldest 1.26 patch, drifting behind it.
-- The exact patch (`go 1.26.4`) makes CI install the same Go developers run. This is also what `go mod init`/`go mod tidy` write by default.
+- A minor-only floor (`go 1.27`) lets CI float to the latest 1.27.x, drifting ahead of the pinned dev toolchain.
+- A `.0` floor pins CI to the oldest patch of that minor: `go 1.27.0` while `mise.toml` is on `1.27.3` drifts behind it. The hazard is the gap, not the `.0` — when the mise pin is itself the `.0`, that same string is the exact patch below.
+- The exact patch (`go 1.27.3`) makes CI install the same Go developers run. This is also what `go mod init`/`go mod tidy` write by default.
 
 Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries a second consequence: `govulncheck` reports standard-library advisories against the Go on `PATH`, so whichever pin a given run resolves decides what the vulnerability scan considers vulnerable. CI's scan job uses `setup-go` from `go.mod`, a developer's `just vuln` uses mise's — they agree only while the two pins do.
 
@@ -51,9 +51,9 @@ This pin is also the toolchain component with the *least* automated coverage in 
 
 The consequence for review: a bump that looks like tooling can change the shipped binary's build list. Check `go list -deps ./cmd/overstory` when a govulncheck update moves a shared dependency, and do not describe such a change as CI-only without checking.
 
-## mdbook and mdbook-linkcheck2 versions move together
+## mdbook and mdbook-linkcheck2 must stay crate-compatible
 
-`mdbook-linkcheck2` is an mdbook renderer backend pinned in `mise.toml` alongside `mdbook`. It links against mdbook's library crates (`mdbook-driver`/`mdbook-renderer`), so a backend built against a different mdbook minor can fail to parse the book mdbook produces — `mdbook build` (and with it the CI docs job and the pre-push docs hook) would error. Both pins live in `mise.toml`, not split across files; bump them in the same commit, and confirm the chosen `mdbook-linkcheck2` release supports the target mdbook version before upgrading.
+`mdbook-linkcheck2` is an mdbook renderer backend pinned in `mise.toml` alongside `mdbook`. It links against mdbook's library crates (`mdbook-driver`/`mdbook-renderer`), so a backend built against a different mdbook minor can fail to parse the book mdbook produces — `mdbook build` (and with it the CI docs job and the pre-push docs hook) would error. Both pins live in `mise.toml`, not split across files. Moving one alone is correct whenever the crate minors still match — confirm that before moving either pin, and check the result with `just docs-build`.
 
 ## pre-commit formats with CI's formatter set
 
