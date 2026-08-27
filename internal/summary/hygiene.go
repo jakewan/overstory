@@ -30,11 +30,36 @@ type HygieneParams struct {
 // disjoint — one issue can trip several — so the counts need not sum to anything.
 // OpenIssueCount stays exact when the window truncates (FetchTruncated).
 type HygieneFacts struct {
-	OpenIssueCount         int           `json:"openIssueCount"`
-	FetchedCount           int           `json:"fetchedCount"`
-	FetchTruncated         bool          `json:"fetchTruncated"`
-	Limit                  int           `json:"limit"`
-	MissingArea            HygieneSignal `json:"missingArea"`
+	OpenIssueCount int           `json:"openIssueCount"`
+	FetchedCount   int           `json:"fetchedCount"`
+	FetchTruncated bool          `json:"fetchTruncated"`
+	Limit          int           `json:"limit"`
+	MissingArea    HygieneSignal `json:"missingArea"`
+	// AreaLabelsObserved reports whether any fetched open issue carried a label
+	// matching the configured area taxonomy. It qualifies MissingArea, whose count
+	// alone cannot distinguish a backlog with a real labelling gap from one belonging
+	// to a repository that classifies nothing by area — where the signal is fully lit
+	// on every run and so carries no information.
+	//
+	// It is an observation over the fetched window, not a property of the repository,
+	// and a false value covers four different situations: an area convention never
+	// adopted; one adopted but not yet applied to any open issue; a real convention
+	// whose labels the configured prefixes do not recognize (the generic defaults
+	// cover the common area-prefixed spellings, not every scheme); and an explicitly
+	// emptied areaBalance. Only the caller can tell these apart, which is why the
+	// signal is still reported in full rather than withheld here.
+	//
+	// Two seams floor it. FetchTruncated marks a partial window, and the issue fetch
+	// is ordered least-recently-active-first, so a recently adopted convention's
+	// labels sit in exactly the tail that truncation drops. An individual issue's
+	// LabelsTruncated marks a capped label list whose dropped tail may have held the
+	// area label — the same axis the critical-path reduction treats as orthogonal to
+	// its own fetch truncation.
+	//
+	// It cannot live on HygieneParams beside the taxonomy it reads: unlike the
+	// not-configured flags on the deferred and critical-path reductions, this is
+	// derived from the issues rather than from the resolved manifest.
+	AreaLabelsObserved     bool          `json:"areaLabelsObserved"`
 	UnmilestonedAged       HygieneSignal `json:"unmilestonedAged"`
 	Stale                  HygieneSignal `json:"stale"`
 	DeferredWithoutContext HygieneSignal `json:"deferredWithoutContext"`
@@ -109,6 +134,12 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 			deferredNoCtx = append(deferredNoCtx, hi)
 		}
 	}
+
+	// Derived here rather than accumulated in the loop: an issue lands in missingArea
+	// exactly when it matched no area, so a shorter list is itself the evidence that
+	// one did. Read before toSignal so the value cannot come to depend on what that
+	// function does to these slices.
+	facts.AreaLabelsObserved = len(missingArea) < len(issues)
 
 	facts.MissingArea = toSignal(missingArea, listLimit)
 	facts.UnmilestonedAged = toSignal(unmilestonedAged, listLimit)

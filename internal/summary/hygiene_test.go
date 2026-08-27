@@ -99,3 +99,59 @@ func TestReduceHygieneCountUncappedListCapped(t *testing.T) {
 		t.Errorf("stale list = %d truncated=%v, want 1/true", len(facts.Stale.Issues), facts.Stale.ListTruncated)
 	}
 }
+
+// TestReduceHygieneAreaLabelsObserved pins the observation that tells a caller
+// whether the missing-area count is a defect list or a statement that the
+// repository classifies nothing by area. The signal itself is never conditional:
+// the count and list are reported identically in every case, so the reduction
+// publishes a fact rather than making the caller's presentation decision for it.
+func TestReduceHygieneAreaLabelsObserved(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		issues       []github.Issue
+		totalOpen    int
+		wantObserved bool
+		wantMissing  int
+	}{
+		{
+			name:        "no issue carries an area label",
+			issues:      []github.Issue{mkIssue(1, 1, 1, nil, nil), mkIssue(2, 1, 1, []string{"bug"}, nil)},
+			totalOpen:   2,
+			wantMissing: 2,
+		},
+		{
+			name:         "one issue carries an area label",
+			issues:       []github.Issue{mkIssue(1, 1, 1, nil, nil), mkIssue(2, 1, 1, []string{"area/net"}, nil)},
+			totalOpen:    2,
+			wantObserved: true,
+			wantMissing:  1,
+		},
+		{
+			// Nothing was observed because there was nothing to observe. A caller must
+			// not read this as a claim about the repository's conventions.
+			name:      "empty window observes nothing",
+			issues:    nil,
+			totalOpen: 0,
+		},
+		{
+			// The window is ordered least-recently-active-first, so a recently adopted
+			// convention's labels sit in the dropped tail. FetchTruncated qualifies the
+			// observation, but nothing is conditional on it: the signal still reports in
+			// full, because withholding it would decide for the caller on partial data.
+			name:        "truncated window still reports the signal",
+			issues:      []github.Issue{mkIssue(1, 1, 1, nil, nil)},
+			totalOpen:   50,
+			wantMissing: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ReduceHygiene(tc.issues, tc.totalOpen, hygieneParams(), 20, now)
+			if facts.AreaLabelsObserved != tc.wantObserved {
+				t.Errorf("AreaLabelsObserved = %v, want %v", facts.AreaLabelsObserved, tc.wantObserved)
+			}
+			if facts.MissingArea.Count != tc.wantMissing {
+				t.Errorf("missingArea count = %d, want %d (the signal is never withheld)", facts.MissingArea.Count, tc.wantMissing)
+			}
+		})
+	}
+}
