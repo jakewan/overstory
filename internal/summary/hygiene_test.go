@@ -152,6 +152,11 @@ func TestReduceHygieneAreaLabelsObserved(t *testing.T) {
 			if facts.MissingArea.Count != tc.wantMissing {
 				t.Errorf("missingArea count = %d, want %d (the signal is never withheld)", facts.MissingArea.Count, tc.wantMissing)
 			}
+			// Derived from the fixture rather than hand-specified, so the truncated case
+			// cannot quietly decay into a duplicate of the complete one.
+			if want := tc.totalOpen > len(tc.issues); facts.FetchTruncated != want {
+				t.Errorf("FetchTruncated = %v, want %v", facts.FetchTruncated, want)
+			}
 		})
 	}
 }

@@ -42,19 +42,23 @@ type HygieneFacts struct {
 	// on every run and so carries no information.
 	//
 	// It is an observation over the fetched window, not a property of the repository,
-	// and a false value covers four different situations: an area convention never
+	// and a false value covers several distinct situations: an area convention never
 	// adopted; one adopted but not yet applied to any open issue; a real convention
 	// whose labels the configured prefixes do not recognize (the generic defaults
-	// cover the common area-prefixed spellings, not every scheme); and an explicitly
-	// emptied areaBalance. Only the caller can tell these apart, which is why the
-	// signal is still reported in full rather than withheld here.
+	// cover the common area-prefixed spellings, not every scheme); an explicitly
+	// emptied areaBalance; and a window holding no open issues at all, where nothing
+	// was observed because there was nothing to observe. Only the caller can tell
+	// these apart, which is why the signal is still reported in full rather than
+	// withheld here — and why no wording built on this flag should assert that the
+	// repository has no area convention.
 	//
-	// Two seams floor it. FetchTruncated marks a partial window, and the issue fetch
-	// is ordered least-recently-active-first, so a recently adopted convention's
-	// labels sit in exactly the tail that truncation drops. An individual issue's
-	// LabelsTruncated marks a capped label list whose dropped tail may have held the
-	// area label — the same axis the critical-path reduction treats as orthogonal to
-	// its own fetch truncation.
+	// FetchTruncated floors it: the issue fetch is ordered least-recently-active-
+	// first, so a recently adopted convention's labels sit in exactly the tail that
+	// truncation drops. A second seam is real but unsurfaced here — an individual
+	// issue's LabelsTruncated marks a capped label list whose dropped tail may have
+	// held the area label, and this block carries no companion count for it, unlike
+	// the critical-path reduction. A caller cannot observe that seam from the hygiene
+	// block, so it is stated here rather than implied by a flag that does not exist.
 	//
 	// It cannot live on HygieneParams beside the taxonomy it reads: unlike the
 	// not-configured flags on the deferred and critical-path reductions, this is

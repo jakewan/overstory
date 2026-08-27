@@ -768,3 +768,28 @@ func TestProjectSummaryHygieneReportsAreaLabelsObserved(t *testing.T) {
 		t.Errorf("MissingArea = %+v, want [issue 1]", facts.Hygiene.MissingArea)
 	}
 }
+
+// TestProjectSummaryHygieneAreaLabelsObservedUnderEmptiedTaxonomy pins the
+// manifest opt-out path the field's documentation names: an explicit empty
+// prefixes list replaces the generic defaults, leaving a taxonomy that matches
+// nothing, so the observation reads false for a reason no issue's labels explain.
+// It travels a different route through the deep merge than the default-prefix
+// case above, which is why it is pinned separately rather than assumed.
+func TestProjectSummaryHygieneAreaLabelsObservedUnderEmptiedTaxonomy(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  areaBalance:\n    prefixes: []\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		// Carries what would be a recognized area label under the generic defaults.
+		Issues:    []github.Issue{summaryIssue(1, nil, "area/net")},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Hygiene.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = true, want false (an emptied taxonomy recognizes nothing)")
+	}
+	if facts.Hygiene.MissingArea.Count != 1 {
+		t.Errorf("missingArea count = %d, want 1 (the signal is never withheld)", facts.Hygiene.MissingArea.Count)
+	}
+}

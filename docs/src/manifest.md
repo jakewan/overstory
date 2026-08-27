@@ -94,6 +94,8 @@ A **`PrefixRule`** matches a label that starts with `prefix` + `delimiter`; the 
 | `prefix`    | string | Required, non-empty (an empty prefix would match every label).    |
 | `delimiter` | string | Required, non-empty exactly (a whitespace delimiter like `": "` is legitimate). |
 
+Emptying both fields leaves a taxonomy that matches nothing, which is a supported way to opt out — but note what it means downstream: `project_summary`'s `areaLabelsObserved` then reports false and every open issue lands in the missing-area signal, because no label can be recognized. That reads the same as a repository that simply never adopted areas.
+
 ### `quality`
 
 | Field                | Type             | Default | Notes                                                                 |
