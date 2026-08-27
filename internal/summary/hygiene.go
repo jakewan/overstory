@@ -30,11 +30,23 @@ type HygieneParams struct {
 // disjoint — one issue can trip several — so the counts need not sum to anything.
 // OpenIssueCount stays exact when the window truncates (FetchTruncated).
 type HygieneFacts struct {
-	OpenIssueCount int           `json:"openIssueCount"`
-	FetchedCount   int           `json:"fetchedCount"`
-	FetchTruncated bool          `json:"fetchTruncated"`
-	Limit          int           `json:"limit"`
-	MissingArea    HygieneSignal `json:"missingArea"`
+	OpenIssueCount int  `json:"openIssueCount"`
+	FetchedCount   int  `json:"fetchedCount"`
+	FetchTruncated bool `json:"fetchTruncated"`
+	// LabelTruncatedCount is how many fetched open issues had their own label list
+	// capped by the fetch (github.Issue.LabelsTruncated). It floors every label-driven
+	// signal in this block, not only the area observation: an issue whose area label
+	// fell in the dropped tail is counted as missing an area it actually carries, one
+	// whose deferred label fell there reads as neglected rather than parked, and
+	// AreaLabelsObserved can read false on a repository that does classify by area.
+	// A positive value makes those readings provisional for that many issues — the
+	// same axis the critical-path reduction surfaces alongside its own fetch
+	// truncation, and orthogonal to FetchTruncated, which bounds which issues were
+	// seen rather than how much of each was seen. Issues rarely carry enough labels
+	// to reach the cap, so this is normally zero.
+	LabelTruncatedCount int           `json:"labelTruncatedCount"`
+	Limit               int           `json:"limit"`
+	MissingArea         HygieneSignal `json:"missingArea"`
 	// AreaLabelsObserved reports whether any fetched open issue carried a label
 	// matching the configured area taxonomy. It qualifies MissingArea, whose count
 	// alone cannot distinguish a backlog with a real labelling gap from one belonging
@@ -52,13 +64,11 @@ type HygieneFacts struct {
 	// withheld here — and why no wording built on this flag should assert that the
 	// repository has no area convention.
 	//
-	// FetchTruncated floors it: the issue fetch is ordered least-recently-active-
-	// first, so a recently adopted convention's labels sit in exactly the tail that
-	// truncation drops. A second seam is real but unsurfaced here — an individual
-	// issue's LabelsTruncated marks a capped label list whose dropped tail may have
-	// held the area label, and this block carries no companion count for it, unlike
-	// the critical-path reduction. A caller cannot observe that seam from the hygiene
-	// block, so it is stated here rather than implied by a flag that does not exist.
+	// Two seams floor it, and both are observable. FetchTruncated marks a partial
+	// window, and the issue fetch is ordered least-recently-active-first, so a
+	// recently adopted convention's labels sit in exactly the tail truncation drops.
+	// LabelTruncatedCount marks issues whose own label list was capped, where the area
+	// label may sit in the dropped tail of an issue the window did include.
 	//
 	// It cannot live on HygieneParams beside the taxonomy it reads: unlike the
 	// not-configured flags on the deferred and critical-path reductions, this is
@@ -120,6 +130,9 @@ func ReduceHygiene(issues []github.Issue, totalOpen int, params HygieneParams, l
 			URL:          is.URL,
 			AgeDays:      reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays: reduce.DaysSince(now, is.LastActivityAt),
+		}
+		if is.LabelsTruncated {
+			facts.LabelTruncatedCount++
 		}
 		deferred := deferredMatcher.MatchesAny(is.Labels)
 		if !areaMatcher.MatchesAny(is.Labels) {

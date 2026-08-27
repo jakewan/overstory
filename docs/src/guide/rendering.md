@@ -69,6 +69,7 @@ Truncation is surfaced explicitly, never silently, so the caller can tell incomp
 - `fetchTruncated` — the scan window didn't cover every open issue, so counts themselves are a floor. The open-issue fetch paginates the full open set, so this normally fires only when a repository exceeds the `staleness.fetchLimit` safety backstop.
 - `listTruncated` — more matches exist than were listed under the call's `limit`.
 - `membershipTruncated` — on a milestone, its listed members are a floor relative to its open count.
+- `labelTruncatedCount` — on the `hygiene` block, how many fetched issues had their own label list capped. Orthogonal to `fetchTruncated`: that one bounds which issues were seen, this one bounds how much of each was seen, and every label-driven signal in the block is provisional for that many issues.
 
 When any of these is set, the render must say so — "showing 25 of 60+; this is a lower bound, not the full set" — rather than presenting the capped list as exhaustive. The failure mode this guards against is a caller reading a truncated `missingArea` list of 25 issues and reporting "25 issues need an area label" when the real count is higher and the window simply stopped. The flags are part of the contract precisely so the caller never has to guess; rendering them is not optional polish.
 

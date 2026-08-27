@@ -160,3 +160,30 @@ func TestReduceHygieneAreaLabelsObserved(t *testing.T) {
 		})
 	}
 }
+
+// TestReduceHygieneCountsLabelTruncation pins the block-level seam that floors
+// every label-driven signal here, not just the area observation: an issue whose
+// own label list was capped may carry an area or deferred label in the dropped
+// tail, so its missing-area, stale, and deferred readings are all provisional.
+// The count is over the fetched window and is normally zero.
+func TestReduceHygieneCountsLabelTruncation(t *testing.T) {
+	capped := mkIssue(1, 1, 1, []string{"bug"}, nil)
+	capped.LabelsTruncated = true
+	issues := []github.Issue{
+		capped,
+		mkIssue(2, 1, 1, []string{"area/net"}, nil), // labels complete
+	}
+	facts := ReduceHygiene(issues, 2, hygieneParams(), 20, now)
+
+	if facts.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1 (only issue 1 was capped)", facts.LabelTruncatedCount)
+	}
+	// The seam is reported, never acted on: issue 1 still counts as missing an area,
+	// because the reduction cannot know what the dropped tail held.
+	if facts.MissingArea.Count != 1 || facts.MissingArea.Issues[0].Number != 1 {
+		t.Errorf("missingArea = %+v, want [issue 1] (truncation floors, it does not exclude)", facts.MissingArea)
+	}
+	if !facts.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = false, want true (issue 2's area label is intact)")
+	}
+}

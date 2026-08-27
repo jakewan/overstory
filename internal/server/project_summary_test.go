@@ -793,3 +793,28 @@ func TestProjectSummaryHygieneAreaLabelsObservedUnderEmptiedTaxonomy(t *testing.
 		t.Errorf("missingArea count = %d, want 1 (the signal is never withheld)", facts.Hygiene.MissingArea.Count)
 	}
 }
+
+// TestProjectSummaryHygieneSurfacesLabelTruncation pins the block-level seam on
+// the wire: a fetched issue whose own label list was capped may carry the area or
+// deferred label that decides a signal, so the count a caller needs to mark those
+// readings provisional has to survive serialization, not just the reduction.
+func TestProjectSummaryHygieneSurfacesLabelTruncation(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	capped := summaryIssue(1, nil, "bug")
+	capped.LabelsTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, summaryIssue(2, nil, "area/net")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Hygiene.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1", facts.Hygiene.LabelTruncatedCount)
+	}
+	// The seam floors the reading; it never suppresses it.
+	if facts.Hygiene.MissingArea.Count != 1 {
+		t.Errorf("missingArea count = %d, want 1 (issue 1 still reads as missing an area)", facts.Hygiene.MissingArea.Count)
+	}
+}
