@@ -40,9 +40,12 @@ type HygieneFacts struct {
 	// actually carries, one whose deferred label fell there reads as neglected rather
 	// than parked, and AreaLabelsObserved can read false on a repository that does
 	// classify by area. UnmilestonedAged is untouched, being decided by milestone and
-	// age rather than by a label. Unlike FetchTruncated this is not a floor — a
-	// dropped label makes MissingArea and Stale overcount while
-	// DeferredWithoutContext undercounts, so the error runs in both directions.
+	// age rather than by a label. Unlike FetchTruncated this is not a floor, and each
+	// affected signal errs one way only, because a truncated label list is a strict
+	// subset: MissingArea and Stale become ceilings (a dropped area label adds to the
+	// first, a dropped deferred label stops the second excluding an issue) while
+	// DeferredWithoutContext becomes a floor. AreaLabelsObserved can likewise only be
+	// pushed toward false, never toward true.
 	// A positive value makes those readings provisional for that many issues — the
 	// same axis the critical-path reduction surfaces alongside its own fetch
 	// truncation, and orthogonal to FetchTruncated, which bounds which issues were
