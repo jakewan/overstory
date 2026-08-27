@@ -722,3 +722,99 @@ func TestProjectSummaryRequiresOwnerRepo(t *testing.T) {
 		t.Error("IsError = false, want true (blank owner)")
 	}
 }
+
+// TestProjectSummaryHygieneReportsAreaLabelsObserved is the outside-in pin for
+// #126: on a repository that classifies nothing by area, the missing-area signal
+// is fully lit on every run and so carries no information. The server publishes
+// whether any area label was seen at all, so a caller can render the count as an
+// observation about the repository rather than as a per-issue defect list. The
+// signal itself is unchanged — suppressing a true count would move a presentation
+// decision into the server.
+//
+// The manifest entry deliberately declares no areaBalance block, so the generic
+// default prefixes apply: that is the unadopted repository this reduction has to
+// stay useful on, not a configured-empty one.
+func TestProjectSummaryHygieneReportsAreaLabelsObserved(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	unadopted := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{summaryIssue(1, nil), summaryIssue(2, nil, "bug")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(unadopted), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Hygiene.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = true, want false (no issue carries an area label)")
+	}
+	// The count and its list survive: the caller decides how to present them.
+	if facts.Hygiene.MissingArea.Count != 2 || len(facts.Hygiene.MissingArea.Issues) != 2 {
+		t.Errorf("MissingArea = %+v, want both issues still reported", facts.Hygiene.MissingArea)
+	}
+
+	// Positive control: one recognized area label flips the observation, proving the
+	// field discriminates rather than merely returning false.
+	adopted := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{summaryIssue(1, nil), summaryIssue(2, nil, "area/net")},
+		TotalOpen: 2,
+	}}
+	srv = New(WithFetcher(adopted), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+	facts = decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if !facts.Hygiene.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = false, want true (issue 2 carries area/net)")
+	}
+	if facts.Hygiene.MissingArea.Count != 1 || facts.Hygiene.MissingArea.Issues[0].Number != 1 {
+		t.Errorf("MissingArea = %+v, want [issue 1]", facts.Hygiene.MissingArea)
+	}
+}
+
+// TestProjectSummaryHygieneAreaLabelsObservedUnderEmptiedTaxonomy pins the
+// manifest opt-out path the field's documentation names: an explicit empty
+// prefixes list replaces the generic defaults, leaving a taxonomy that matches
+// nothing, so the observation reads false for a reason no issue's labels explain.
+// It travels a different route through the deep merge than the default-prefix
+// case above, which is why it is pinned separately rather than assumed.
+func TestProjectSummaryHygieneAreaLabelsObservedUnderEmptiedTaxonomy(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  areaBalance:\n    prefixes: []\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		// Carries what would be a recognized area label under the generic defaults.
+		Issues:    []github.Issue{summaryIssue(1, nil, "area/net")},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Hygiene.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = true, want false (an emptied taxonomy recognizes nothing)")
+	}
+	if facts.Hygiene.MissingArea.Count != 1 {
+		t.Errorf("missingArea count = %d, want 1 (the signal is never withheld)", facts.Hygiene.MissingArea.Count)
+	}
+}
+
+// TestProjectSummaryHygieneSurfacesLabelTruncation pins the block-level seam on
+// the wire: a fetched issue whose own label list was capped may carry the area or
+// deferred label that decides a signal, so the count a caller needs to mark those
+// readings provisional has to survive serialization, not just the reduction.
+func TestProjectSummaryHygieneSurfacesLabelTruncation(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	capped := summaryIssue(1, nil, "bug")
+	capped.LabelsTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, summaryIssue(2, nil, "area/net")},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+
+	if facts.Hygiene.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1", facts.Hygiene.LabelTruncatedCount)
+	}
+	// The seam floors the reading; it never suppresses it.
+	if facts.Hygiene.MissingArea.Count != 1 {
+		t.Errorf("missingArea count = %d, want 1 (issue 1 still reads as missing an area)", facts.Hygiene.MissingArea.Count)
+	}
+}

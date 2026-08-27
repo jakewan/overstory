@@ -99,3 +99,91 @@ func TestReduceHygieneCountUncappedListCapped(t *testing.T) {
 		t.Errorf("stale list = %d truncated=%v, want 1/true", len(facts.Stale.Issues), facts.Stale.ListTruncated)
 	}
 }
+
+// TestReduceHygieneAreaLabelsObserved pins the observation that tells a caller
+// whether the missing-area count is a defect list or a statement that the
+// repository classifies nothing by area. The signal itself is never conditional:
+// the count and list are reported identically in every case, so the reduction
+// publishes a fact rather than making the caller's presentation decision for it.
+func TestReduceHygieneAreaLabelsObserved(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		issues       []github.Issue
+		totalOpen    int
+		wantObserved bool
+		wantMissing  int
+	}{
+		{
+			name:        "no issue carries an area label",
+			issues:      []github.Issue{mkIssue(1, 1, 1, nil, nil), mkIssue(2, 1, 1, []string{"bug"}, nil)},
+			totalOpen:   2,
+			wantMissing: 2,
+		},
+		{
+			name:         "one issue carries an area label",
+			issues:       []github.Issue{mkIssue(1, 1, 1, nil, nil), mkIssue(2, 1, 1, []string{"area/net"}, nil)},
+			totalOpen:    2,
+			wantObserved: true,
+			wantMissing:  1,
+		},
+		{
+			// Nothing was observed because there was nothing to observe. A caller must
+			// not read this as a claim about the repository's conventions.
+			name:      "empty window observes nothing",
+			issues:    nil,
+			totalOpen: 0,
+		},
+		{
+			// The window is ordered least-recently-active-first, so a recently adopted
+			// convention's labels sit in the dropped tail. FetchTruncated qualifies the
+			// observation, but nothing is conditional on it: the signal still reports in
+			// full, because withholding it would decide for the caller on partial data.
+			name:        "truncated window still reports the signal",
+			issues:      []github.Issue{mkIssue(1, 1, 1, nil, nil)},
+			totalOpen:   50,
+			wantMissing: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ReduceHygiene(tc.issues, tc.totalOpen, hygieneParams(), 20, now)
+			if facts.AreaLabelsObserved != tc.wantObserved {
+				t.Errorf("AreaLabelsObserved = %v, want %v", facts.AreaLabelsObserved, tc.wantObserved)
+			}
+			if facts.MissingArea.Count != tc.wantMissing {
+				t.Errorf("missingArea count = %d, want %d (the signal is never withheld)", facts.MissingArea.Count, tc.wantMissing)
+			}
+			// Derived from the fixture rather than hand-specified, so the truncated case
+			// cannot quietly decay into a duplicate of the complete one.
+			if want := tc.totalOpen > len(tc.issues); facts.FetchTruncated != want {
+				t.Errorf("FetchTruncated = %v, want %v", facts.FetchTruncated, want)
+			}
+		})
+	}
+}
+
+// TestReduceHygieneCountsLabelTruncation pins the block-level seam that floors
+// every label-driven signal here, not just the area observation: an issue whose
+// own label list was capped may carry an area or deferred label in the dropped
+// tail, so its missing-area, stale, and deferred readings are all provisional.
+// The count is over the fetched window and is normally zero.
+func TestReduceHygieneCountsLabelTruncation(t *testing.T) {
+	capped := mkIssue(1, 1, 1, []string{"bug"}, nil)
+	capped.LabelsTruncated = true
+	issues := []github.Issue{
+		capped,
+		mkIssue(2, 1, 1, []string{"area/net"}, nil), // labels complete
+	}
+	facts := ReduceHygiene(issues, 2, hygieneParams(), 20, now)
+
+	if facts.LabelTruncatedCount != 1 {
+		t.Errorf("LabelTruncatedCount = %d, want 1 (only issue 1 was capped)", facts.LabelTruncatedCount)
+	}
+	// The seam is reported, never acted on: issue 1 still counts as missing an area,
+	// because the reduction cannot know what the dropped tail held.
+	if facts.MissingArea.Count != 1 || facts.MissingArea.Issues[0].Number != 1 {
+		t.Errorf("missingArea = %+v, want [issue 1] (truncation floors, it does not exclude)", facts.MissingArea)
+	}
+	if !facts.AreaLabelsObserved {
+		t.Error("AreaLabelsObserved = false, want true (issue 2's area label is intact)")
+	}
+}
