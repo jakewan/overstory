@@ -74,7 +74,7 @@ If `membershipTruncated` is set on a milestone, its member list is a floor — f
 
 Header: `## Area Inventory`
 
-From the `areaInventory` block. This is **counts-only**: for each entry in `areas` (`area`, `active`, `deferred`) render the active/deferred split, busiest first, then the `unclassified` (`active`/`deferred`) count. The block carries **no issue numbers** — it answers "where does open work sit," not "which issues." For the issue-level "what's unlabeled," point at the Hygiene missing-area signal below, which does list issues.
+From the `areaInventory` block. This is **counts-only**: for each entry in `areas` (`area`, `active`, `deferred`) render the active/deferred split, busiest first, then the `unclassified` (`active`/`deferred`) count. The block carries **no issue numbers** — it answers "where does open work sit," not "which issues." For the issue-level "what's unlabeled," point at the Hygiene missing-area signal below, which does list issues — subject to its `areaLabelsObserved` note: when that flag is false the signal's **count** covers the whole fetched window, and whether that is a gap worth closing is exactly what the Hygiene section leaves open; the list itself is still `limit`-capped either way.
 
 ```markdown
 | Area           | Active | Deferred |
@@ -90,7 +90,7 @@ A multi-area issue counts in each area it matches, so the column needn't sum to 
 
 Header: `## Hygiene Signals`
 
-From the `hygiene` block. Four signals over the open issues — `missingArea`, `unmilestonedAged`, `stale`, `deferredWithoutContext` — each carrying a `count`, a capped `issues` list (`number`, `title`, `ageDays`, `inactiveDays`), and `listTruncated`. Render each as its count plus its list (most-inactive first), and render "None" when `count` is 0 so the reader sees the check ran:
+From the `hygiene` block. Four signals over the open issues — `missingArea`, `unmilestonedAged`, `stale`, `deferredWithoutContext` — each carrying a `count`, a capped `issues` list (`number`, `title`, `ageDays`, `inactiveDays`), and `listTruncated`. Render each as its count plus its list (most-inactive first), and render "None" when `count` is 0 so the reader sees the check ran — except `missingArea`, which carries a companion flag and is handled below:
 
 ```markdown
 - **Missing area label** (24): #362 - Title (age 49d); … — _lower bound: 4 more not listed_
@@ -98,6 +98,8 @@ From the `hygiene` block. Four signals over the open issues — `missingArea`, `
 - **Stale** (14): …
 - **Deferred without context**: None
 ```
+
+**`missingArea` is conditional on `areaLabelsObserved`.** When that flag is **false**, the repo's configured area taxonomy matched nothing in the window. That does **not** settle whether the count is a gap worth closing, and the render must not decide it either way. Three readings produce the same false value: the repo classifies nothing by area; it classifies by a scheme the manifest does not declare; or the declared convention is intended and simply has not been applied to any open issue yet — which is a real, actionable labelling gap. Render the count as an observation ("no area labels observed — 12 open issues carry none"), name the readings, and leave the row as something to look into rather than something to dismiss. Two cases the wording must respect: when `count` is 0 there was nothing to observe, so render "Missing area label: None" as with the other signals and say nothing about the repo's conventions; and when `fetchTruncated` is set the observation covers only the window, which is ordered least-recently-active-first — a recently adopted convention's labels sit in exactly the tail truncation drops — so mark it provisional. The block's `labelTruncatedCount` carries a different kind of uncertainty: that many fetched issues had their own labels capped, so an area label may sit in a dropped tail and the issue be counted as missing one it carries. It is not a floor, and each affected signal errs one way only: when it is positive, `missingArea` and `stale` are **ceilings** (the true counts are at most what is shown, since a dropped area label adds to one and a dropped deferred label stops the other being excluded) while `deferredWithoutContext` is a **floor** (a dropped deferred label drops the issue from it). Say which bound applies rather than calling the numbers uncertain. `unmilestonedAged` is unaffected. When `areaLabelsObserved` is **true**, render `missingArea` as the defect list it is, per the uniform treatment above.
 
 These are not disjoint — one issue can trip several, so the counts need not sum to anything. The thresholds are the repo's manifest conventions (the server applies them; they are not in this skill): "unmilestoned & aged" and "stale" use the repo's age and staleness day thresholds, and "deferred without context" flags a deferred issue whose body falls below the repo's `minBodyLength` (an empty body, on a repo that has not tuned that bar). **Do not name a specific day count or character count** — it is per-repo and lives in the manifest, not here. Note `listTruncated` per signal.
 
