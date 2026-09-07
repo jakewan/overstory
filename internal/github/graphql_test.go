@@ -904,6 +904,33 @@ func TestListOpenIssuesErrorClassification(t *testing.T) {
 	}
 }
 
+// TestListOpenIssuesPartialPayloadWithUntypedErrorAborts pins the guard the whole
+// no-absent-seam-on-GitHub property rests on. The schema's non-null fields are not
+// that guard: an IssueConnection node is itself nullable, so a resolver error on a
+// field nulls the enclosing node and GitHub may return 200 with usable data beside an
+// errors array — the documented shape for a timeout on a heavy nested connection,
+// which is exactly what this query selects. What refuses it is classifyGraphQLErrors
+// erroring on any entry at all, including one carrying no recognized type.
+//
+// Relax this and a null node decodes to a zero-valued issue: number 0, no edges, no
+// sub-issue counts — an issue that would classify as ready. Nothing else in the
+// package would notice.
+func TestListOpenIssuesPartialPayloadWithUntypedErrorAborts(t *testing.T) {
+	body := `{"data":{"repository":{"issues":{"totalCount":2,` +
+		`"pageInfo":{"hasNextPage":false,"endCursor":null},` +
+		`"nodes":[{"number":1,"title":"real","url":"u"},null]}}},` +
+		`"errors":[{"message":"Something went wrong while executing your query."}]}`
+	srv := jsonServer(t, http.StatusOK, body)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err == nil {
+		t.Fatalf("error = nil, want a failure; a partial payload must not be reduced (got %d issues)", len(res.Issues))
+	}
+	if len(res.Issues) != 0 {
+		t.Errorf("Issues = %d, want 0; an aborted fetch must yield no issues to classify", len(res.Issues))
+	}
+}
+
 // TestListOpenIssuesRateLimitCarriesResetSignal pins that a throttle returns the
 // typed RateLimitedError with the reset signal parsed from GitHub's response —
 // X-RateLimit-Reset (epoch) and Retry-After (seconds or HTTP-date) from headers,

@@ -42,11 +42,15 @@ import (
 // classified issue wrong.
 //
 // ReadyCount, BlockedCount, and ProvisionalCount partition the fetched open
-// issues. Provisional is the truncation-safety class: an issue that presents no
-// open blocker but whose blocked-by edge list was capped (BlockedByTruncated)
-// cannot be confirmed ready, so it is neither counted ready nor listed as a gate —
-// an empty edge list is not proof of readiness. Gates and Blocked are the two
-// actionable lists (capped at Limit, counts never capped).
+// issues. Provisional is the unconfirmed-readiness class, and an empty edge list is
+// not proof of readiness for either reason that lands an issue in it: the list was
+// capped (BlockedByTruncated), or a seam the verdict rests on was never read
+// (SeamUnavailable). Such an issue is neither counted ready nor listed as a gate.
+// The two differ in blast radius rather than in kind — a capped list is per-issue and
+// rare, while an unread seam usually fires across the whole window — which is why
+// Seams reports the forge-level state separately rather than leaving a caller to
+// infer it from the size of the count. Gates and Blocked are the two actionable lists
+// (capped at Limit, counts never capped).
 type Facts struct {
 	OpenIssueCount   int  `json:"openIssueCount"`
 	FetchedCount     int  `json:"fetchedCount"`
@@ -62,6 +66,20 @@ type Facts struct {
 	Blocked          []Issue `json:"blocked"`
 	BlockedTruncated bool    `json:"blockedTruncated"`
 	Limit            int     `json:"limit"`
+	// Seams says which inputs the readiness verdict rests on and whether this forge
+	// carries each, so a caller renders "readiness here rests on blocked-by edges
+	// alone" from a stated fact rather than inferring it from a population of zeros.
+	Seams SeamReport `json:"seams"`
+}
+
+// SeamReport is the repository-level state of each input a readiness verdict rests
+// on. It is stated once for the whole block because carriage is a property of the
+// repository being read rather than of any one issue in it — unlike the per-issue
+// states, which record what a single read obtained. A seam reported notApplicable
+// here is why an issue can be ready with that input unexamined.
+type SeamReport struct {
+	BlockedBy   github.SeamState `json:"blockedBy"`
+	SubIssueGap github.SeamState `json:"subIssueGap"`
 }
 
 // Issue is one open issue reduced to its identifying facts and its authoritative
@@ -78,15 +96,23 @@ type Facts struct {
 // recommendation blocks carry. It matters for a listed issue: a blocked issue's
 // BlockedBy may omit further blockers, and a gate's Blocking (hence its ordering and
 // the summary blockingCount) may understate how much it unblocks.
+// BlockedByState and SubIssueGapState carry the same honesty one step further, for
+// the same reason the truncation flags are here: a listed blocked issue's BlockedBy
+// may be not merely capped but unread, and SubIssueGate reads false both where a
+// parent has no open children and where the forge has no children at all. Without
+// them a listed issue's edge fields would be the one place in the response where these
+// distinctions are dropped.
 type Issue struct {
-	Number             int    `json:"number"`
-	Title              string `json:"title"`
-	URL                string `json:"url"`
-	BlockedBy          []int  `json:"blockedBy"`
-	BlockedByTruncated bool   `json:"blockedByTruncated"`
-	Blocking           []int  `json:"blocking"`
-	BlockingTruncated  bool   `json:"blockingTruncated"`
-	SubIssueGate       bool   `json:"subIssueGate"`
+	Number             int              `json:"number"`
+	Title              string           `json:"title"`
+	URL                string           `json:"url"`
+	BlockedBy          []int            `json:"blockedBy"`
+	BlockedByTruncated bool             `json:"blockedByTruncated"`
+	Blocking           []int            `json:"blocking"`
+	BlockingTruncated  bool             `json:"blockingTruncated"`
+	SubIssueGate       bool             `json:"subIssueGate"`
+	BlockedByState     github.SeamState `json:"blockedByState"`
+	SubIssueGapState   github.SeamState `json:"subIssueGapState"`
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
@@ -96,11 +122,23 @@ type Issue struct {
 //
 // An issue is blocked when it has an open blocked-by edge or an open sub-issue gate
 // (the authoritative subIssuesTotal-minus-completed gap, which witnesses open
-// children even when they fall outside the window). An issue with no known gate but
-// a truncated blocked-by list is provisional, not ready — the truncation contract
-// that keeps a capped edge list from reading as readiness. Everything else is
-// ready. A gate is a ready issue that blocks open downstream work.
-func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
+// children even when they fall outside the window). An issue with no known gate is
+// provisional rather than ready when its blocked-by list was capped or when a seam
+// the verdict rests on went unread — in both cases the emptiness is the absence of
+// evidence rather than evidence of absence. Everything else is ready, and a gate is a
+// ready issue that blocks open downstream work.
+//
+// caps says what the fetched repository carries, and it overrides the per-issue
+// states: a relationship that does not exist there cannot have failed to be read, so
+// an uncarried seam withholds nothing and leaves a verdict complete. Without that
+// distinction the reduction would report every issue unconfirmable wherever a
+// relationship is missing, which is the same signal loss as the false-ready it exists
+// to prevent, in the opposite direction. It is per-repository rather than per-forge
+// because a forge can gate a relationship on a repository setting.
+func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Capabilities) Facts {
+	// Idempotent, and the handler has normally applied it already so every block of a
+	// response agrees; repeated here so this reduction is correct called directly.
+	issues = github.ApplyCapabilities(issues, caps)
 	facts := Facts{
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
@@ -108,6 +146,12 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		Gates:          make([]Issue, 0),
 		Blocked:        make([]Issue, 0),
 		Limit:          listLimit,
+		Seams: SeamReport{
+			BlockedBy: blockSeam(caps.CarriesBlockedByEdges(), issues,
+				func(is github.Issue) github.SeamState { return is.BlockedByState }),
+			SubIssueGap: blockSeam(caps.CarriesSubIssueHierarchy(), issues,
+				func(is github.Issue) github.SeamState { return is.SubIssueGapState }),
+		},
 	}
 
 	for _, is := range issues {
@@ -117,7 +161,16 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		// open-child gap is authoritative even when the windowed SubIssues list is
 		// empty. It is an upper bound that can read one high after a not-planned
 		// closure — erring toward over-reporting the gate, never toward false-ready.
-		subGate := is.SubIssuesTotal-is.SubIssuesCompleted > 0
+		// The gap witnesses a gate only where the forge carries the relationship at
+		// all: where it does not, the zero is the absence of a concept rather than the
+		// absence of children. An unreadable seam needs no test here — its zero cannot
+		// clear the issue, because the provisional arm below catches it first.
+		subGate := is.SubIssueGapState != github.SeamNotApplicable &&
+			is.SubIssuesTotal-is.SubIssuesCompleted > 0
+		// A seam the backend could not read leaves readiness unconfirmable for the
+		// same reason a capped edge list does — an empty result proves nothing. A seam
+		// the forge does not carry is not a fault and withholds nothing.
+		unevaluable := is.BlockedByState.Withholds() || is.SubIssueGapState.Withholds()
 
 		item := Issue{
 			Number:             is.Number,
@@ -128,15 +181,18 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
 			SubIssueGate:       subGate,
+			BlockedByState:     is.BlockedByState,
+			SubIssueGapState:   is.SubIssueGapState,
 		}
 
 		switch {
 		case len(blockedBy) > 0 || subGate:
 			facts.BlockedCount++
 			facts.Blocked = append(facts.Blocked, item)
-		case is.BlockedByTruncated:
-			// Appears unblocked, but a capped edge list may hide an open blocker, so
-			// readiness cannot be confirmed. Not ready, not a gate.
+		case is.BlockedByTruncated || unevaluable:
+			// Appears unblocked, but a capped edge list may hide an open blocker and an
+			// unread seam may hide anything at all, so readiness cannot be confirmed.
+			// Not ready, not a gate.
 			facts.ProvisionalCount++
 		default:
 			facts.ReadyCount++
@@ -186,6 +242,10 @@ type Classification struct {
 	Gates            []Gate `json:"gates"`
 	GatesTruncated   bool   `json:"gatesTruncated"`
 	Limit            int    `json:"limit"`
+	// Seams travels with the classification for the same reason it travels with the
+	// facts: a ready count means something different where a seam has no carrier, and
+	// a caller reading only this projection would otherwise have no way to know.
+	Seams SeamReport `json:"seams"`
 }
 
 // Gate is one do-first root in the summary projection: an issue that is itself
@@ -225,7 +285,34 @@ func (f Facts) Classification() Classification {
 		Gates:            gates,
 		GatesTruncated:   f.GatesTruncated,
 		Limit:            f.Limit,
+		Seams:            f.Seams,
 	}
+}
+
+// blockSeam derives the block-level state of one seam from the forge's carriage of
+// the relationship and from what the fetched issues actually yielded. Carriage alone
+// cannot express the case this reduction most needs to report — a relationship the
+// forge has but this repository withheld from every read — so the per-issue outcome is
+// folded in rather than left for a caller to infer from a provisional count.
+//
+// Unavailable requires *every* fetched issue to have withheld the seam, which is the
+// shape a repository-wide gate produces. A mixed window stays available: one issue's
+// failed read is not the repository's verdict, and the per-issue states carry it. An
+// empty window stays available too — "every issue withheld it" is vacuously true over
+// no issues, and reporting a fault from an empty backlog would be manufacturing one.
+func blockSeam(carried bool, issues []github.Issue, state func(github.Issue) github.SeamState) github.SeamState {
+	if !carried {
+		return github.SeamNotApplicable
+	}
+	if len(issues) == 0 {
+		return github.SeamAvailable
+	}
+	for _, is := range issues {
+		if !state(is).Withholds() {
+			return github.SeamAvailable
+		}
+	}
+	return github.SeamUnavailable
 }
 
 // capList caps a list at listLimit (a negative limit means uncapped), reporting

@@ -236,6 +236,101 @@ func TestReduceRecommendationsBlockedGateNotReserved(t *testing.T) {
 	}
 }
 
+// TestReduceRecommendationsUnreadableSeamGateNotReserved mirrors the blocked-gate
+// case for an unreadable seam: a gate whose blocked-by seam the backend could not
+// read is not confirmed ready, so it must not take a reserved slot ahead of a gate
+// that is. The reserve is the only place readiness is load-bearing here — the verdict
+// itself comes from dependency.Reduce, which both tools share.
+func TestReduceRecommendationsUnreadableSeamGateNotReserved(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	readyGate := mkIssue(12, 100, 1, nil, nil)
+	readyGate.Blocking = blk(50)
+	// Presents no blocker, but the seam was never read — newest, so it would win the
+	// reserve on leverage and recency if the seam state were ignored.
+	unreadGate := mkIssue(11, 1, 1, nil, nil)
+	unreadGate.Blocking = blk(50)
+	unreadGate.BlockedByState = github.SeamUnavailable
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, unreadGate, filler}, 4, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("ready gate #12 absent — readiness-eligible gate lost the reserve")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("unreadable-seam gate #11 present — an unconfirmed gate must not take the reserve slot")
+	}
+}
+
+// TestReduceRecommendationsUnrecognizedSeamStateFailsSafe: the reserve must apply the
+// same fail-safe the dependency reduction does. Enumerating only the known unsafe
+// state would let a state added later slip through here while the verdict side calls
+// it provisional — the two disagreeing about the same candidate, by the one route the
+// fail-safe exists for.
+func TestReduceRecommendationsUnrecognizedSeamStateFailsSafe(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	readyGate := mkIssue(12, 100, 1, nil, nil)
+	readyGate.Blocking = blk(50)
+	futureState := mkIssue(11, 1, 1, nil, nil)
+	futureState.Blocking = blk(50)
+	futureState.BlockedByState = github.SeamState("someLaterState")
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, futureState, filler}, 4, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("ready gate #12 absent — a confirmed gate lost the reserve to an unconfirmed one")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("unrecognized-seam-state gate #11 took the reserve; an unknown state must fail safe")
+	}
+}
+
+// TestReduceRecommendationsUncarriedGapDoesNotDisqualifyGate: where the forge has no
+// sub-issue hierarchy, the dependency reduction ignores the gap entirely, so the
+// reserve has to ignore it too. Checking it unconditionally makes the two disagree
+// about the same candidate — ready in the verdict, disqualified from the reserve —
+// on stale or unmeaning counts a backend without the relationship may still carry.
+func TestReduceRecommendationsUncarriedGapDoesNotDisqualifyGate(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	// Newest, so the reserve is the only thing that can keep it past the cap — the
+	// same isolation the blocked-gate case above relies on. No sub-issue hierarchy
+	// here, but the counts are non-zero: the shape ApplyCapabilities leaves behind,
+	// since it rewrites the state and not the counts.
+	uncarried := mkIssue(12, 1, 1, nil, nil)
+	uncarried.Blocking = blk(50)
+	uncarried.SubIssueGapState = github.SeamNotApplicable
+	uncarried.SubIssuesTotal, uncarried.SubIssuesCompleted = 3, 1
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	facts := ReduceRecommendations([]github.Issue{p, uncarried, filler}, 3, []string{"bug"}, 2, now)
+	if _, ok := byNum(facts.Candidates)[12]; !ok {
+		t.Error("gate #12 absent — a gap the forge cannot carry must not disqualify it from the reserve, since dependency.Reduce counts the same issue ready")
+	}
+}
+
+// TestReduceRecommendationsCarriesSeamCompanions pins sibling parity: the candidate
+// projects the same source fields the dependencies block does, so it carries their
+// seam companions too. Without them one response can report an issue provisional in
+// one block and blocker-free in another.
+func TestReduceRecommendationsCarriesSeamCompanions(t *testing.T) {
+	unread := mkIssue(1, 10, 1, nil, nil)
+	unread.BlockedByState = github.SeamUnavailable
+	unread.SubIssueGapState = github.SeamNotApplicable
+
+	facts := ReduceRecommendations([]github.Issue{unread}, 1, []string{"bug"}, 20, now)
+	if len(facts.Candidates) != 1 {
+		t.Fatalf("Candidates = %d, want 1", len(facts.Candidates))
+	}
+	c := facts.Candidates[0]
+	if c.BlockedByState != github.SeamUnavailable {
+		t.Errorf("BlockedByState = %v, want unavailable (an empty edge list alone proves nothing)", c.BlockedByState)
+	}
+	if c.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable", c.SubIssueGapState)
+	}
+}
+
 // TestReduceRecommendationsExactCountAndCap pins OpenIssueCount exactness under
 // fetch truncation and the list cap flag.
 func TestReduceRecommendationsExactCountAndCap(t *testing.T) {

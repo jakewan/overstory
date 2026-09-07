@@ -17,6 +17,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -84,6 +85,18 @@ import (
 // Milestone is the issue's milestone association (number and title), or nil when
 // the issue is unmilestoned — the orientation reduction reads it both to group
 // issues under their milestone and to flag the unmilestoned ones.
+//
+// BlockedByState and SubIssueGapState say whether the backend could evaluate each
+// seam a readiness verdict rests on. They are the availability companions to the
+// truncation flags above: truncated means "read, but capped", unavailable means "not
+// read at all", and an empty edge list means neither on its own. Without them an
+// unread seam and a genuinely clear one are the same zero — the false-ready the
+// truncation contract already refuses for a capped list. The GraphQL fetcher leaves
+// both at SeamAvailable, and the guard that makes that true is classifyGraphQLErrors
+// rejecting any partial payload, not the schema's non-null fields: an IssueConnection
+// node is itself nullable, so a field error nulls the whole node rather than the
+// field. Were that guard relaxed, a null node would decode to a zero-valued issue and
+// this pair is what keeps it from reading as ready.
 type Issue struct {
 	Number             int             `json:"number"`
 	Title              string          `json:"title"`
@@ -103,7 +116,148 @@ type Issue struct {
 	SubIssuesTruncated bool            `json:"subIssuesTruncated"`
 	SubIssuesTotal     int             `json:"subIssuesTotal"`
 	SubIssuesCompleted int             `json:"subIssuesCompleted"`
+	BlockedByState     SeamState       `json:"blockedByState"`
+	SubIssueGapState   SeamState       `json:"subIssueGapState"`
 	Milestone          *MilestoneRef   `json:"milestone,omitempty"`
+}
+
+// SeamState says whether a seam — an input a readiness verdict rests on — could be
+// evaluated for one issue. The zero value is SeamAvailable so a backend that reads
+// every seam states nothing, and so the polarity matches the truncation flags beside
+// it, where the zero value likewise means "nothing wrong". A backend that cannot read
+// a seam must say so: the whole point is that its silence would otherwise be
+// indistinguishable from a clear result.
+//
+// The distinction between the two failure states is what keeps the reduction usable
+// on a forge missing a seam entirely. SeamUnavailable is a fault — the concept exists
+// here and this read did not get it — so readiness cannot be confirmed. SeamNotApplicable
+// is not a fault: the forge has no such relationship at all, nothing is missing, and
+// the verdict is complete without it. Collapsing the two would force a choice between
+// reporting every issue unconfirmable forever and reinstating the false-ready.
+// It is a string rather than an integer enum so the name is the wire contract:
+// the tool's output schema is inferred from this type, and a caller reading
+// "unavailable" needs no ordinal table to interpret it.
+type SeamState string
+
+const (
+	// SeamAvailable means the seam was read successfully. It is also what the empty
+	// zero value means — see MarshalJSON.
+	SeamAvailable SeamState = "available"
+	// SeamUnavailable means the seam exists on this forge but this read could not
+	// obtain it, so an empty result proves nothing.
+	//
+	// A relationship an operator has switched off is not this state. Where a forge
+	// gates its own enforcement on the same switch — Forgejo skips its closure check
+	// when a repository's dependency unit is disabled, so an issue with unsatisfied
+	// dependencies closes freely — the stored edges gate nothing, and a readiness
+	// verdict reached without them is complete rather than unconfirmed. That is
+	// SeamNotApplicable, and the test is the forge's behavior rather than whether rows
+	// survive in its database.
+	SeamUnavailable SeamState = "unavailable"
+	// SeamNotApplicable means the forge carries no such relationship, so nothing is
+	// missing and the verdict is complete without it.
+	SeamNotApplicable SeamState = "notApplicable"
+)
+
+// Capabilities says which dependency relationships a fetched repository carries. It
+// is the repository-level companion to the per-issue seam states: this answers "can
+// this ever be read here", the per-issue state answers "was it read this time". The
+// two need separating because they fail differently — an uncarried relationship
+// withholds nothing and leaves a verdict complete, while an unread one leaves it
+// unconfirmable.
+//
+// It is scoped to a repository rather than to a forge because carriage is not purely
+// a forge-wide fact: Forgejo gates its dependency unit per repository, so two repos on
+// one instance can differ. It therefore rides on IssueListResult rather than sitting
+// beside the fetcher.
+//
+// The fields are negative ("this lacks it") so the zero value describes the common
+// case that carries everything, matching SeamState's zero and keeping an unset value
+// from asserting an absence nobody stated.
+type Capabilities struct {
+	// NoBlockedByEdges marks a repository without issue-to-issue blocking
+	// relationships.
+	NoBlockedByEdges bool
+	// NoSubIssueHierarchy marks a repository without parent/child issues. It is not
+	// missing data — there is no such concept to read, so a readiness verdict there
+	// rests on the blocking edges alone and is complete rather than partial.
+	NoSubIssueHierarchy bool
+}
+
+// CarriesBlockedByEdges reports whether blocking relationships exist here. The
+// accessors exist so consumers read the positive question the reduction actually asks
+// and no call site has to negate the field itself, which is where a polarity slip
+// would land.
+func (c Capabilities) CarriesBlockedByEdges() bool { return !c.NoBlockedByEdges }
+
+// CarriesSubIssueHierarchy reports whether parent/child issues exist here.
+func (c Capabilities) CarriesSubIssueHierarchy() bool { return !c.NoSubIssueHierarchy }
+
+// MarshalJSON renders the unset zero value as SeamAvailable so a producer that reads
+// every seam states nothing and still serializes honestly. Every comparison in the
+// reductions is therefore against the two failure states, never for SeamAvailable —
+// testing for it would miss the zero value and silently treat a read seam as unread.
+func (s SeamState) MarshalJSON() ([]byte, error) {
+	if s == "" {
+		s = SeamAvailable
+	}
+	return json.Marshal(string(s))
+}
+
+// ApplyCapabilities reconciles each issue's per-seam states against what the fetched
+// repository carries. A relationship that does not exist there cannot have failed to
+// be read, so a per-issue unavailable is a contradiction rather than a second opinion
+// and is rewritten to notApplicable.
+//
+// It never mutates the input. Where a rewrite is needed it returns a copy; where none
+// is — the common case of a repository carrying everything — it returns the input
+// slice itself, so callers must not assume the result is always distinct storage.
+//
+// It runs once over the fetched window, before any reduction sees it, because every
+// block projecting these fields has to agree: applied inside a single reduction, the
+// same issue reads notApplicable in one block of a response and unavailable in
+// another. Applying it twice is a no-op, so a defensive second call is harmless.
+func ApplyCapabilities(issues []Issue, caps Capabilities) []Issue {
+	if caps.CarriesBlockedByEdges() && caps.CarriesSubIssueHierarchy() {
+		return issues
+	}
+	out := make([]Issue, len(issues))
+	copy(out, issues)
+	for i := range out {
+		if !caps.CarriesBlockedByEdges() {
+			out[i].BlockedByState = SeamNotApplicable
+		}
+		if !caps.CarriesSubIssueHierarchy() {
+			out[i].SubIssueGapState = SeamNotApplicable
+		}
+	}
+	return out
+}
+
+// Withholds reports whether this state leaves a readiness verdict unconfirmed. It
+// lives with the type rather than with one consumer because every reduction deciding
+// readiness has to answer it the same way — a second, independently-written copy is
+// how the two come to disagree about the same issue.
+//
+// It enumerates the states that leave a verdict standing rather than those that
+// withhold, so a state added later fails safe: an unrecognized one withholds rather
+// than passing as clear.
+func (s SeamState) Withholds() bool {
+	switch s {
+	case "", SeamAvailable, SeamNotApplicable:
+		return false
+	default:
+		return true
+	}
+}
+
+// String renders the seam state, normalizing the zero value the way MarshalJSON does
+// so a test failure message names the state rather than showing an empty string.
+func (s SeamState) String() string {
+	if s == "" {
+		return string(SeamAvailable)
+	}
+	return string(s)
 }
 
 // DependencyRef is one native dependency edge in either direction: the referenced
@@ -185,10 +339,19 @@ type PullRequestListResult struct {
 // set (a defensive pagination guard can also stop it early, the rare exception).
 // RateLimit is the most-recent budget snapshot observed across the paginated fetch, or
 // nil when the response carried none, so a caller can pace itself.
+//
+// Capabilities says which dependency relationships were readable *for this
+// repository*. It rides on the result rather than sitting beside the fetcher because
+// carriage is not purely a property of the forge: Forgejo gates its dependency unit
+// per repository, and gates its own closure enforcement on the same switch, so a
+// repository with that unit off has no gating relationship even though the forge
+// does. A fetcher-wide answer could not express that, and the difference decides
+// whether an empty edge list means ready or unconfirmed.
 type IssueListResult struct {
-	Issues    []Issue
-	TotalOpen int
-	RateLimit *RateLimit
+	Issues       []Issue
+	TotalOpen    int
+	RateLimit    *RateLimit
+	Capabilities Capabilities
 }
 
 // RateLimit is the GraphQL points-budget snapshot from a successful fetch's

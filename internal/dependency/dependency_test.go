@@ -20,6 +20,10 @@ func issue(num int) github.Issue {
 	return github.Issue{Number: num, Title: "t", URL: "u"}
 }
 
+// bothSeams is the GitHub-shaped forge — every relationship carried — which is what
+// the cases below assume unless they are about a forge that carries less.
+var bothSeams = github.Capabilities{}
+
 // TestReduceClassifiesBlockedAndGates pins the #87 scenario: a capstone issue
 // blocked by several others, with no deferred convention in play. The blocked
 // issue surfaces with its authoritative blocked-by edges (correcting the
@@ -33,7 +37,7 @@ func TestReduceClassifiesBlockedAndGates(t *testing.T) {
 		return is
 	}
 	issues := []github.Issue{capstone, gate(42), gate(43), gate(44), gate(45), gate(46)}
-	facts := Reduce(issues, 6, 20)
+	facts := Reduce(issues, 6, 20, bothSeams)
 
 	if facts.BlockedCount != 1 {
 		t.Errorf("BlockedCount = %d, want 1 (only #7)", facts.BlockedCount)
@@ -70,7 +74,7 @@ func TestReduceSurfacesPerIssueEdgeTruncation(t *testing.T) {
 	gate.Blocking = edges(1)
 	gate.BlockingTruncated = true // more downstream than the window read
 
-	facts := Reduce([]github.Issue{blocked, gate}, 2, 20)
+	facts := Reduce([]github.Issue{blocked, gate}, 2, 20, bothSeams)
 	if len(facts.Blocked) != 1 || !facts.Blocked[0].BlockedByTruncated {
 		t.Errorf("blocked issue BlockedByTruncated not surfaced: %+v", facts.Blocked)
 	}
@@ -93,7 +97,7 @@ func TestClassificationDropsPerIssueEdges(t *testing.T) {
 	capstone.BlockedBy = edges(42, 43)
 	g := issue(42)
 	g.Blocking = edges(7, 8) // ready, unblocks two
-	facts := Reduce([]github.Issue{capstone, g, issue(8)}, 3, 20)
+	facts := Reduce([]github.Issue{capstone, g, issue(8)}, 3, 20, bothSeams)
 
 	c := facts.Classification()
 	if c.ReadyCount != facts.ReadyCount || c.BlockedCount != facts.BlockedCount || c.GateCount != facts.GateCount {
@@ -114,7 +118,7 @@ func TestClassificationDropsPerIssueEdges(t *testing.T) {
 // TestReduceReadyIssueWithNoEdgesIsNotAGate: a ready issue that gates nothing is
 // counted ready but appears in neither list.
 func TestReduceReadyIssueWithNoEdgesIsNotAGate(t *testing.T) {
-	facts := Reduce([]github.Issue{issue(1)}, 1, 20)
+	facts := Reduce([]github.Issue{issue(1)}, 1, 20, bothSeams)
 	if facts.ReadyCount != 1 {
 		t.Errorf("ReadyCount = %d, want 1", facts.ReadyCount)
 	}
@@ -133,7 +137,7 @@ func TestReduceOpenSubIssueGateIsBlocked(t *testing.T) {
 	parent := issue(1)
 	parent.SubIssuesTotal = 3
 	parent.SubIssuesCompleted = 1 // two open children, none listed in the window
-	facts := Reduce([]github.Issue{parent}, 1, 20)
+	facts := Reduce([]github.Issue{parent}, 1, 20, bothSeams)
 	if facts.BlockedCount != 1 {
 		t.Errorf("BlockedCount = %d, want 1 (open sub-issue gate)", facts.BlockedCount)
 	}
@@ -152,7 +156,7 @@ func TestReduceTruncatedBlockedByIsProvisionalNotReady(t *testing.T) {
 	is := issue(1)
 	is.BlockedByTruncated = true
 	is.Blocking = edges(2)
-	facts := Reduce([]github.Issue{is, issue(2)}, 2, 20)
+	facts := Reduce([]github.Issue{is, issue(2)}, 2, 20, bothSeams)
 	if facts.ProvisionalCount != 1 {
 		t.Errorf("ProvisionalCount = %d, want 1", facts.ProvisionalCount)
 	}
@@ -166,10 +170,135 @@ func TestReduceTruncatedBlockedByIsProvisionalNotReady(t *testing.T) {
 	}
 }
 
+// TestReduceSeamStateClassification walks the seam states an issue presenting no
+// blocker can arrive in. The pair that matters is unavailable versus notApplicable:
+// both leave every edge list empty, and only the state says whether that emptiness is
+// evidence. The unrecognized case pins the fail-safe — a state added later must land
+// in provisional rather than fall through to ready.
+func TestReduceSeamStateClassification(t *testing.T) {
+	cases := []struct {
+		name            string
+		blockedBy       github.SeamState
+		subIssueGap     github.SeamState
+		wantReady       int
+		wantProvisional int
+	}{
+		{"unset zero value is available", "", "", 1, 0},
+		{"both read", github.SeamAvailable, github.SeamAvailable, 1, 0},
+		{"blocked-by unread", github.SeamUnavailable, github.SeamAvailable, 0, 1},
+		{"sub-issue gap unread", github.SeamAvailable, github.SeamUnavailable, 0, 1},
+		{"both unread", github.SeamUnavailable, github.SeamUnavailable, 0, 1},
+		{"no sub-issue carrier", github.SeamAvailable, github.SeamNotApplicable, 1, 0},
+		{"no carrier either side", github.SeamNotApplicable, github.SeamNotApplicable, 1, 0},
+		{"unrecognized state fails safe", github.SeamState("someLaterState"), github.SeamAvailable, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := issue(1)
+			is.BlockedByState = tc.blockedBy
+			is.SubIssueGapState = tc.subIssueGap
+			facts := Reduce([]github.Issue{is}, 1, 20, bothSeams)
+			if facts.ReadyCount != tc.wantReady {
+				t.Errorf("ReadyCount = %d, want %d", facts.ReadyCount, tc.wantReady)
+			}
+			if facts.ProvisionalCount != tc.wantProvisional {
+				t.Errorf("ProvisionalCount = %d, want %d", facts.ProvisionalCount, tc.wantProvisional)
+			}
+		})
+	}
+}
+
+// TestReduceBlockSeamReportsUnavailableWhenNothingRead: the block-level report has to
+// be able to say a carried seam went unread, or its most consequential case is the one
+// it cannot express. Where every fetched issue withheld the same seam — the shape a
+// repository-wide disabled relationship produces — the block says so once, rather than
+// leaving a caller to infer it from a provisional count that equals the fetched count.
+func TestReduceBlockSeamReportsUnavailableWhenNothingRead(t *testing.T) {
+	var issues []github.Issue
+	for n := 1; n <= 3; n++ {
+		is := issue(n)
+		is.BlockedByState = github.SeamUnavailable
+		issues = append(issues, is)
+	}
+
+	facts := Reduce(issues, 3, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamUnavailable {
+		t.Errorf("Seams.BlockedBy = %v, want unavailable (no fetched issue yielded the seam)", facts.Seams.BlockedBy)
+	}
+	if facts.Seams.SubIssueGap != github.SeamAvailable {
+		t.Errorf("Seams.SubIssueGap = %v, want available (that seam read fine)", facts.Seams.SubIssueGap)
+	}
+	if facts.ProvisionalCount != 3 {
+		t.Errorf("ProvisionalCount = %d, want 3", facts.ProvisionalCount)
+	}
+}
+
+// TestReduceBlockSeamStaysAvailableWhenPartiallyRead: one issue's failed read is not
+// the forge's verdict. A mixed window keeps the block-level state available — the
+// per-issue states and the provisional count carry the individual failures — so a
+// single unreadable issue cannot misreport the whole repository.
+func TestReduceBlockSeamStaysAvailableWhenPartiallyRead(t *testing.T) {
+	unread := issue(1)
+	unread.BlockedByState = github.SeamUnavailable
+
+	facts := Reduce([]github.Issue{unread, issue(2)}, 2, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available (one issue's failure is not the forge's)", facts.Seams.BlockedBy)
+	}
+	if facts.ProvisionalCount != 1 {
+		t.Errorf("ProvisionalCount = %d, want 1", facts.ProvisionalCount)
+	}
+}
+
+// TestReduceBlockSeamEmptyWindowIsNotUnavailable: with nothing fetched there is no
+// evidence either way, and "every issue withheld it" is vacuously true over an empty
+// set. Reporting unavailable there would manufacture a fault from an empty backlog.
+func TestReduceBlockSeamEmptyWindowIsNotUnavailable(t *testing.T) {
+	facts := Reduce(nil, 0, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available (an empty window is not evidence of a fault)", facts.Seams.BlockedBy)
+	}
+}
+
+// TestReduceUncarriedSeamOverridesPerIssueState: where the forge carries no sub-issue
+// hierarchy, no read of it can have failed, so a per-issue unavailable is a
+// contradiction rather than a second opinion and the forge-level fact wins. Without
+// this the first backend to set both would report every issue unconfirmable.
+func TestReduceUncarriedSeamOverridesPerIssueState(t *testing.T) {
+	is := issue(1)
+	is.SubIssueGapState = github.SeamUnavailable
+	caps := github.Capabilities{NoSubIssueHierarchy: true}
+
+	facts := Reduce([]github.Issue{is}, 1, 20, caps)
+	if facts.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (an uncarried seam withholds nothing)", facts.ReadyCount)
+	}
+	if facts.Seams.SubIssueGap != github.SeamNotApplicable {
+		t.Errorf("Seams.SubIssueGap = %v, want notApplicable", facts.Seams.SubIssueGap)
+	}
+}
+
+// TestReduceOpenSubIssueGateIgnoredWhereUncarried: the open-child gap is only
+// evidence where the forge has children at all. A backend leaving the counts zero
+// because the concept does not exist must not have that read as a cleared gate — nor,
+// as the sibling case above pins, as an unconfirmable one.
+func TestReduceOpenSubIssueGateIgnoredWhereUncarried(t *testing.T) {
+	parent := issue(1)
+	parent.SubIssuesTotal = 3
+	parent.SubIssuesCompleted = 1
+	caps := github.Capabilities{NoSubIssueHierarchy: true}
+
+	facts := Reduce([]github.Issue{parent}, 1, 20, caps)
+	if facts.BlockedCount != 0 || facts.ReadyCount != 1 {
+		t.Errorf("blocked=%d ready=%d, want 0/1 (counts from an uncarried seam are not a gate)",
+			facts.BlockedCount, facts.ReadyCount)
+	}
+}
+
 // TestReduceFetchTruncationAndNonNilSlices: OpenIssueCount stays exact under a
 // truncated window, and the lists are non-nil so they serialize as [].
 func TestReduceFetchTruncationAndNonNilSlices(t *testing.T) {
-	facts := Reduce([]github.Issue{issue(1)}, 500, 20)
+	facts := Reduce([]github.Issue{issue(1)}, 500, 20, bothSeams)
 	if facts.OpenIssueCount != 500 || !facts.FetchTruncated {
 		t.Errorf("OpenIssueCount=%d FetchTruncated=%v, want 500/true", facts.OpenIssueCount, facts.FetchTruncated)
 	}
@@ -191,7 +320,7 @@ func TestReduceListTruncation(t *testing.T) {
 	downstream.BlockedBy = edges(1, 2, 3)
 	issues = append(issues, downstream)
 
-	facts := Reduce(issues, 4, 2)
+	facts := Reduce(issues, 4, 2, bothSeams)
 	if len(facts.Gates) != 2 || !facts.GatesTruncated {
 		t.Errorf("Gates listed=%d truncated=%v, want 2/true", len(facts.Gates), facts.GatesTruncated)
 	}

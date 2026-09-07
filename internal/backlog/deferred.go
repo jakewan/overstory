@@ -114,23 +114,29 @@ type DeferredFacts struct {
 // an equality (a not-planned closure can leave the gap one high), but it errs only
 // toward over-reporting the gate, so it never reads a gated parent as ready.
 type DeferredIssue struct {
-	Number              int       `json:"number"`
-	Title               string    `json:"title"`
-	URL                 string    `json:"url"`
-	MatchedLabels       []string  `json:"matchedLabels"`
-	LabelsTruncated     bool      `json:"labelsTruncated"`
-	BodyRefs            []int     `json:"bodyRefs"`
-	BlockedBy           []int     `json:"blockedBy"`
-	BlockedByTruncated  bool      `json:"blockedByTruncated"`
-	Blocking            []int     `json:"blocking"`
-	BlockingTruncated   bool      `json:"blockingTruncated"`
-	SubIssues           []int     `json:"subIssues"`
-	SubIssuesTruncated  bool      `json:"subIssuesTruncated"`
-	SubIssuesTotal      int       `json:"subIssuesTotal"`
-	SubIssuesCompleted  int       `json:"subIssuesCompleted"`
-	InactiveDays        int       `json:"inactiveDays"`
-	AgeDays             int       `json:"ageDays"`
-	LastHumanActivityAt time.Time `json:"lastHumanActivityAt"`
+	Number             int      `json:"number"`
+	Title              string   `json:"title"`
+	URL                string   `json:"url"`
+	MatchedLabels      []string `json:"matchedLabels"`
+	LabelsTruncated    bool     `json:"labelsTruncated"`
+	BodyRefs           []int    `json:"bodyRefs"`
+	BlockedBy          []int    `json:"blockedBy"`
+	BlockedByTruncated bool     `json:"blockedByTruncated"`
+	Blocking           []int    `json:"blocking"`
+	BlockingTruncated  bool     `json:"blockingTruncated"`
+	SubIssues          []int    `json:"subIssues"`
+	SubIssuesTruncated bool     `json:"subIssuesTruncated"`
+	SubIssuesTotal     int      `json:"subIssuesTotal"`
+	SubIssuesCompleted int      `json:"subIssuesCompleted"`
+	// BlockedByState and SubIssueGapState carry the seam availability of the edge
+	// fields above, for the same reason the truncation flags travel with them: this
+	// block projects the same source fields as the dependencies block, so the identical
+	// field must not read as honest in one and silently incomplete in the other.
+	BlockedByState      github.SeamState `json:"blockedByState"`
+	SubIssueGapState    github.SeamState `json:"subIssueGapState"`
+	InactiveDays        int              `json:"inactiveDays"`
+	AgeDays             int              `json:"ageDays"`
+	LastHumanActivityAt time.Time        `json:"lastHumanActivityAt"`
 }
 
 // ReduceDeferred reduces the fetched open issues to deferred facts as of now: the
@@ -185,6 +191,8 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			SubIssuesTruncated:  is.SubIssuesTruncated,
 			SubIssuesTotal:      is.SubIssuesTotal,
 			SubIssuesCompleted:  is.SubIssuesCompleted,
+			BlockedByState:      is.BlockedByState,
+			SubIssueGapState:    is.SubIssueGapState,
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,

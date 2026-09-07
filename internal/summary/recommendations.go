@@ -104,8 +104,15 @@ type RecommendationCandidate struct {
 	SubIssuesTruncated bool    `json:"subIssuesTruncated"`
 	SubIssuesTotal     int     `json:"subIssuesTotal"`
 	SubIssuesCompleted int     `json:"subIssuesCompleted"`
-	AgeDays            int     `json:"ageDays"`
-	InactiveDays       int     `json:"inactiveDays"`
+	// BlockedByState and SubIssueGapState carry the seam availability of the fields
+	// above. This block projects the same source fields as the dependencies block, so
+	// it carries their companions for the same reason it carries the truncation flags:
+	// otherwise the identical field reads as honest in one block and silently
+	// incomplete in another.
+	BlockedByState   github.SeamState `json:"blockedByState"`
+	SubIssueGapState github.SeamState `json:"subIssueGapState"`
+	AgeDays          int              `json:"ageDays"`
+	InactiveDays     int              `json:"inactiveDays"`
 }
 
 // gateReserve caps how many ready gates of prioritized work the reduction
@@ -176,6 +183,8 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			SubIssuesTruncated: is.SubIssuesTruncated,
 			SubIssuesTotal:     is.SubIssuesTotal,
 			SubIssuesCompleted: is.SubIssuesCompleted,
+			BlockedByState:     is.BlockedByState,
+			SubIssueGapState:   is.SubIssueGapState,
 			AgeDays:            reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays:       reduce.DaysSince(now, is.LastActivityAt),
 		})
@@ -206,12 +215,22 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 // blocked-by edge and no open sub-issue gap, with the edge set trustworthy-complete.
 // Readiness is load-bearing: an itself-blocked blocker is not do-first now and would
 // surface transitively through its own gate root, so it is not reserved. This mirrors
-// the dependency package's ready classification.
+// the dependency package's ready classification, seam states included — a seam the
+// backend could not read leaves readiness unconfirmed exactly as a capped edge list
+// does, and an unconfirmed gate must not take a reserved slot from a confirmed one.
+// A seam the forge does not carry withholds nothing, so it does not disqualify.
 func isReadyGate(c RecommendationCandidate) bool {
 	return len(c.GatesPrioritized) > 0 &&
 		len(c.BlockedBy) == 0 &&
 		!c.BlockedByTruncated &&
-		c.SubIssuesTotal-c.SubIssuesCompleted == 0
+		!c.BlockedByState.Withholds() &&
+		!c.SubIssueGapState.Withholds() &&
+		// The gap gates only where the relationship exists. Where it does not, the
+		// dependency reduction ignores the counts outright, so reading them here would
+		// disqualify from the reserve an issue that reduction calls ready — the counts
+		// survive the capability rewrite, which touches the state alone.
+		(c.SubIssueGapState == github.SeamNotApplicable ||
+			c.SubIssuesTotal-c.SubIssuesCompleted == 0)
 }
 
 // selectWithReserve picks the capped candidate list from the pre-sorted candidates

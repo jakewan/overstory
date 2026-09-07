@@ -170,6 +170,28 @@ func TestReduceDeferredProjectsLabelsTruncated(t *testing.T) {
 	}
 }
 
+// TestReduceDeferredCarriesSeamCompanions pins sibling parity: this block projects
+// the same native edge fields the dependencies block does, so it carries their seam
+// companions too. Without them the dependencies block can report an issue provisional
+// while this one shows the same issue's empty edge list as if it were complete.
+func TestReduceDeferredCarriesSeamCompanions(t *testing.T) {
+	unread := labeledIssue(1, 50, "deferred")
+	unread.BlockedByState = github.SeamUnavailable
+	unread.SubIssueGapState = github.SeamNotApplicable
+
+	facts := ReduceDeferred([]github.Issue{unread}, 1, []string{"deferred"}, 20, now)
+	if len(facts.DeferredIssues) != 1 {
+		t.Fatalf("DeferredIssues = %d, want 1", len(facts.DeferredIssues))
+	}
+	di := facts.DeferredIssues[0]
+	if di.BlockedByState != github.SeamUnavailable {
+		t.Errorf("BlockedByState = %v, want unavailable (an empty edge list alone proves nothing)", di.BlockedByState)
+	}
+	if di.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable", di.SubIssueGapState)
+	}
+}
+
 func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	issues := []github.Issue{labeledIssue(1, 100, "deferred"), labeledIssue(2, 90, "deferred")}
 	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, now)

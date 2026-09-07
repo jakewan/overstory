@@ -427,6 +427,36 @@ func TestProjectSummarySurfacesDependencyClassification(t *testing.T) {
 			t.Errorf("gate #%d BlockingCount = %d, want 1 (unblocks #7)", g.Number, g.BlockingCount)
 		}
 	}
+	// The classification projection drops the per-issue edges, so the seams report is
+	// the only place this tool says what the ready count rested on.
+	if dep.Seams.BlockedBy != github.SeamAvailable || dep.Seams.SubIssueGap != github.SeamAvailable {
+		t.Errorf("Seams = %+v, want both available (GitHub carries both relationships)", dep.Seams)
+	}
+}
+
+// TestProjectSummaryDependencySeamNotCarriedByRepo mirrors backlog_review's case on
+// the classification projection: a ready count means something different where a seam
+// has no carrier, and a caller reading only this projection has no per-issue edges to
+// infer that from.
+func TestProjectSummaryDependencySeamNotCarriedByRepo(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:       []github.Issue{issue(1, daysAgo(1))},
+		TotalOpen:    1,
+		Capabilities: github.Capabilities{NoSubIssueHierarchy: true},
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.Dependencies == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if facts.Dependencies.Seams.SubIssueGap != github.SeamNotApplicable {
+		t.Errorf("Seams.SubIssueGap = %v, want notApplicable", facts.Dependencies.Seams.SubIssueGap)
+	}
+	if facts.Dependencies.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (an uncarried seam withholds nothing)", facts.Dependencies.ReadyCount)
+	}
 }
 
 // TestProjectSummaryDegradesMilestonesOnFetchError pins that a milestone
