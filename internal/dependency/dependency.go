@@ -42,11 +42,15 @@ import (
 // classified issue wrong.
 //
 // ReadyCount, BlockedCount, and ProvisionalCount partition the fetched open
-// issues. Provisional is the truncation-safety class: an issue that presents no
-// open blocker but whose blocked-by edge list was capped (BlockedByTruncated)
-// cannot be confirmed ready, so it is neither counted ready nor listed as a gate —
-// an empty edge list is not proof of readiness. Gates and Blocked are the two
-// actionable lists (capped at Limit, counts never capped).
+// issues. Provisional is the unconfirmed-readiness class, and an empty edge list is
+// not proof of readiness for either reason that lands an issue in it: the list was
+// capped (BlockedByTruncated), or a seam the verdict rests on was never read
+// (SeamUnavailable). Such an issue is neither counted ready nor listed as a gate.
+// The two differ in blast radius rather than in kind — a capped list is per-issue and
+// rare, while an unread seam usually fires across the whole window — which is why
+// Seams reports the forge-level state separately rather than leaving a caller to
+// infer it from the size of the count. Gates and Blocked are the two actionable lists
+// (capped at Limit, counts never capped).
 type Facts struct {
 	OpenIssueCount   int  `json:"openIssueCount"`
 	FetchedCount     int  `json:"fetchedCount"`
@@ -110,10 +114,18 @@ type Issue struct {
 //
 // An issue is blocked when it has an open blocked-by edge or an open sub-issue gate
 // (the authoritative subIssuesTotal-minus-completed gap, which witnesses open
-// children even when they fall outside the window). An issue with no known gate but
-// a truncated blocked-by list is provisional, not ready — the truncation contract
-// that keeps a capped edge list from reading as readiness. Everything else is
-// ready. A gate is a ready issue that blocks open downstream work.
+// children even when they fall outside the window). An issue with no known gate is
+// provisional rather than ready when its blocked-by list was capped or when a seam
+// the verdict rests on went unread — in both cases the emptiness is the absence of
+// evidence rather than evidence of absence. Everything else is ready, and a gate is a
+// ready issue that blocks open downstream work.
+//
+// caps says what the backend's forge carries at all, and it overrides the per-issue
+// states: a relationship the forge does not have cannot have failed to be read, so an
+// uncarried seam withholds nothing and leaves a verdict complete. Without that
+// distinction the reduction would report every issue unconfirmable on a forge missing
+// a relationship, which is the same signal loss as the false-ready it exists to
+// prevent, in the opposite direction.
 func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Capabilities) Facts {
 	facts := Facts{
 		OpenIssueCount: totalOpen,
