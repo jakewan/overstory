@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // TestReduceRecommendationsAnnotatesAndPreSorts pins the per-issue annotations
@@ -15,7 +16,7 @@ func TestReduceRecommendationsAnnotatesAndPreSorts(t *testing.T) {
 		mkIssue(2, 5, 1, []string{"bug"}, nil),      // bug, newer
 		mkIssue(3, 50, 1, []string{"bug"}, nil),     // bug, older
 	}
-	facts := ReduceRecommendations(issues, 3, []string{"bug"}, 20, now)
+	facts := ReduceRecommendations(issues, 3, []string{"bug"}, 20, github.Capabilities{}, now)
 	if len(facts.Candidates) != 3 {
 		t.Fatalf("candidates = %d, want 3", len(facts.Candidates))
 	}
@@ -47,7 +48,7 @@ func TestReduceRecommendationsBodyRefs(t *testing.T) {
 	selfOnly := mkIssue(7, 5, 1, nil, nil)
 	selfOnly.BodyText = "Depends on #7 only."
 
-	facts := ReduceRecommendations([]github.Issue{withRefs, selfOnly}, 2, nil, 20, now)
+	facts := ReduceRecommendations([]github.Issue{withRefs, selfOnly}, 2, nil, 20, github.Capabilities{}, now)
 
 	// The neutral pre-sort (bugs/oldest/number) reorders candidates, so select by
 	// issue number rather than slice index.
@@ -115,7 +116,7 @@ func TestReduceRecommendationsGatesPrioritized(t *testing.T) {
 	blocked.Blocking = blk(50)
 	blocked.BlockedBy = blk(99)
 
-	facts := ReduceRecommendations([]github.Issue{p, b, n, ready, blocked}, 5, []string{"bug"}, 20, now)
+	facts := ReduceRecommendations([]github.Issue{p, b, n, ready, blocked}, 5, []string{"bug"}, 20, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 
 	if g := got[10].GatesPrioritized; len(g) != 2 || g[0] != 50 || g[1] != 51 {
@@ -151,7 +152,7 @@ func TestReduceRecommendationsReservesNewestHighLeverageGate(t *testing.T) {
 	oldOld.Blocking = blk(50)
 
 	// limit 2 → reserve = min(5, 2/2) = 1 slot, which must go to the newest/highest.
-	facts := ReduceRecommendations([]github.Issue{p, q, s, newHigh, oldMid, oldOld}, 6, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, q, s, newHigh, oldMid, oldOld}, 6, []string{"bug"}, 2, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[12]; !ok {
 		t.Error("candidate 12 (newest, highest-leverage gate) absent — evicted by oldest-first (Finding 1)")
@@ -176,7 +177,7 @@ func TestReduceRecommendationsReserveTieBreakPrefersNewest(t *testing.T) {
 	filler := mkIssue(60, 100, 1, nil, nil)
 
 	// limit 2 → reserve 1, which must seat the newer (higher-numbered) gate on the tie.
-	facts := ReduceRecommendations([]github.Issue{p, older, newer, filler}, 4, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, older, newer, filler}, 4, []string{"bug"}, 2, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[12]; !ok {
 		t.Error("candidate 12 (newer, tied gate) absent — the reserve seated the older sibling")
@@ -201,7 +202,7 @@ func TestReduceRecommendationsReserveDoesNotStarveBugs(t *testing.T) {
 	issues := append([]github.Issue{p, bug}, gates...)
 
 	// limit 3 → reserve = min(5, 3/2) = 1, leaving 2 slots for the bugs-first fill.
-	facts := ReduceRecommendations(issues, len(issues), []string{"bug"}, 3, now)
+	facts := ReduceRecommendations(issues, len(issues), []string{"bug"}, 3, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[5]; !ok {
 		t.Error("bug #5 absent — an over-cap gate band starved the bug band (Finding 2)")
@@ -226,7 +227,7 @@ func TestReduceRecommendationsBlockedGateNotReserved(t *testing.T) {
 	filler := mkIssue(60, 200, 1, nil, nil)
 
 	// limit 2 → reserve 1 goes to the ready gate; fill takes the oldest (filler).
-	facts := ReduceRecommendations([]github.Issue{p, readyGate, blockedGate, filler}, 4, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, blockedGate, filler}, 4, []string{"bug"}, 2, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[12]; !ok {
 		t.Error("ready gate #12 absent — readiness-eligible gate lost the reserve")
@@ -252,7 +253,7 @@ func TestReduceRecommendationsUnreadableSeamGateNotReserved(t *testing.T) {
 	unreadGate.BlockedByState = github.SeamUnavailable
 	filler := mkIssue(60, 200, 1, nil, nil)
 
-	facts := ReduceRecommendations([]github.Issue{p, readyGate, unreadGate, filler}, 4, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, unreadGate, filler}, 4, []string{"bug"}, 2, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[12]; !ok {
 		t.Error("ready gate #12 absent — readiness-eligible gate lost the reserve")
@@ -276,7 +277,7 @@ func TestReduceRecommendationsUnrecognizedSeamStateFailsSafe(t *testing.T) {
 	futureState.BlockedByState = github.SeamState("someLaterState")
 	filler := mkIssue(60, 200, 1, nil, nil)
 
-	facts := ReduceRecommendations([]github.Issue{p, readyGate, futureState, filler}, 4, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, futureState, filler}, 4, []string{"bug"}, 2, github.Capabilities{}, now)
 	got := byNum(facts.Candidates)
 	if _, ok := got[12]; !ok {
 		t.Error("ready gate #12 absent — a confirmed gate lost the reserve to an unconfirmed one")
@@ -303,7 +304,7 @@ func TestReduceRecommendationsUncarriedGapDoesNotDisqualifyGate(t *testing.T) {
 	uncarried.SubIssuesTotal, uncarried.SubIssuesCompleted = 3, 1
 	filler := mkIssue(60, 200, 1, nil, nil)
 
-	facts := ReduceRecommendations([]github.Issue{p, uncarried, filler}, 3, []string{"bug"}, 2, now)
+	facts := ReduceRecommendations([]github.Issue{p, uncarried, filler}, 3, []string{"bug"}, 2, github.Capabilities{}, now)
 	if _, ok := byNum(facts.Candidates)[12]; !ok {
 		t.Error("gate #12 absent — a gap the forge cannot carry must not disqualify it from the reserve, since dependency.Reduce counts the same issue ready")
 	}
@@ -318,7 +319,7 @@ func TestReduceRecommendationsCarriesSeamCompanions(t *testing.T) {
 	unread.BlockedByState = github.SeamUnavailable
 	unread.SubIssueGapState = github.SeamNotApplicable
 
-	facts := ReduceRecommendations([]github.Issue{unread}, 1, []string{"bug"}, 20, now)
+	facts := ReduceRecommendations([]github.Issue{unread}, 1, []string{"bug"}, 20, github.Capabilities{}, now)
 	if len(facts.Candidates) != 1 {
 		t.Fatalf("Candidates = %d, want 1", len(facts.Candidates))
 	}
@@ -337,11 +338,70 @@ func TestReduceRecommendationsExactCountAndCap(t *testing.T) {
 	issues := []github.Issue{
 		mkIssue(1, 1, 1, nil, nil), mkIssue(2, 2, 1, nil, nil), mkIssue(3, 3, 1, nil, nil),
 	}
-	facts := ReduceRecommendations(issues, 90, nil, 2, now)
+	facts := ReduceRecommendations(issues, 90, nil, 2, github.Capabilities{}, now)
 	if facts.OpenIssueCount != 90 || !facts.FetchTruncated {
 		t.Errorf("OpenIssueCount=%d FetchTruncated=%v, want 90/true", facts.OpenIssueCount, facts.FetchTruncated)
 	}
 	if len(facts.Candidates) != 2 || !facts.ListTruncated {
 		t.Errorf("listed=%d truncated=%v, want 2/true", len(facts.Candidates), facts.ListTruncated)
+	}
+}
+
+// TestReduceRecommendationsAppliesCapabilitiesItself pins that this reduction
+// reconciles the per-issue seam states against what the repository carries rather
+// than trusting a caller to have done it. The handler does apply them, so this is
+// about a direct caller: readiness rests on those states, and an issue arriving with
+// an unread seam on a repository that carries no such relationship would otherwise be
+// reported unconfirmable when the verdict is in fact complete.
+func TestReduceRecommendationsAppliesCapabilitiesItself(t *testing.T) {
+	unreconciled := mkIssue(1, 10, 1, nil, nil)
+	unreconciled.SubIssueGapState = github.SeamUnavailable
+
+	facts := ReduceRecommendations([]github.Issue{unreconciled}, 1, nil, 20,
+		github.Capabilities{NoSubIssueHierarchy: true}, now)
+
+	if len(facts.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(facts.Candidates))
+	}
+	c := facts.Candidates[0]
+	if c.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable (the repository carries no hierarchy)", c.SubIssueGapState)
+	}
+	if c.Readiness != reduce.VerdictReady {
+		t.Errorf("Readiness = %q, want %q — an uncarried relationship withholds nothing", c.Readiness, reduce.VerdictReady)
+	}
+}
+
+// TestReduceRecommendationsAlwaysProjectsAVerdict pins the field's presence on the Go
+// side, where the empty string is observable. Verdict's MarshalJSON rewrites "" to
+// provisional so a dropped field never reaches the wire as an empty verdict, which
+// also means no assertion against a decoded response can catch the drop — the
+// serialization has already covered it. This is the assertion that can.
+func TestReduceRecommendationsAlwaysProjectsAVerdict(t *testing.T) {
+	issues := []github.Issue{
+		mkIssue(1, 10, 1, nil, nil),
+		mkIssue(2, 10, 1, nil, nil),
+		mkIssue(3, 10, 1, nil, nil),
+	}
+	issues[1].BlockedBy = blk(1)
+	issues[2].BlockedByTruncated = true
+
+	facts := ReduceRecommendations(issues, 3, nil, 20, github.Capabilities{}, now)
+	if len(facts.Candidates) != 3 {
+		t.Fatalf("candidates = %d, want 3", len(facts.Candidates))
+	}
+	want := map[int]reduce.Verdict{
+		1: reduce.VerdictReady,
+		2: reduce.VerdictBlocked,
+		3: reduce.VerdictProvisional,
+	}
+	for _, c := range facts.Candidates {
+		if c.Readiness == "" {
+			t.Errorf("candidate #%d carries no readiness; every candidate has a verdict", c.Number)
+			continue
+		}
+		if c.Readiness != want[c.Number] {
+			t.Errorf("candidate #%d Readiness = %q, want %q", c.Number, c.Readiness, want[c.Number])
+		}
 	}
 }

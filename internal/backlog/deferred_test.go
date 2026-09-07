@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 func labeledIssue(num, inactiveDays int, labels ...string) github.Issue {
@@ -18,7 +19,7 @@ func TestReduceDeferredMatchesConfiguredLabels(t *testing.T) {
 		labeledIssue(2, 50, "bug"), // not a deferred label
 		labeledIssue(3, 50, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 3, []string{"deferred", "blocked"}, 20, now)
+	facts := ReduceDeferred(issues, 3, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
 	if !facts.Configured {
 		t.Error("Configured = false, want true")
 	}
@@ -34,7 +35,7 @@ func TestReduceDeferredCaseInsensitive(t *testing.T) {
 	// Configured "deferred" matches an issue labeled "DEFERRED"; the matched
 	// label echoes the issue's original casing.
 	issues := []github.Issue{labeledIssue(1, 50, "DEFERRED")}
-	facts := ReduceDeferred(issues, 1, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred(issues, 1, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 1 {
 		t.Fatalf("DeferredCount = %d, want 1 (case-insensitive)", facts.DeferredCount)
 	}
@@ -47,7 +48,7 @@ func TestReduceDeferredMultipleLabelsOnOneIssue(t *testing.T) {
 	// An issue carrying several deferred labels appears once, with all matches
 	// listed in deterministic (sorted) order.
 	issues := []github.Issue{labeledIssue(1, 50, "blocked", "bug", "deferred")}
-	facts := ReduceDeferred(issues, 1, []string{"deferred", "blocked"}, 20, now)
+	facts := ReduceDeferred(issues, 1, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 1 {
 		t.Fatalf("DeferredCount = %d, want 1 (one issue, multiple matches)", facts.DeferredCount)
 	}
@@ -62,7 +63,7 @@ func TestReduceDeferredNotConfigured(t *testing.T) {
 	// are still populated for a stable shape — and the slices are non-nil so they
 	// serialize as [] rather than null.
 	issues := []github.Issue{labeledIssue(1, 50, "blocked")}
-	facts := ReduceDeferred(issues, 500, nil, 20, now)
+	facts := ReduceDeferred(issues, 500, nil, 20, github.Capabilities{}, now)
 	if facts.Configured {
 		t.Error("Configured = true, want false (no labels)")
 	}
@@ -87,7 +88,7 @@ func TestReduceDeferredListTruncationAndOrder(t *testing.T) {
 		labeledIssue(2, 100, "deferred"),
 		labeledIssue(3, 70, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 3, []string{"deferred"}, 2, now)
+	facts := ReduceDeferred(issues, 3, []string{"deferred"}, 2, github.Capabilities{}, now)
 	if facts.DeferredCount != 3 {
 		t.Errorf("DeferredCount = %d, want 3 (count not capped)", facts.DeferredCount)
 	}
@@ -108,7 +109,7 @@ func TestReduceDeferredTieBreakByNumber(t *testing.T) {
 		labeledIssue(5, 50, "deferred"),
 		labeledIssue(2, 50, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 2, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred(issues, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredIssues[0].Number != 2 {
 		t.Errorf("tie not broken by number ascending: got %d first, want 2", facts.DeferredIssues[0].Number)
 	}
@@ -126,7 +127,7 @@ func TestReduceDeferredBodyRefs(t *testing.T) {
 	selfOnly := labeledIssue(7, 50, "deferred")
 	selfOnly.BodyText = "Depends on #7 only."
 
-	facts := ReduceDeferred([]github.Issue{withRefs, selfOnly}, 2, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred([]github.Issue{withRefs, selfOnly}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 2 {
 		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
 	}
@@ -157,7 +158,7 @@ func TestReduceDeferredProjectsLabelsTruncated(t *testing.T) {
 	capped.LabelsTruncated = true
 	whole := labeledIssue(2, 40, "deferred")
 
-	facts := ReduceDeferred([]github.Issue{capped, whole}, 2, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred([]github.Issue{capped, whole}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 2 {
 		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
 	}
@@ -179,7 +180,7 @@ func TestReduceDeferredCarriesSeamCompanions(t *testing.T) {
 	unread.BlockedByState = github.SeamUnavailable
 	unread.SubIssueGapState = github.SeamNotApplicable
 
-	facts := ReduceDeferred([]github.Issue{unread}, 1, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred([]github.Issue{unread}, 1, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if len(facts.DeferredIssues) != 1 {
 		t.Fatalf("DeferredIssues = %d, want 1", len(facts.DeferredIssues))
 	}
@@ -194,7 +195,7 @@ func TestReduceDeferredCarriesSeamCompanions(t *testing.T) {
 
 func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	issues := []github.Issue{labeledIssue(1, 100, "deferred"), labeledIssue(2, 90, "deferred")}
-	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, now)
+	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.OpenIssueCount != 500 {
 		t.Errorf("OpenIssueCount = %d, want 500 (exact, from totalOpen)", facts.OpenIssueCount)
 	}
@@ -203,5 +204,30 @@ func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	}
 	if !facts.FetchTruncated {
 		t.Error("FetchTruncated = false, want true (2 fetched of 500)")
+	}
+}
+
+// TestReduceDeferredAppliesCapabilitiesItself is the deferred block's half of the
+// same contract the recommendation reduction keeps: it reconciles the per-issue seam
+// states against what the repository carries rather than trusting a caller to have
+// done it. Readiness rests on those states, so a direct caller passing unreconciled
+// issues would otherwise get a deferred issue reported unconfirmable on a repository
+// where the verdict is in fact complete.
+func TestReduceDeferredAppliesCapabilitiesItself(t *testing.T) {
+	unreconciled := labeledIssue(1, 100, "deferred")
+	unreconciled.SubIssueGapState = github.SeamUnavailable
+
+	facts := ReduceDeferred([]github.Issue{unreconciled}, 1, []string{"deferred"}, 20,
+		github.Capabilities{NoSubIssueHierarchy: true}, now)
+
+	if len(facts.DeferredIssues) != 1 {
+		t.Fatalf("deferred issues = %d, want 1", len(facts.DeferredIssues))
+	}
+	d := facts.DeferredIssues[0]
+	if d.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable (the repository carries no hierarchy)", d.SubIssueGapState)
+	}
+	if d.Readiness != reduce.VerdictReady {
+		t.Errorf("Readiness = %q, want %q — an uncarried relationship withholds nothing", d.Readiness, reduce.VerdictReady)
 	}
 }

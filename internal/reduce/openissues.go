@@ -21,8 +21,8 @@ type OpenIssueSetFacts struct {
 // NewOpenIssueSet builds the open-issue set from the fetched issue numbers: the
 // result's Numbers is ascending, distinct, and non-nil (so it serializes [] rather
 // than null even when empty). It takes a plain []int rather than the github issue
-// shape so the reduce layer stays stdlib-only — the handler extracts .Number and
-// passes the slice. fetchTruncated is the window-coverage flag the caller derives
+// shape because the set is defined by the numbers alone — the handler extracts
+// .Number and passes the slice. fetchTruncated is the window-coverage flag the caller derives
 // (len(issues) < totalOpen) and is carried through unchanged.
 func NewOpenIssueSet(numbers []int, fetchTruncated bool) OpenIssueSetFacts {
 	seen := make(map[int]bool, len(numbers))

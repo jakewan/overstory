@@ -132,11 +132,17 @@ type DeferredIssue struct {
 	// fields above, for the same reason the truncation flags travel with them: this
 	// block projects the same source fields as the dependencies block, so the identical
 	// field must not read as honest in one and silently incomplete in the other.
-	BlockedByState      github.SeamState `json:"blockedByState"`
-	SubIssueGapState    github.SeamState `json:"subIssueGapState"`
-	InactiveDays        int              `json:"inactiveDays"`
-	AgeDays             int              `json:"ageDays"`
-	LastHumanActivityAt time.Time        `json:"lastHumanActivityAt"`
+	BlockedByState   github.SeamState `json:"blockedByState"`
+	SubIssueGapState github.SeamState `json:"subIssueGapState"`
+	// Readiness is what the edge fields above amount to: ready, blocked, or
+	// provisional. It travels with those fields for the same reason their seam and
+	// truncation companions do — it is the verdict the dependencies block counted this
+	// issue under, from the same call, so a deferred issue cannot read as ready here
+	// while that block reports it provisional.
+	Readiness           reduce.Verdict `json:"readiness"`
+	InactiveDays        int            `json:"inactiveDays"`
+	AgeDays             int            `json:"ageDays"`
+	LastHumanActivityAt time.Time      `json:"lastHumanActivityAt"`
 }
 
 // ReduceDeferred reduces the fetched open issues to deferred facts as of now: the
@@ -154,7 +160,13 @@ type DeferredIssue struct {
 // "oldest-created first" — an age proxy, not time-since-parked. The truer signal
 // (when the deferred label was applied) needs the issue timeline, which this
 // reduction deliberately does not fetch.
-func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listLimit int, now time.Time) DeferredFacts {
+//
+// caps says what the fetched repository carries, and it is applied here as well as by
+// the handler: readiness rests on the per-issue seam states that application
+// reconciles, so this reduction stays correct called directly — the same reason the
+// dependency reduction re-applies it.
+func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listLimit int, caps github.Capabilities, now time.Time) DeferredFacts {
+	issues = github.ApplyCapabilities(issues, caps)
 	facts := DeferredFacts{
 		Configured:       len(labels) > 0,
 		ConfiguredLabels: append(make([]string, 0, len(labels)), labels...),
@@ -193,6 +205,7 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			SubIssuesCompleted:  is.SubIssuesCompleted,
 			BlockedByState:      is.BlockedByState,
 			SubIssueGapState:    is.SubIssueGapState,
+			Readiness:           reduce.Readiness(is),
 			InactiveDays:        reduce.DaysSince(now, is.LastActivityAt),
 			AgeDays:             reduce.DaysSince(now, is.CreatedAt),
 			LastHumanActivityAt: is.LastActivityAt,

@@ -31,3 +31,17 @@ func OpenDependencyNumbers(refs []github.DependencyRef) []int {
 	sort.Ints(out)
 	return out
 }
+
+// hasOpenDependency reports whether any edge in the set is still open. It answers the
+// question Readiness asks — is anything gating this — without building the projection
+// OpenDependencyNumbers returns, which allocates a map and a slice and sorts them.
+// Every reduction already computes that projection for its own output field, so
+// reusing it there would compute it twice per issue to reach a boolean.
+func hasOpenDependency(refs []github.DependencyRef) bool {
+	for _, r := range refs {
+		if r.Open {
+			return true
+		}
+	}
+	return false
+}

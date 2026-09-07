@@ -111,8 +111,19 @@ type RecommendationCandidate struct {
 	// incomplete in another.
 	BlockedByState   github.SeamState `json:"blockedByState"`
 	SubIssueGapState github.SeamState `json:"subIssueGapState"`
-	AgeDays          int              `json:"ageDays"`
-	InactiveDays     int              `json:"inactiveDays"`
+	// Readiness is what the fields above amount to: ready, blocked, or provisional.
+	// It is the same verdict, from the same call, that the dependencies block counted
+	// this issue under — so a caller reads one answer per issue instead of deriving a
+	// second from the raw fields and having it disagree. It is a readiness verdict and
+	// not a ranking one: which candidate to do next stays the caller's judgment.
+	//
+	// The raw fields stay because the verdict is a scalar — naming an issue's actual
+	// blockers still needs BlockedBy, SubIssues, and their truncation flags, and a
+	// caller folding its own stated-dependency conjunct in still resolves BodyRefs
+	// itself.
+	Readiness    reduce.Verdict `json:"readiness"`
+	AgeDays      int            `json:"ageDays"`
+	InactiveDays int            `json:"inactiveDays"`
 }
 
 // gateReserve caps how many ready gates of prioritized work the reduction
@@ -131,7 +142,13 @@ const gateReserve = 5
 // reserves slots for the top ready gates of prioritized work (see selectWithReserve)
 // so the single most actionable next step toward a priority is never dropped. now is
 // injected so the reduction is deterministic.
-func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []string, listLimit int, now time.Time) RecommendationFacts {
+//
+// caps says what the fetched repository carries, and it is applied here as well as by
+// the handler: readiness rests on the per-issue seam states that application
+// reconciles, so this reduction stays correct called directly — the same reason the
+// dependency reduction re-applies it.
+func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []string, listLimit int, caps github.Capabilities, now time.Time) RecommendationFacts {
+	issues = github.ApplyCapabilities(issues, caps)
 	facts := RecommendationFacts{
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
@@ -185,6 +202,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			SubIssuesCompleted: is.SubIssuesCompleted,
 			BlockedByState:     is.BlockedByState,
 			SubIssueGapState:   is.SubIssueGapState,
+			Readiness:          reduce.Readiness(is),
 			AgeDays:            reduce.DaysSince(now, is.CreatedAt),
 			InactiveDays:       reduce.DaysSince(now, is.LastActivityAt),
 		})
@@ -211,26 +229,18 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 }
 
 // isReadyGate reports whether a candidate is a ready gate of prioritized work: it
-// unblocks prioritized downstream work and is itself actionable now — no open
-// blocked-by edge and no open sub-issue gap, with the edge set trustworthy-complete.
-// Readiness is load-bearing: an itself-blocked blocker is not do-first now and would
-// surface transitively through its own gate root, so it is not reserved. This mirrors
-// the dependency package's ready classification, seam states included — a seam the
-// backend could not read leaves readiness unconfirmed exactly as a capped edge list
-// does, and an unconfirmed gate must not take a reserved slot from a confirmed one.
-// A seam the forge does not carry withholds nothing, so it does not disqualify.
+// unblocks prioritized downstream work and is itself actionable now. Readiness is
+// load-bearing — an itself-blocked blocker is not do-first now and would surface
+// transitively through its own gate root, so it is not reserved, and an unconfirmed
+// one must not take a reserved slot from a confirmed one.
+//
+// The readiness half is the candidate's own verdict rather than a second reading of
+// the same fields, so the reserve and the dependency block cannot come to disagree
+// about an issue in one response. What remains here is the half that is genuinely
+// this reduction's: gating *prioritized* work, which is narrower than the dependency
+// block's gate over arbitrary downstream work.
 func isReadyGate(c RecommendationCandidate) bool {
-	return len(c.GatesPrioritized) > 0 &&
-		len(c.BlockedBy) == 0 &&
-		!c.BlockedByTruncated &&
-		!c.BlockedByState.Withholds() &&
-		!c.SubIssueGapState.Withholds() &&
-		// The gap gates only where the relationship exists. Where it does not, the
-		// dependency reduction ignores the counts outright, so reading them here would
-		// disqualify from the reserve an issue that reduction calls ready — the counts
-		// survive the capability rewrite, which touches the state alone.
-		(c.SubIssueGapState == github.SeamNotApplicable ||
-			c.SubIssuesTotal-c.SubIssuesCompleted == 0)
+	return len(c.GatesPrioritized) > 0 && c.Readiness == reduce.VerdictReady
 }
 
 // selectWithReserve picks the capped candidate list from the pre-sorted candidates
