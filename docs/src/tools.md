@@ -76,7 +76,7 @@ The **orientation** read: given what's open now, what to pick up. Composite stru
 
 Plus the optional top-level `rateLimit` and `sizeBound`.
 
-> **The server reduces; the caller ranks and renders.** `recommendations` supplies neutral per-issue inputs — ordering them into "what to do next" is the caller's judgment, never the server's. The one verdict the server does reach is *readiness*: whether anything open gates an issue is a factual question with a single answer, so it is decided once (`readiness` per candidate, and the `dependencies` counts) rather than left for each caller to re-derive and disagree about. Ranking is the judgment that stays caller-side. Likewise every block returns facts, never narrative.
+> **The server reduces; the caller ranks and renders.** `recommendations` supplies neutral per-issue inputs — ordering them into "what to do next" is the caller's judgment, never the server's. The one verdict that block reaches is *readiness*: whether anything open gates an issue is a factual question with a single answer, so it is decided once (`readiness` per candidate, matching the `dependencies` counts) rather than left for each caller to re-derive and disagree about. Ranking is the judgment that stays caller-side. Likewise every block returns facts, never narrative.
 
 ## `milestone_tracks`
 

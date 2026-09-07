@@ -65,7 +65,7 @@ Header: `## Deferred Issue Review`
 From the `deferred` block. If `configured` is false, the repo declares no deferred labels — render "No deferred-label convention configured for this repo" and move on. Otherwise list the `deferredIssues`, each with its `number`, `title`, `matchedLabels` (with `labelsTruncated` flagging that this list may be missing a tail label — see below), `inactiveDays`, `ageDays`, its `readiness` verdict (`ready`/`blocked`/`provisional`), and the dependency signals it rests on when present — native `blockedBy` (open blockers gating this issue), `blocking` (open issues it gates), the open sub-issue gap (`subIssuesTotal − subIssuesCompleted`, which gates even when `subIssues[]` is empty), and `bodyRefs` (stated `#N` deps, resolved against `openIssueSet.numbers`):
 
 ```markdown
-- #42 - Title — labels: `deferred`; inactive 71d, age 120d; blocked by open #30; stated deps: #31 (open), #33 (unresolved)
+- #42 - Title — labels: `deferred`; inactive 71d, age 120d; readiness: blocked — by open #30; stated deps: #31 (open), #33 (unresolved)
 ```
 
 Sort longest-inactive first. Note `configuredLabels` so the reader knows what was matched. If `deferredCount` is 0: "No deferred issues — N open issues carry none of the configured deferred labels." If `listTruncated`, note that more deferred issues exist than listed. When an issue's `labelsTruncated` is true its label list was capped at fetch time, so its `matchedLabels` *may* be missing a deferred label in the tail — note "labels may be incomplete" as a possibility, not a certainty (the truncated tail may hold only non-deferred labels).

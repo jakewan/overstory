@@ -903,11 +903,13 @@ func TestProjectSummaryCandidateReadinessMatchesDependencyCounts(t *testing.T) {
 			dep.ReadyCount, dep.BlockedCount, dep.ProvisionalCount)
 	}
 
+	// The tally is what pins the field's presence: a projection that dropped it would
+	// marshal every candidate as provisional (Verdict's fail-safe zero) and mismatch
+	// the counts below. Asserting against the empty string here would not — the
+	// marshaler has already rewritten it by the time a decoded response is read, so
+	// the Go-side check lives in internal/summary where "" is observable.
 	tally := map[reduce.Verdict]int{}
 	for _, c := range recs.Candidates {
-		if c.Readiness == "" {
-			t.Errorf("candidate #%d carries no readiness; every candidate has a verdict", c.Number)
-		}
 		tally[c.Readiness]++
 	}
 	if got := tally[reduce.VerdictReady]; got != dep.ReadyCount {
@@ -936,6 +938,13 @@ func TestProjectSummaryReserveKeepsGateTheDependencyBlockCountsReady(t *testing.
 	priority.BlockedBy = []github.DependencyRef{{Number: 50, Open: true}}
 	gate := readinessIssue(50, 1) // newest, so last in the pre-sort and first evicted
 	gate.Blocking = []github.DependencyRef{{Number: 99, Open: true}}
+	// The gate sits in the cell a forge without sub-issue hierarchy makes ordinary: the
+	// relationship is not carried, yet the summary counts survive the capability rewrite
+	// (which touches the state alone), so a reader consulting the counts without the
+	// state calls this blocked and the reserve drops it. That divergence is one of the
+	// three this consolidation exists to prevent, and it is unreachable on GitHub.
+	gate.SubIssueGapState = github.SeamNotApplicable
+	gate.SubIssuesTotal, gate.SubIssuesCompleted = 2, 0
 
 	issues := []github.Issue{priority, gate}
 	for n := 1; n <= 4; n++ {

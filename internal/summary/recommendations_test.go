@@ -371,3 +371,37 @@ func TestReduceRecommendationsAppliesCapabilitiesItself(t *testing.T) {
 		t.Errorf("Readiness = %q, want %q — an uncarried relationship withholds nothing", c.Readiness, reduce.VerdictReady)
 	}
 }
+
+// TestReduceRecommendationsAlwaysProjectsAVerdict pins the field's presence on the Go
+// side, where the empty string is observable. Verdict's MarshalJSON rewrites "" to
+// provisional so a dropped field never reaches the wire as an empty verdict, which
+// also means no assertion against a decoded response can catch the drop — the
+// serialization has already covered it. This is the assertion that can.
+func TestReduceRecommendationsAlwaysProjectsAVerdict(t *testing.T) {
+	issues := []github.Issue{
+		mkIssue(1, 10, 1, nil, nil),
+		mkIssue(2, 10, 1, nil, nil),
+		mkIssue(3, 10, 1, nil, nil),
+	}
+	issues[1].BlockedBy = blk(1)
+	issues[2].BlockedByTruncated = true
+
+	facts := ReduceRecommendations(issues, 3, nil, 20, github.Capabilities{}, now)
+	if len(facts.Candidates) != 3 {
+		t.Fatalf("candidates = %d, want 3", len(facts.Candidates))
+	}
+	want := map[int]reduce.Verdict{
+		1: reduce.VerdictReady,
+		2: reduce.VerdictBlocked,
+		3: reduce.VerdictProvisional,
+	}
+	for _, c := range facts.Candidates {
+		if c.Readiness == "" {
+			t.Errorf("candidate #%d carries no readiness; every candidate has a verdict", c.Number)
+			continue
+		}
+		if c.Readiness != want[c.Number] {
+			t.Errorf("candidate #%d Readiness = %q, want %q", c.Number, c.Readiness, want[c.Number])
+		}
+	}
+}

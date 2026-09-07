@@ -74,14 +74,18 @@ func SubIssueGate(is github.Issue) bool {
 //
 // The issue's seam states must already be reconciled against what the repository
 // carries (github.ApplyCapabilities); every reduction here does that first, defensively,
-// so a direct caller cannot skip it.
+// so a direct caller cannot skip it. That is also the limit of what sharing this
+// predicate guarantees: two reductions agree because their handler passes both the
+// same issues and the same Capabilities, not because anything in the types enforces
+// it. A caller that fed two reductions different capabilities would reintroduce the
+// disagreement one level up from where this closes it.
 //
 // The arms enumerate the states that leave a verdict standing rather than the ones
 // that withhold, so a seam state added later lands in provisional rather than falling
 // through to ready.
 func Readiness(is github.Issue) Verdict {
 	switch {
-	case len(OpenDependencyNumbers(is.BlockedBy)) > 0 || SubIssueGate(is):
+	case hasOpenDependency(is.BlockedBy) || SubIssueGate(is):
 		return VerdictBlocked
 	// Appears unblocked, but a capped edge list may hide an open blocker and an unread
 	// seam may hide anything at all, so readiness cannot be confirmed. A seam the forge

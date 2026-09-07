@@ -102,6 +102,12 @@ type SeamReport struct {
 // parent has no open children and where the forge has no children at all. Without
 // them a listed issue's edge fields would be the one place in the response where these
 // distinctions are dropped.
+//
+// It carries no readiness field, unlike the recommendation and deferred projections of
+// the same edge fields, because the lists it appears in are already partitioned by
+// verdict: an issue in Gates is ready and one in Blocked is blocked, and neither list
+// ever holds a provisional issue. The rule for a future projection is that one, not an
+// exemption — a projection not partitioned by verdict carries the field.
 type Issue struct {
 	Number             int              `json:"number"`
 	Title              string           `json:"title"`
