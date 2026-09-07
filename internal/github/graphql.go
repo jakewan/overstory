@@ -304,7 +304,7 @@ func NewGraphQLFetcher() *GraphQLFetcher {
 // forge without one of them says so instead, and the reduction reports the verdict as
 // complete-without-it rather than as unconfirmed.
 func (f *GraphQLFetcher) Capabilities() Capabilities {
-	return Capabilities{BlockedByEdges: true, SubIssueHierarchy: true}
+	return Capabilities{}
 }
 
 // ListOpenIssues paginates the full open-issue set, stopping when the connection is

@@ -223,8 +223,8 @@ func isReadyGate(c RecommendationCandidate) bool {
 	return len(c.GatesPrioritized) > 0 &&
 		len(c.BlockedBy) == 0 &&
 		!c.BlockedByTruncated &&
-		c.BlockedByState != github.SeamUnavailable &&
-		c.SubIssueGapState != github.SeamUnavailable &&
+		!c.BlockedByState.Withholds() &&
+		!c.SubIssueGapState.Withholds() &&
 		c.SubIssuesTotal-c.SubIssuesCompleted == 0
 }
 

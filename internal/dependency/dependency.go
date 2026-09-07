@@ -96,15 +96,23 @@ type SeamReport struct {
 // recommendation blocks carry. It matters for a listed issue: a blocked issue's
 // BlockedBy may omit further blockers, and a gate's Blocking (hence its ordering and
 // the summary blockingCount) may understate how much it unblocks.
+// BlockedByState and SubIssueGapState carry the same honesty one step further, for
+// the same reason the truncation flags are here: a listed blocked issue's BlockedBy
+// may be not merely capped but unread, and SubIssueGate reads false both where a
+// parent has no open children and where the forge has no children at all. Without
+// them a listed issue's edge fields would be the one place in the response where these
+// distinctions are dropped.
 type Issue struct {
-	Number             int    `json:"number"`
-	Title              string `json:"title"`
-	URL                string `json:"url"`
-	BlockedBy          []int  `json:"blockedBy"`
-	BlockedByTruncated bool   `json:"blockedByTruncated"`
-	Blocking           []int  `json:"blocking"`
-	BlockingTruncated  bool   `json:"blockingTruncated"`
-	SubIssueGate       bool   `json:"subIssueGate"`
+	Number             int              `json:"number"`
+	Title              string           `json:"title"`
+	URL                string           `json:"url"`
+	BlockedBy          []int            `json:"blockedBy"`
+	BlockedByTruncated bool             `json:"blockedByTruncated"`
+	Blocking           []int            `json:"blocking"`
+	BlockingTruncated  bool             `json:"blockingTruncated"`
+	SubIssueGate       bool             `json:"subIssueGate"`
+	BlockedByState     github.SeamState `json:"blockedByState"`
+	SubIssueGapState   github.SeamState `json:"subIssueGapState"`
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
@@ -127,6 +135,9 @@ type Issue struct {
 // a relationship, which is the same signal loss as the false-ready it exists to
 // prevent, in the opposite direction.
 func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Capabilities) Facts {
+	// Idempotent, and the handler has normally applied it already so every block of a
+	// response agrees; repeated here so this reduction is correct called directly.
+	issues = github.ApplyCapabilities(issues, caps)
 	facts := Facts{
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
@@ -135,21 +146,14 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		Blocked:        make([]Issue, 0),
 		Limit:          listLimit,
 		Seams: SeamReport{
-			BlockedBy:   seamForCapability(caps.BlockedByEdges),
-			SubIssueGap: seamForCapability(caps.SubIssueHierarchy),
+			BlockedBy: blockSeam(caps.CarriesBlockedByEdges(), issues,
+				func(is github.Issue) github.SeamState { return is.BlockedByState }),
+			SubIssueGap: blockSeam(caps.CarriesSubIssueHierarchy(), issues,
+				func(is github.Issue) github.SeamState { return is.SubIssueGapState }),
 		},
 	}
 
 	for _, is := range issues {
-		// The forge-level fact wins over the per-issue one: where the relationship does
-		// not exist here, no read of it can have failed, so a per-issue unavailable
-		// would be a contradiction rather than a second opinion.
-		if !caps.BlockedByEdges {
-			is.BlockedByState = github.SeamNotApplicable
-		}
-		if !caps.SubIssueHierarchy {
-			is.SubIssueGapState = github.SeamNotApplicable
-		}
 		blockedBy := reduce.OpenDependencyNumbers(is.BlockedBy)
 		blocking := reduce.OpenDependencyNumbers(is.Blocking)
 		// The sub-issue summary counts every child (all repos, never capped), so the
@@ -165,7 +169,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		// A seam the backend could not read leaves readiness unconfirmable for the
 		// same reason a capped edge list does — an empty result proves nothing. A seam
 		// the forge does not carry is not a fault and withholds nothing.
-		unevaluable := seamWithholds(is.BlockedByState) || seamWithholds(is.SubIssueGapState)
+		unevaluable := is.BlockedByState.Withholds() || is.SubIssueGapState.Withholds()
 
 		item := Issue{
 			Number:             is.Number,
@@ -176,6 +180,8 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
 			SubIssueGate:       subGate,
+			BlockedByState:     is.BlockedByState,
+			SubIssueGapState:   is.SubIssueGapState,
 		}
 
 		switch {
@@ -282,30 +288,30 @@ func (f Facts) Classification() Classification {
 	}
 }
 
-// seamForCapability maps a forge's carriage of a relationship to the seam state the
-// block reports for it. A carried seam reports available at block level even where an
-// individual read of it failed: the per-issue state carries that, and flattening the
-// two would let one unreadable issue misreport the whole forge.
-func seamForCapability(carried bool) github.SeamState {
-	if carried {
+// blockSeam derives the block-level state of one seam from the forge's carriage of
+// the relationship and from what the fetched issues actually yielded. Carriage alone
+// cannot express the case this reduction most needs to report — a relationship the
+// forge has but this repository withheld from every read — so the per-issue outcome is
+// folded in rather than left for a caller to infer from a provisional count.
+//
+// Unavailable requires *every* fetched issue to have withheld the seam, which is the
+// shape a repository-wide gate produces. A mixed window stays available: one issue's
+// failed read is not the repository's verdict, and the per-issue states carry it. An
+// empty window stays available too — "every issue withheld it" is vacuously true over
+// no issues, and reporting a fault from an empty backlog would be manufacturing one.
+func blockSeam(carried bool, issues []github.Issue, state func(github.Issue) github.SeamState) github.SeamState {
+	if !carried {
+		return github.SeamNotApplicable
+	}
+	if len(issues) == 0 {
 		return github.SeamAvailable
 	}
-	return github.SeamNotApplicable
-}
-
-// seamWithholds reports whether a seam state leaves a readiness verdict unconfirmed.
-// It enumerates the states that leave a verdict standing rather than the states that
-// withhold, so a state added later fails safe: an unrecognized one lands in
-// provisional rather than falling through to ready, which is the classification this
-// package exists to keep honest. The empty string is the unset zero value, which
-// means available.
-func seamWithholds(s github.SeamState) bool {
-	switch s {
-	case "", github.SeamAvailable, github.SeamNotApplicable:
-		return false
-	default:
-		return true
+	for _, is := range issues {
+		if !state(is).Withholds() {
+			return github.SeamAvailable
+		}
 	}
+	return github.SeamUnavailable
 }
 
 // capList caps a list at listLimit (a negative limit means uncapped), reporting

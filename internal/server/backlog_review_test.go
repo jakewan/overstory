@@ -72,8 +72,8 @@ type fakeFetcher struct {
 	eventsByRepo map[string]eventsCanned
 	eventsCalls  *atomic.Int64
 	// capabilities drives what the fake claims its forge carries. Its zero value is
-	// read as the GitHub-shaped forge (see Capabilities below) so a test states this
-	// only when the forge's shape is what it exercises.
+	// the GitHub-shaped forge, so a test states this only when the forge carrying
+	// less is what it exercises.
 	capabilities github.Capabilities
 	// Secondary-fetch call counters for projection's fetch-skip tests. Each is a
 	// pointer for the same copy-by-value reason as authoredCalls: fakeFetcher is
@@ -109,14 +109,11 @@ func withBudget(r github.AuthoredActivityResult, remaining int, reset time.Time)
 	return r
 }
 
-// Capabilities reads an unset capabilities field as the GitHub-shaped forge — both
-// relationships carried — so the many tests that predate the seam contract keep
-// describing a backend that reads everything. A test exercising a forge that carries
-// less sets the field, and any non-zero value is honored as written.
+// Capabilities returns the field verbatim. Its zero value already describes a forge
+// carrying every relationship, so tests predating the seam contract need say nothing
+// and a test about a forge that carries less states only what it lacks — no
+// normalizing branch, which would make "lacks everything" inexpressible.
 func (f fakeFetcher) Capabilities() github.Capabilities {
-	if f.capabilities == (github.Capabilities{}) {
-		return github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: true}
-	}
 	return f.capabilities
 }
 
@@ -552,7 +549,7 @@ func TestBacklogReviewDependencySeamNotCarriedByForge(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
 	fetcher := fakeFetcher{
 		result:       github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(1))}, TotalOpen: 1},
-		capabilities: github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: false},
+		capabilities: github.Capabilities{NoSubIssueHierarchy: true},
 	}
 	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
 
@@ -568,6 +565,35 @@ func TestBacklogReviewDependencySeamNotCarriedByForge(t *testing.T) {
 	}
 	if dep.ReadyCount != 1 {
 		t.Errorf("ReadyCount = %d, want 1 (an uncarried seam withholds nothing)", dep.ReadyCount)
+	}
+}
+
+// TestBacklogReviewSeamOverrideReachesEveryBlock pins that the forge-level override is
+// applied once for the whole response rather than inside one reduction. Applied in
+// only one place, the same issue reads notApplicable in the dependencies block and
+// unavailable in the deferred block of the same payload — the cross-block
+// contradiction the seam companions exist to prevent, produced by the mechanism meant
+// to prevent it.
+func TestBacklogReviewSeamOverrideReachesEveryBlock(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+
+	parked := labeledIssue(1, "deferred")
+	parked.SubIssueGapState = github.SeamUnavailable
+	fetcher := fakeFetcher{
+		result:       github.IssueListResult{Issues: []github.Issue{parked}, TotalOpen: 1},
+		capabilities: github.Capabilities{NoSubIssueHierarchy: true},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if facts.Deferred == nil || len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("Deferred block missing its issue: %+v", facts.Deferred)
+	}
+	if got := facts.Deferred.DeferredIssues[0].SubIssueGapState; got != github.SeamNotApplicable {
+		t.Errorf("deferred SubIssueGapState = %v, want notApplicable — the forge carries no hierarchy, so no read of it can have failed", got)
+	}
+	if facts.Dependencies.Seams.SubIssueGap != github.SeamNotApplicable {
+		t.Errorf("dependencies Seams.SubIssueGap = %v, want notApplicable", facts.Dependencies.Seams.SubIssueGap)
 	}
 }
 

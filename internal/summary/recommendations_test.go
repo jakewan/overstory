@@ -262,6 +262,30 @@ func TestReduceRecommendationsUnreadableSeamGateNotReserved(t *testing.T) {
 	}
 }
 
+// TestReduceRecommendationsUnrecognizedSeamStateFailsSafe: the reserve must apply the
+// same fail-safe the dependency reduction does. Enumerating only the known unsafe
+// state would let a state added later slip through here while the verdict side calls
+// it provisional — the two disagreeing about the same candidate, by the one route the
+// fail-safe exists for.
+func TestReduceRecommendationsUnrecognizedSeamStateFailsSafe(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	readyGate := mkIssue(12, 100, 1, nil, nil)
+	readyGate.Blocking = blk(50)
+	futureState := mkIssue(11, 1, 1, nil, nil)
+	futureState.Blocking = blk(50)
+	futureState.BlockedByState = github.SeamState("someLaterState")
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	facts := ReduceRecommendations([]github.Issue{p, readyGate, futureState, filler}, 4, []string{"bug"}, 2, now)
+	got := byNum(facts.Candidates)
+	if _, ok := got[12]; !ok {
+		t.Error("ready gate #12 absent — a confirmed gate lost the reserve to an unconfirmed one")
+	}
+	if _, ok := got[11]; ok {
+		t.Error("unrecognized-seam-state gate #11 took the reserve; an unknown state must fail safe")
+	}
+}
+
 // TestReduceRecommendationsCarriesSeamCompanions pins sibling parity: the candidate
 // projects the same source fields the dependencies block does, so it carries their
 // seam companions too. Without them one response can report an issue provisional in

@@ -259,6 +259,10 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		// Build the staleness exclusion set over the full fetched window using the
 		// same deferred-label matching ReduceDeferred applies, so staleness counts
 		// only neglected work while deferred still surfaces the parked issues.
+		// Reconcile the seam states against what this forge carries once, before any
+		// reduction reads them, so every block of the response agrees about the same
+		// issue rather than each reduction deciding for itself.
+		result.Issues = github.ApplyCapabilities(result.Issues, fetcher.Capabilities())
 		deferredNums := backlog.DeferredNumbers(result.Issues, cfg.Deferred.Labels)
 		staleness := backlog.ReduceStaleness(result.Issues, result.TotalOpen, cfg.Staleness.ThresholdDays, in.Limit, deferredNums, n)
 		staleness.FetchLimit = cfg.Staleness.FetchLimit

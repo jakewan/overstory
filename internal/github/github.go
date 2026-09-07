@@ -158,17 +158,27 @@ const (
 // withholds nothing and leaves a verdict complete, while an unread one leaves it
 // unconfirmable.
 //
-// The fields are positive ("carries this") so the zero value claims nothing, which
-// makes a backend that forgets to answer fail toward reporting less rather than
-// toward false confidence.
+// The fields are negative ("this forge lacks it") so the zero value describes the
+// common forge that carries everything, matching SeamState's zero and keeping an
+// unset value from asserting an absence nobody stated. A backend does not get to be
+// silently right about a relationship it lacks: saying so is a positive act.
 type Capabilities struct {
-	// BlockedByEdges is whether the forge has issue-to-issue blocking relationships.
-	BlockedByEdges bool
-	// SubIssueHierarchy is whether the forge has parent/child issues. A forge without
-	// them is not missing data — it has no such concept, so a readiness verdict there
-	// rests on the blocking edges alone and is complete.
-	SubIssueHierarchy bool
+	// NoBlockedByEdges marks a forge without issue-to-issue blocking relationships.
+	NoBlockedByEdges bool
+	// NoSubIssueHierarchy marks a forge without parent/child issues. Such a forge is
+	// not missing data — it has no such concept, so a readiness verdict there rests on
+	// the blocking edges alone and is complete rather than partial.
+	NoSubIssueHierarchy bool
 }
+
+// CarriesBlockedByEdges reports whether the forge has blocking relationships. The
+// accessors exist so consumers read the positive question the reduction actually asks
+// and no call site has to negate the field itself, which is where a polarity slip
+// would land.
+func (c Capabilities) CarriesBlockedByEdges() bool { return !c.NoBlockedByEdges }
+
+// CarriesSubIssueHierarchy reports whether the forge has parent/child issues.
+func (c Capabilities) CarriesSubIssueHierarchy() bool { return !c.NoSubIssueHierarchy }
 
 // MarshalJSON renders the unset zero value as SeamAvailable so a producer that reads
 // every seam states nothing and still serializes honestly. Every comparison in the
@@ -179,6 +189,49 @@ func (s SeamState) MarshalJSON() ([]byte, error) {
 		s = SeamAvailable
 	}
 	return json.Marshal(string(s))
+}
+
+// ApplyCapabilities reconciles each issue's per-seam states against what the forge
+// carries, returning a new slice and leaving the input untouched. A relationship the
+// forge does not have cannot have failed to be read, so a per-issue unavailable there
+// is a contradiction rather than a second opinion and is rewritten to notApplicable.
+//
+// It runs once over the fetched window, before any reduction sees it, because every
+// block projecting these fields has to agree: applied inside a single reduction, the
+// same issue reads notApplicable in one block of a response and unavailable in
+// another. Applying it twice is a no-op, so a defensive second call is harmless.
+func ApplyCapabilities(issues []Issue, caps Capabilities) []Issue {
+	if caps.CarriesBlockedByEdges() && caps.CarriesSubIssueHierarchy() {
+		return issues
+	}
+	out := make([]Issue, len(issues))
+	copy(out, issues)
+	for i := range out {
+		if !caps.CarriesBlockedByEdges() {
+			out[i].BlockedByState = SeamNotApplicable
+		}
+		if !caps.CarriesSubIssueHierarchy() {
+			out[i].SubIssueGapState = SeamNotApplicable
+		}
+	}
+	return out
+}
+
+// Withholds reports whether this state leaves a readiness verdict unconfirmed. It
+// lives with the type rather than with one consumer because every reduction deciding
+// readiness has to answer it the same way — a second, independently-written copy is
+// how the two come to disagree about the same issue.
+//
+// It enumerates the states that leave a verdict standing rather than those that
+// withhold, so a state added later fails safe: an unrecognized one withholds rather
+// than passing as clear.
+func (s SeamState) Withholds() bool {
+	switch s {
+	case "", SeamAvailable, SeamNotApplicable:
+		return false
+	default:
+		return true
+	}
 }
 
 // String renders the seam state, normalizing the zero value the way MarshalJSON does

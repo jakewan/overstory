@@ -101,7 +101,10 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 
 		// One generation time shared by every block.
 		n := now()
-		issues, totalOpen := result.Issues, result.TotalOpen
+		// Reconcile the seam states against what this forge carries once, before any
+		// reduction reads them, so every block of the response agrees about the same
+		// issue rather than each reduction deciding for itself.
+		issues, totalOpen := github.ApplyCapabilities(result.Issues, fetcher.Capabilities()), result.TotalOpen
 
 		// Primary (non-fetch) reductions run unconditionally over the fetched window;
 		// projection gates serialization (below) and the secondary fetches, never these

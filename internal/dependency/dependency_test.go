@@ -22,7 +22,7 @@ func issue(num int) github.Issue {
 
 // bothSeams is the GitHub-shaped forge — every relationship carried — which is what
 // the cases below assume unless they are about a forge that carries less.
-var bothSeams = github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: true}
+var bothSeams = github.Capabilities{}
 
 // TestReduceClassifiesBlockedAndGates pins the #87 scenario: a capstone issue
 // blocked by several others, with no deferred convention in play. The blocked
@@ -208,6 +208,58 @@ func TestReduceSeamStateClassification(t *testing.T) {
 	}
 }
 
+// TestReduceBlockSeamReportsUnavailableWhenNothingRead: the block-level report has to
+// be able to say a carried seam went unread, or its most consequential case is the one
+// it cannot express. Where every fetched issue withheld the same seam — the shape a
+// repository-wide disabled relationship produces — the block says so once, rather than
+// leaving a caller to infer it from a provisional count that equals the fetched count.
+func TestReduceBlockSeamReportsUnavailableWhenNothingRead(t *testing.T) {
+	var issues []github.Issue
+	for n := 1; n <= 3; n++ {
+		is := issue(n)
+		is.BlockedByState = github.SeamUnavailable
+		issues = append(issues, is)
+	}
+
+	facts := Reduce(issues, 3, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamUnavailable {
+		t.Errorf("Seams.BlockedBy = %v, want unavailable (no fetched issue yielded the seam)", facts.Seams.BlockedBy)
+	}
+	if facts.Seams.SubIssueGap != github.SeamAvailable {
+		t.Errorf("Seams.SubIssueGap = %v, want available (that seam read fine)", facts.Seams.SubIssueGap)
+	}
+	if facts.ProvisionalCount != 3 {
+		t.Errorf("ProvisionalCount = %d, want 3", facts.ProvisionalCount)
+	}
+}
+
+// TestReduceBlockSeamStaysAvailableWhenPartiallyRead: one issue's failed read is not
+// the forge's verdict. A mixed window keeps the block-level state available — the
+// per-issue states and the provisional count carry the individual failures — so a
+// single unreadable issue cannot misreport the whole repository.
+func TestReduceBlockSeamStaysAvailableWhenPartiallyRead(t *testing.T) {
+	unread := issue(1)
+	unread.BlockedByState = github.SeamUnavailable
+
+	facts := Reduce([]github.Issue{unread, issue(2)}, 2, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available (one issue's failure is not the forge's)", facts.Seams.BlockedBy)
+	}
+	if facts.ProvisionalCount != 1 {
+		t.Errorf("ProvisionalCount = %d, want 1", facts.ProvisionalCount)
+	}
+}
+
+// TestReduceBlockSeamEmptyWindowIsNotUnavailable: with nothing fetched there is no
+// evidence either way, and "every issue withheld it" is vacuously true over an empty
+// set. Reporting unavailable there would manufacture a fault from an empty backlog.
+func TestReduceBlockSeamEmptyWindowIsNotUnavailable(t *testing.T) {
+	facts := Reduce(nil, 0, 20, bothSeams)
+	if facts.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available (an empty window is not evidence of a fault)", facts.Seams.BlockedBy)
+	}
+}
+
 // TestReduceUncarriedSeamOverridesPerIssueState: where the forge carries no sub-issue
 // hierarchy, no read of it can have failed, so a per-issue unavailable is a
 // contradiction rather than a second opinion and the forge-level fact wins. Without
@@ -215,7 +267,7 @@ func TestReduceSeamStateClassification(t *testing.T) {
 func TestReduceUncarriedSeamOverridesPerIssueState(t *testing.T) {
 	is := issue(1)
 	is.SubIssueGapState = github.SeamUnavailable
-	caps := github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: false}
+	caps := github.Capabilities{NoSubIssueHierarchy: true}
 
 	facts := Reduce([]github.Issue{is}, 1, 20, caps)
 	if facts.ReadyCount != 1 {
@@ -234,7 +286,7 @@ func TestReduceOpenSubIssueGateIgnoredWhereUncarried(t *testing.T) {
 	parent := issue(1)
 	parent.SubIssuesTotal = 3
 	parent.SubIssuesCompleted = 1
-	caps := github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: false}
+	caps := github.Capabilities{NoSubIssueHierarchy: true}
 
 	facts := Reduce([]github.Issue{parent}, 1, 20, caps)
 	if facts.BlockedCount != 0 || facts.ReadyCount != 1 {
