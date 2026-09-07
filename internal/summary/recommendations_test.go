@@ -286,6 +286,29 @@ func TestReduceRecommendationsUnrecognizedSeamStateFailsSafe(t *testing.T) {
 	}
 }
 
+// TestReduceRecommendationsUncarriedGapDoesNotDisqualifyGate: where the forge has no
+// sub-issue hierarchy, the dependency reduction ignores the gap entirely, so the
+// reserve has to ignore it too. Checking it unconditionally makes the two disagree
+// about the same candidate — ready in the verdict, disqualified from the reserve —
+// on stale or unmeaning counts a backend without the relationship may still carry.
+func TestReduceRecommendationsUncarriedGapDoesNotDisqualifyGate(t *testing.T) {
+	p := mkIssue(50, 20, 1, nil, msRef(7, "M"))
+	// Newest, so the reserve is the only thing that can keep it past the cap — the
+	// same isolation the blocked-gate case above relies on. No sub-issue hierarchy
+	// here, but the counts are non-zero: the shape ApplyCapabilities leaves behind,
+	// since it rewrites the state and not the counts.
+	uncarried := mkIssue(12, 1, 1, nil, nil)
+	uncarried.Blocking = blk(50)
+	uncarried.SubIssueGapState = github.SeamNotApplicable
+	uncarried.SubIssuesTotal, uncarried.SubIssuesCompleted = 3, 1
+	filler := mkIssue(60, 200, 1, nil, nil)
+
+	facts := ReduceRecommendations([]github.Issue{p, uncarried, filler}, 3, []string{"bug"}, 2, now)
+	if _, ok := byNum(facts.Candidates)[12]; !ok {
+		t.Error("gate #12 absent — a gap the forge cannot carry must not disqualify it from the reserve, since dependency.Reduce counts the same issue ready")
+	}
+}
+
 // TestReduceRecommendationsCarriesSeamCompanions pins sibling parity: the candidate
 // projects the same source fields the dependencies block does, so it carries their
 // seam companions too. Without them one response can report an issue provisional in

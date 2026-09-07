@@ -225,7 +225,12 @@ func isReadyGate(c RecommendationCandidate) bool {
 		!c.BlockedByTruncated &&
 		!c.BlockedByState.Withholds() &&
 		!c.SubIssueGapState.Withholds() &&
-		c.SubIssuesTotal-c.SubIssuesCompleted == 0
+		// The gap gates only where the relationship exists. Where it does not, the
+		// dependency reduction ignores the counts outright, so reading them here would
+		// disqualify from the reserve an issue that reduction calls ready — the counts
+		// survive the capability rewrite, which touches the state alone.
+		(c.SubIssueGapState == github.SeamNotApplicable ||
+			c.SubIssuesTotal-c.SubIssuesCompleted == 0)
 }
 
 // selectWithReserve picks the capped candidate list from the pre-sorted candidates

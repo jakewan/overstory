@@ -205,10 +205,13 @@ func (s SeamState) MarshalJSON() ([]byte, error) {
 }
 
 // ApplyCapabilities reconciles each issue's per-seam states against what the fetched
-// repository carries, returning a new slice and leaving the input untouched. A
-// relationship that does not exist there cannot have failed to be read, so a per-issue
-// unavailable is a contradiction rather than a second opinion and is rewritten to
-// notApplicable.
+// repository carries. A relationship that does not exist there cannot have failed to
+// be read, so a per-issue unavailable is a contradiction rather than a second opinion
+// and is rewritten to notApplicable.
+//
+// It never mutates the input. Where a rewrite is needed it returns a copy; where none
+// is — the common case of a repository carrying everything — it returns the input
+// slice itself, so callers must not assume the result is always distinct storage.
 //
 // It runs once over the fetched window, before any reduction sees it, because every
 // block projecting these fields has to agree: applied inside a single reduction, the
