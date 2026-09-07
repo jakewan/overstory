@@ -157,20 +157,6 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 	for _, is := range issues {
 		blockedBy := reduce.OpenDependencyNumbers(is.BlockedBy)
 		blocking := reduce.OpenDependencyNumbers(is.Blocking)
-		// The sub-issue summary counts every child (all repos, never capped), so the
-		// open-child gap is authoritative even when the windowed SubIssues list is
-		// empty. It is an upper bound that can read one high after a not-planned
-		// closure — erring toward over-reporting the gate, never toward false-ready.
-		// The gap witnesses a gate only where the forge carries the relationship at
-		// all: where it does not, the zero is the absence of a concept rather than the
-		// absence of children. An unreadable seam needs no test here — its zero cannot
-		// clear the issue, because the provisional arm below catches it first.
-		subGate := is.SubIssueGapState != github.SeamNotApplicable &&
-			is.SubIssuesTotal-is.SubIssuesCompleted > 0
-		// A seam the backend could not read leaves readiness unconfirmable for the
-		// same reason a capped edge list does — an empty result proves nothing. A seam
-		// the forge does not carry is not a fault and withholds nothing.
-		unevaluable := is.BlockedByState.Withholds() || is.SubIssueGapState.Withholds()
 
 		item := Issue{
 			Number:             is.Number,
@@ -180,25 +166,29 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 			BlockedByTruncated: is.BlockedByTruncated,
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
-			SubIssueGate:       subGate,
-			BlockedByState:     is.BlockedByState,
-			SubIssueGapState:   is.SubIssueGapState,
+			// The same call the verdict below rests on, rather than a local recomputation
+			// of the gap rule: this field and that verdict must never disagree.
+			SubIssueGate:     reduce.SubIssueGate(is),
+			BlockedByState:   is.BlockedByState,
+			SubIssueGapState: is.SubIssueGapState,
 		}
 
-		switch {
-		case len(blockedBy) > 0 || subGate:
+		switch reduce.Readiness(is) {
+		case reduce.VerdictBlocked:
 			facts.BlockedCount++
 			facts.Blocked = append(facts.Blocked, item)
-		case is.BlockedByTruncated || unevaluable:
-			// Appears unblocked, but a capped edge list may hide an open blocker and an
-			// unread seam may hide anything at all, so readiness cannot be confirmed.
-			// Not ready, not a gate.
-			facts.ProvisionalCount++
-		default:
+		case reduce.VerdictReady:
 			facts.ReadyCount++
+			// A gate is this block's own notion — a ready issue standing in front of open
+			// downstream work — so it stays here rather than in the shared predicate.
 			if len(blocking) > 0 {
 				facts.Gates = append(facts.Gates, item)
 			}
+		default:
+			// Provisional, and whatever a later Verdict adds: the three counts must still
+			// sum to the fetched window, and an unrecognized verdict must not read as
+			// ready.
+			facts.ProvisionalCount++
 		}
 	}
 

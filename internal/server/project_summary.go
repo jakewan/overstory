@@ -118,7 +118,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			StaleThresholdDays:  cfg.Staleness.ThresholdDays,
 			ContextBodyLength:   cfg.Quality.MinBodyLength,
 		}, in.Limit, n)
-		recommendations := summary.ReduceRecommendations(issues, totalOpen, cfg.Summary.BugLabels, in.Limit, n)
+		recommendations := summary.ReduceRecommendations(issues, totalOpen, cfg.Summary.BugLabels, in.Limit, result.Capabilities, n)
 		// The classification-only projection: recommendations already ships every
 		// candidate's raw blocked-by/blocking edges, so the summary adds the graph-level
 		// ready/blocked split and the gate set, not a second copy of the edges.

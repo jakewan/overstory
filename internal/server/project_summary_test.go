@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/jakewan/overstory/internal/summary"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -846,5 +847,135 @@ func TestProjectSummaryHygieneSurfacesLabelTruncation(t *testing.T) {
 	// The seam floors the reading; it never suppresses it.
 	if facts.Hygiene.MissingArea.Count != 1 {
 		t.Errorf("missingArea count = %d, want 1 (issue 1 still reads as missing an area)", facts.Hygiene.MissingArea.Count)
+	}
+}
+
+// readinessIssue builds a candidate-shaped issue with an explicit age, so a test can
+// place it deliberately in the neutral pre-sort (bugs, then oldest-first, then number).
+func readinessIssue(num, ageDays int) github.Issue {
+	return github.Issue{
+		Number:         num,
+		Title:          "issue",
+		URL:            "u",
+		CreatedAt:      daysAgo(ageDays),
+		LastActivityAt: daysAgo(ageDays),
+	}
+}
+
+// TestProjectSummaryCandidateReadinessMatchesDependencyCounts is the contract test:
+// one response must not carry two answers about the same issue. Every candidate
+// reports the verdict the dependencies block counted it under, so tallying the
+// candidates by readiness reproduces that block's ready/blocked/provisional split
+// exactly. It is a wire-shape assertion rather than an agreement test — once both
+// reductions decide readiness through one predicate the agreement is structural, and
+// what stays worth pinning is that the verdict actually reaches the caller.
+//
+// The window sits under the list cap deliberately: every fetched issue is a
+// candidate, so the tally covers the same population the block classified.
+func TestProjectSummaryCandidateReadinessMatchesDependencyCounts(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	ready := readinessIssue(1, 10)
+	blocked := readinessIssue(2, 10)
+	blocked.BlockedBy = []github.DependencyRef{{Number: 1, Open: true}}
+	truncated := readinessIssue(3, 10)
+	truncated.BlockedByTruncated = true
+	unread := readinessIssue(4, 10)
+	unread.BlockedByState = github.SeamUnavailable
+
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{ready, blocked, truncated, unread}, TotalOpen: 4,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	dep, recs := facts.Dependencies, facts.Recommendations
+	if dep == nil || recs == nil {
+		t.Fatal("dependencies or recommendations block absent; want both on the full composite")
+	}
+	if recs.ListTruncated {
+		t.Fatal("candidate list truncated; the tally must cover the classified population")
+	}
+	// The fixture spans all three verdicts, so a predicate collapsing any two shows up
+	// here rather than only in the tally.
+	if dep.ReadyCount != 1 || dep.BlockedCount != 1 || dep.ProvisionalCount != 2 {
+		t.Fatalf("dependency counts ready=%d blocked=%d provisional=%d, want 1/1/2",
+			dep.ReadyCount, dep.BlockedCount, dep.ProvisionalCount)
+	}
+
+	tally := map[reduce.Verdict]int{}
+	for _, c := range recs.Candidates {
+		if c.Readiness == "" {
+			t.Errorf("candidate #%d carries no readiness; every candidate has a verdict", c.Number)
+		}
+		tally[c.Readiness]++
+	}
+	if got := tally[reduce.VerdictReady]; got != dep.ReadyCount {
+		t.Errorf("candidates ready=%d, dependencies readyCount=%d — one response, two answers", got, dep.ReadyCount)
+	}
+	if got := tally[reduce.VerdictBlocked]; got != dep.BlockedCount {
+		t.Errorf("candidates blocked=%d, dependencies blockedCount=%d — one response, two answers", got, dep.BlockedCount)
+	}
+	if got := tally[reduce.VerdictProvisional]; got != dep.ProvisionalCount {
+		t.Errorf("candidates provisional=%d, dependencies provisionalCount=%d — one response, two answers", got, dep.ProvisionalCount)
+	}
+}
+
+// TestProjectSummaryReserveKeepsGateTheDependencyBlockCountsReady pins the harm
+// issue #136 names: the reserve decides which candidates survive the list cap from
+// its own reading of readiness, so an issue the dependencies block counts ready could
+// be dropped from the recommendation list in that same response. The gate here is the
+// newest and carries no label, so the neutral pre-sort (bugs, then oldest-first) would
+// evict it — only readiness keeps it, and what is asserted is that the verdict keeping
+// it is the verdict the block reports.
+func TestProjectSummaryReserveKeepsGateTheDependencyBlockCountsReady(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	priority := readinessIssue(99, 5)
+	priority.Milestone = &github.MilestoneRef{Number: 1, Title: "R5"}
+	priority.BlockedBy = []github.DependencyRef{{Number: 50, Open: true}}
+	gate := readinessIssue(50, 1) // newest, so last in the pre-sort and first evicted
+	gate.Blocking = []github.DependencyRef{{Number: 99, Open: true}}
+
+	issues := []github.Issue{priority, gate}
+	for n := 1; n <= 4; n++ {
+		issues = append(issues, readinessIssue(n, 100)) // aged filler that outranks the gate
+	}
+	fetcher := fakeFetcher{result: github.IssueListResult{Issues: issues, TotalOpen: len(issues)}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv,
+		map[string]any{"owner": "acme", "repo": "widgets", "limit": 2}))
+	dep, recs := facts.Dependencies, facts.Recommendations
+	if dep == nil || recs == nil {
+		t.Fatal("dependencies or recommendations block absent")
+	}
+	if !recs.ListTruncated {
+		t.Fatalf("candidate list not truncated at limit 2 over %d issues; the reserve never ran", len(issues))
+	}
+
+	var kept *summary.RecommendationCandidate
+	for i := range recs.Candidates {
+		if recs.Candidates[i].Number == 50 {
+			kept = &recs.Candidates[i]
+		}
+	}
+	if kept == nil {
+		t.Fatal("#50 evicted by the list cap, but it is the ready gate of milestoned #99 — the reserve exists to keep it")
+	}
+	if len(kept.GatesPrioritized) != 1 || kept.GatesPrioritized[0] != 99 {
+		t.Errorf("GatesPrioritized = %v, want [99]", kept.GatesPrioritized)
+	}
+	if kept.Readiness != reduce.VerdictReady {
+		t.Errorf("#50 Readiness = %q, want %q — the reserve kept it as ready", kept.Readiness, reduce.VerdictReady)
+	}
+	// The block counted exactly one gate and it is this issue, so the reserve's
+	// readiness and the block's classification are one decision rather than two that
+	// happen to agree.
+	if dep.GateCount != 1 {
+		t.Fatalf("dependencies gateCount = %d, want 1", dep.GateCount)
+	}
+	if dep.Gates[0].Number != 50 {
+		t.Errorf("dependencies gate = #%d, want #50", dep.Gates[0].Number)
 	}
 }
