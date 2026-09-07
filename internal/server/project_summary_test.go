@@ -434,16 +434,17 @@ func TestProjectSummarySurfacesDependencyClassification(t *testing.T) {
 	}
 }
 
-// TestProjectSummaryDependencySeamNotCarriedByForge mirrors backlog_review's case on
+// TestProjectSummaryDependencySeamNotCarriedByRepo mirrors backlog_review's case on
 // the classification projection: a ready count means something different where a seam
 // has no carrier, and a caller reading only this projection has no per-issue edges to
 // infer that from.
-func TestProjectSummaryDependencySeamNotCarriedByForge(t *testing.T) {
+func TestProjectSummaryDependencySeamNotCarriedByRepo(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
-	fetcher := fakeFetcher{
-		result:       github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(1))}, TotalOpen: 1},
-		capabilities: github.Capabilities{NoSubIssueHierarchy: true},
-	}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:       []github.Issue{issue(1, daysAgo(1))},
+		TotalOpen:    1,
+		Capabilities: github.Capabilities{NoSubIssueHierarchy: true},
+	}}
 	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
 
 	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))

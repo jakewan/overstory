@@ -72,11 +72,11 @@ type Facts struct {
 	Seams SeamReport `json:"seams"`
 }
 
-// SeamReport is the forge-level state of each input a readiness verdict rests on.
-// It is stated once for the whole block because a forge either carries a
-// relationship or does not — unlike the per-issue states, which record what a single
-// read obtained. A seam reported notApplicable here is why an issue can be ready with
-// that input unexamined.
+// SeamReport is the repository-level state of each input a readiness verdict rests
+// on. It is stated once for the whole block because carriage is a property of the
+// repository being read rather than of any one issue in it — unlike the per-issue
+// states, which record what a single read obtained. A seam reported notApplicable
+// here is why an issue can be ready with that input unexamined.
 type SeamReport struct {
 	BlockedBy   github.SeamState `json:"blockedBy"`
 	SubIssueGap github.SeamState `json:"subIssueGap"`
@@ -128,12 +128,13 @@ type Issue struct {
 // evidence rather than evidence of absence. Everything else is ready, and a gate is a
 // ready issue that blocks open downstream work.
 //
-// caps says what the backend's forge carries at all, and it overrides the per-issue
-// states: a relationship the forge does not have cannot have failed to be read, so an
-// uncarried seam withholds nothing and leaves a verdict complete. Without that
-// distinction the reduction would report every issue unconfirmable on a forge missing
-// a relationship, which is the same signal loss as the false-ready it exists to
-// prevent, in the opposite direction.
+// caps says what the fetched repository carries, and it overrides the per-issue
+// states: a relationship that does not exist there cannot have failed to be read, so
+// an uncarried seam withholds nothing and leaves a verdict complete. Without that
+// distinction the reduction would report every issue unconfirmable wherever a
+// relationship is missing, which is the same signal loss as the false-ready it exists
+// to prevent, in the opposite direction. It is per-repository rather than per-forge
+// because a forge can gate a relationship on a repository setting.
 func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Capabilities) Facts {
 	// Idempotent, and the handler has normally applied it already so every block of a
 	// response agrees; repeated here so this reduction is correct called directly.

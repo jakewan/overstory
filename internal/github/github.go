@@ -159,33 +159,38 @@ const (
 	SeamNotApplicable SeamState = "notApplicable"
 )
 
-// Capabilities says which dependency relationships a backend's forge carries at all.
-// It is the forge-level companion to the per-issue seam states: this answers "can
+// Capabilities says which dependency relationships a fetched repository carries. It
+// is the repository-level companion to the per-issue seam states: this answers "can
 // this ever be read here", the per-issue state answers "was it read this time". The
 // two need separating because they fail differently — an uncarried relationship
 // withholds nothing and leaves a verdict complete, while an unread one leaves it
 // unconfirmable.
 //
-// The fields are negative ("this forge lacks it") so the zero value describes the
-// common forge that carries everything, matching SeamState's zero and keeping an
-// unset value from asserting an absence nobody stated. A backend does not get to be
-// silently right about a relationship it lacks: saying so is a positive act.
+// It is scoped to a repository rather than to a forge because carriage is not purely
+// a forge-wide fact: Forgejo gates its dependency unit per repository, so two repos on
+// one instance can differ. It therefore rides on IssueListResult rather than sitting
+// beside the fetcher.
+//
+// The fields are negative ("this lacks it") so the zero value describes the common
+// case that carries everything, matching SeamState's zero and keeping an unset value
+// from asserting an absence nobody stated.
 type Capabilities struct {
-	// NoBlockedByEdges marks a forge without issue-to-issue blocking relationships.
+	// NoBlockedByEdges marks a repository without issue-to-issue blocking
+	// relationships.
 	NoBlockedByEdges bool
-	// NoSubIssueHierarchy marks a forge without parent/child issues. Such a forge is
-	// not missing data — it has no such concept, so a readiness verdict there rests on
-	// the blocking edges alone and is complete rather than partial.
+	// NoSubIssueHierarchy marks a repository without parent/child issues. It is not
+	// missing data — there is no such concept to read, so a readiness verdict there
+	// rests on the blocking edges alone and is complete rather than partial.
 	NoSubIssueHierarchy bool
 }
 
-// CarriesBlockedByEdges reports whether the forge has blocking relationships. The
+// CarriesBlockedByEdges reports whether blocking relationships exist here. The
 // accessors exist so consumers read the positive question the reduction actually asks
 // and no call site has to negate the field itself, which is where a polarity slip
 // would land.
 func (c Capabilities) CarriesBlockedByEdges() bool { return !c.NoBlockedByEdges }
 
-// CarriesSubIssueHierarchy reports whether the forge has parent/child issues.
+// CarriesSubIssueHierarchy reports whether parent/child issues exist here.
 func (c Capabilities) CarriesSubIssueHierarchy() bool { return !c.NoSubIssueHierarchy }
 
 // MarshalJSON renders the unset zero value as SeamAvailable so a producer that reads
@@ -199,10 +204,11 @@ func (s SeamState) MarshalJSON() ([]byte, error) {
 	return json.Marshal(string(s))
 }
 
-// ApplyCapabilities reconciles each issue's per-seam states against what the forge
-// carries, returning a new slice and leaving the input untouched. A relationship the
-// forge does not have cannot have failed to be read, so a per-issue unavailable there
-// is a contradiction rather than a second opinion and is rewritten to notApplicable.
+// ApplyCapabilities reconciles each issue's per-seam states against what the fetched
+// repository carries, returning a new slice and leaving the input untouched. A
+// relationship that does not exist there cannot have failed to be read, so a per-issue
+// unavailable is a contradiction rather than a second opinion and is rewritten to
+// notApplicable.
 //
 // It runs once over the fetched window, before any reduction sees it, because every
 // block projecting these fields has to agree: applied inside a single reduction, the
@@ -330,10 +336,19 @@ type PullRequestListResult struct {
 // set (a defensive pagination guard can also stop it early, the rare exception).
 // RateLimit is the most-recent budget snapshot observed across the paginated fetch, or
 // nil when the response carried none, so a caller can pace itself.
+//
+// Capabilities says which dependency relationships were readable *for this
+// repository*. It rides on the result rather than sitting beside the fetcher because
+// carriage is not purely a property of the forge: Forgejo gates its dependency unit
+// per repository, and gates its own closure enforcement on the same switch, so a
+// repository with that unit off has no gating relationship even though the forge
+// does. A fetcher-wide answer could not express that, and the difference decides
+// whether an empty edge list means ready or unconfirmed.
 type IssueListResult struct {
-	Issues    []Issue
-	TotalOpen int
-	RateLimit *RateLimit
+	Issues       []Issue
+	TotalOpen    int
+	RateLimit    *RateLimit
+	Capabilities Capabilities
 }
 
 // RateLimit is the GraphQL points-budget snapshot from a successful fetch's
@@ -492,12 +507,6 @@ type IssueEventsResult struct {
 // REST-sourced fetch, since the events stream has no GraphQL equivalent the other
 // shapes use.
 type Fetcher interface {
-	// Capabilities reports which dependency relationships this backend's forge
-	// carries at all. It is on the interface rather than in operator configuration so
-	// a second backend cannot ship without stating its position — the compiler asks
-	// the question, and a fact about an API stays with the code that speaks it rather
-	// than in a file nobody recomputes.
-	Capabilities() Capabilities
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListOpenIssuesWithLabel(ctx context.Context, ownerRepo, label string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)

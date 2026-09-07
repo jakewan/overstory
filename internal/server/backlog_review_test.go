@@ -71,10 +71,6 @@ type fakeFetcher struct {
 	eventsErr    error
 	eventsByRepo map[string]eventsCanned
 	eventsCalls  *atomic.Int64
-	// capabilities drives what the fake claims its forge carries. Its zero value is
-	// the GitHub-shaped forge, so a test states this only when the forge carrying
-	// less is what it exercises.
-	capabilities github.Capabilities
 	// Secondary-fetch call counters for projection's fetch-skip tests. Each is a
 	// pointer for the same copy-by-value reason as authoredCalls: fakeFetcher is
 	// held in the interface by value and copied on every value-receiver call, so a
@@ -107,14 +103,6 @@ type authoredCanned struct {
 func withBudget(r github.AuthoredActivityResult, remaining int, reset time.Time) github.AuthoredActivityResult {
 	r.RateLimit = &github.RateLimit{Remaining: remaining, ResetAt: reset}
 	return r
-}
-
-// Capabilities returns the field verbatim. Its zero value already describes a forge
-// carrying every relationship, so tests predating the seam contract need say nothing
-// and a test about a forge that carries less states only what it lacks — no
-// normalizing branch, which would make "lacks everything" inexpressible.
-func (f fakeFetcher) Capabilities() github.Capabilities {
-	return f.capabilities
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
@@ -540,17 +528,18 @@ func TestBacklogReviewDependencyReportsSeamsCarried(t *testing.T) {
 	}
 }
 
-// TestBacklogReviewDependencySeamNotCarriedByForge pins the forge-level fact
-// overriding the per-issue one: where the backend declares it carries no sub-issue
+// TestBacklogReviewDependencySeamNotCarriedByRepo pins the per-repository fact
+// overriding the per-issue one: where the backend declares this repository carries no sub-issue
 // hierarchy, every issue's gap reads notApplicable regardless of what the fetched
 // issue carried, and the block says so once rather than the caller deducing it from
 // a population of zeros.
-func TestBacklogReviewDependencySeamNotCarriedByForge(t *testing.T) {
+func TestBacklogReviewDependencySeamNotCarriedByRepo(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
-	fetcher := fakeFetcher{
-		result:       github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(1))}, TotalOpen: 1},
-		capabilities: github.Capabilities{NoSubIssueHierarchy: true},
-	}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:       []github.Issue{issue(1, daysAgo(1))},
+		TotalOpen:    1,
+		Capabilities: github.Capabilities{NoSubIssueHierarchy: true},
+	}}
 	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
 
 	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
@@ -579,10 +568,11 @@ func TestBacklogReviewSeamOverrideReachesEveryBlock(t *testing.T) {
 
 	parked := labeledIssue(1, "deferred")
 	parked.SubIssueGapState = github.SeamUnavailable
-	fetcher := fakeFetcher{
-		result:       github.IssueListResult{Issues: []github.Issue{parked}, TotalOpen: 1},
-		capabilities: github.Capabilities{NoSubIssueHierarchy: true},
-	}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:       []github.Issue{parked},
+		TotalOpen:    1,
+		Capabilities: github.Capabilities{NoSubIssueHierarchy: true},
+	}}
 	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
 
 	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
