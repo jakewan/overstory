@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 func labeledIssue(num, inactiveDays int, labels ...string) github.Issue {
@@ -203,5 +204,30 @@ func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	}
 	if !facts.FetchTruncated {
 		t.Error("FetchTruncated = false, want true (2 fetched of 500)")
+	}
+}
+
+// TestReduceDeferredAppliesCapabilitiesItself is the deferred block's half of the
+// same contract the recommendation reduction keeps: it reconciles the per-issue seam
+// states against what the repository carries rather than trusting a caller to have
+// done it. Readiness rests on those states, so a direct caller passing unreconciled
+// issues would otherwise get a deferred issue reported unconfirmable on a repository
+// where the verdict is in fact complete.
+func TestReduceDeferredAppliesCapabilitiesItself(t *testing.T) {
+	unreconciled := labeledIssue(1, 100, "deferred")
+	unreconciled.SubIssueGapState = github.SeamUnavailable
+
+	facts := ReduceDeferred([]github.Issue{unreconciled}, 1, []string{"deferred"}, 20,
+		github.Capabilities{NoSubIssueHierarchy: true}, now)
+
+	if len(facts.DeferredIssues) != 1 {
+		t.Fatalf("deferred issues = %d, want 1", len(facts.DeferredIssues))
+	}
+	d := facts.DeferredIssues[0]
+	if d.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable (the repository carries no hierarchy)", d.SubIssueGapState)
+	}
+	if d.Readiness != reduce.VerdictReady {
+		t.Errorf("Readiness = %q, want %q — an uncarried relationship withholds nothing", d.Readiness, reduce.VerdictReady)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
 // TestReduceRecommendationsAnnotatesAndPreSorts pins the per-issue annotations
@@ -343,5 +344,30 @@ func TestReduceRecommendationsExactCountAndCap(t *testing.T) {
 	}
 	if len(facts.Candidates) != 2 || !facts.ListTruncated {
 		t.Errorf("listed=%d truncated=%v, want 2/true", len(facts.Candidates), facts.ListTruncated)
+	}
+}
+
+// TestReduceRecommendationsAppliesCapabilitiesItself pins that this reduction
+// reconciles the per-issue seam states against what the repository carries rather
+// than trusting a caller to have done it. The handler does apply them, so this is
+// about a direct caller: readiness rests on those states, and an issue arriving with
+// an unread seam on a repository that carries no such relationship would otherwise be
+// reported unconfirmable when the verdict is in fact complete.
+func TestReduceRecommendationsAppliesCapabilitiesItself(t *testing.T) {
+	unreconciled := mkIssue(1, 10, 1, nil, nil)
+	unreconciled.SubIssueGapState = github.SeamUnavailable
+
+	facts := ReduceRecommendations([]github.Issue{unreconciled}, 1, nil, 20,
+		github.Capabilities{NoSubIssueHierarchy: true}, now)
+
+	if len(facts.Candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(facts.Candidates))
+	}
+	c := facts.Candidates[0]
+	if c.SubIssueGapState != github.SeamNotApplicable {
+		t.Errorf("SubIssueGapState = %v, want notApplicable (the repository carries no hierarchy)", c.SubIssueGapState)
+	}
+	if c.Readiness != reduce.VerdictReady {
+		t.Errorf("Readiness = %q, want %q — an uncarried relationship withholds nothing", c.Readiness, reduce.VerdictReady)
 	}
 }
