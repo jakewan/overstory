@@ -145,6 +145,14 @@ const (
 	SeamAvailable SeamState = "available"
 	// SeamUnavailable means the seam exists on this forge but this read could not
 	// obtain it, so an empty result proves nothing.
+	//
+	// A relationship an operator has switched off is not this state. Where a forge
+	// gates its own enforcement on the same switch — Forgejo skips its closure check
+	// when a repository's dependency unit is disabled, so an issue with unsatisfied
+	// dependencies closes freely — the stored edges gate nothing, and a readiness
+	// verdict reached without them is complete rather than unconfirmed. That is
+	// SeamNotApplicable, and the test is the forge's behavior rather than whether rows
+	// survive in its database.
 	SeamUnavailable SeamState = "unavailable"
 	// SeamNotApplicable means the forge carries no such relationship, so nothing is
 	// missing and the verdict is complete without it.
