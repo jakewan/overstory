@@ -440,6 +440,69 @@ func TestBacklogReviewDependencyProvisionalUnderTruncation(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewDependencyUnavailableSeamIsProvisionalNotReady pins the
+// availability contract on the MCP path: an issue presenting no open blocker, whose
+// blocked-by seam the backend could not read at all, is provisional — never ready,
+// never a gate. This is the absence case the truncation class does not cover: a
+// capped edge list and an unread one both arrive as an empty list, and only the seam
+// state separates them.
+func TestBacklogReviewDependencyUnavailableSeamIsProvisionalNotReady(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	unread := issue(1, daysAgo(1))
+	unread.BlockedByState = github.SeamUnavailable // backend could not read the seam
+	unread.Blocking = []github.DependencyRef{{Number: 2, Open: true}}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{unread, issue(2, daysAgo(1))},
+		TotalOpen: 2,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.ProvisionalCount != 1 {
+		t.Errorf("ProvisionalCount = %d, want 1 (the unreadable-seam issue)", dep.ProvisionalCount)
+	}
+	if dep.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (#2 only; the unreadable-seam issue is not ready)", dep.ReadyCount)
+	}
+	for _, g := range dep.Gates {
+		if g.Number == 1 {
+			t.Error("issue #1 listed as a gate; an unconfirmed-ready issue is never a do-first root")
+		}
+	}
+}
+
+// TestBacklogReviewDependencyNotApplicableSeamStaysReady pins the distinction the
+// three-state seam exists for: a seam with no carrier on this forge leaves the
+// verdict complete, so an otherwise-clear issue stays ready. Folding this into the
+// unavailable case would report every issue provisional forever on a forge that
+// simply has no such concept.
+func TestBacklogReviewDependencyNotApplicableSeamStaysReady(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	noCarrier := issue(1, daysAgo(1))
+	noCarrier.SubIssueGapState = github.SeamNotApplicable // forge has no sub-issue concept
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{noCarrier},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (an absent carrier does not make a verdict unconfirmable)", dep.ReadyCount)
+	}
+	if dep.ProvisionalCount != 0 {
+		t.Errorf("ProvisionalCount = %d, want 0", dep.ProvisionalCount)
+	}
+}
+
 // TestBacklogReviewSurfacesAreaBalance pins the area-balance grooming signal:
 // given a manifest declaring area prefixes and explicit labels, the tool
 // distributes open issues across areas, counts the unclassified and multi-area

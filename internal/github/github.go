@@ -17,6 +17,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -84,6 +85,18 @@ import (
 // Milestone is the issue's milestone association (number and title), or nil when
 // the issue is unmilestoned — the orientation reduction reads it both to group
 // issues under their milestone and to flag the unmilestoned ones.
+//
+// BlockedByState and SubIssueGapState say whether the backend could evaluate each
+// seam a readiness verdict rests on. They are the availability companions to the
+// truncation flags above: truncated means "read, but capped", unavailable means "not
+// read at all", and an empty edge list means neither on its own. Without them an
+// unread seam and a genuinely clear one are the same zero — the false-ready the
+// truncation contract already refuses for a capped list. The GraphQL fetcher leaves
+// both at SeamAvailable, and the guard that makes that true is classifyGraphQLErrors
+// rejecting any partial payload, not the schema's non-null fields: an IssueConnection
+// node is itself nullable, so a field error nulls the whole node rather than the
+// field. Were that guard relaxed, a null node would decode to a zero-valued issue and
+// this pair is what keeps it from reading as ready.
 type Issue struct {
 	Number             int             `json:"number"`
 	Title              string          `json:"title"`
@@ -103,7 +116,59 @@ type Issue struct {
 	SubIssuesTruncated bool            `json:"subIssuesTruncated"`
 	SubIssuesTotal     int             `json:"subIssuesTotal"`
 	SubIssuesCompleted int             `json:"subIssuesCompleted"`
+	BlockedByState     SeamState       `json:"blockedByState"`
+	SubIssueGapState   SeamState       `json:"subIssueGapState"`
 	Milestone          *MilestoneRef   `json:"milestone,omitempty"`
+}
+
+// SeamState says whether a seam — an input a readiness verdict rests on — could be
+// evaluated for one issue. The zero value is SeamAvailable so a backend that reads
+// every seam states nothing, and so the polarity matches the truncation flags beside
+// it, where the zero value likewise means "nothing wrong". A backend that cannot read
+// a seam must say so: the whole point is that its silence would otherwise be
+// indistinguishable from a clear result.
+//
+// The distinction between the two failure states is what keeps the reduction usable
+// on a forge missing a seam entirely. SeamUnavailable is a fault — the concept exists
+// here and this read did not get it — so readiness cannot be confirmed. SeamNotApplicable
+// is not a fault: the forge has no such relationship at all, nothing is missing, and
+// the verdict is complete without it. Collapsing the two would force a choice between
+// reporting every issue unconfirmable forever and reinstating the false-ready.
+// It is a string rather than an integer enum so the name is the wire contract:
+// the tool's output schema is inferred from this type, and a caller reading
+// "unavailable" needs no ordinal table to interpret it.
+type SeamState string
+
+const (
+	// SeamAvailable means the seam was read successfully. It is also what the empty
+	// zero value means — see MarshalJSON.
+	SeamAvailable SeamState = "available"
+	// SeamUnavailable means the seam exists on this forge but this read could not
+	// obtain it, so an empty result proves nothing.
+	SeamUnavailable SeamState = "unavailable"
+	// SeamNotApplicable means the forge carries no such relationship, so nothing is
+	// missing and the verdict is complete without it.
+	SeamNotApplicable SeamState = "notApplicable"
+)
+
+// MarshalJSON renders the unset zero value as SeamAvailable so a producer that reads
+// every seam states nothing and still serializes honestly. Every comparison in the
+// reductions is therefore against the two failure states, never for SeamAvailable —
+// testing for it would miss the zero value and silently treat a read seam as unread.
+func (s SeamState) MarshalJSON() ([]byte, error) {
+	if s == "" {
+		s = SeamAvailable
+	}
+	return json.Marshal(string(s))
+}
+
+// String renders the seam state, normalizing the zero value the way MarshalJSON does
+// so a test failure message names the state rather than showing an empty string.
+func (s SeamState) String() string {
+	if s == "" {
+		return string(SeamAvailable)
+	}
+	return string(s)
 }
 
 // DependencyRef is one native dependency edge in either direction: the referenced

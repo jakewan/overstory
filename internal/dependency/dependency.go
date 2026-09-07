@@ -117,7 +117,16 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		// open-child gap is authoritative even when the windowed SubIssues list is
 		// empty. It is an upper bound that can read one high after a not-planned
 		// closure — erring toward over-reporting the gate, never toward false-ready.
-		subGate := is.SubIssuesTotal-is.SubIssuesCompleted > 0
+		// The gap witnesses a gate only where the forge carries the relationship at
+		// all: where it does not, the zero is the absence of a concept rather than the
+		// absence of children. An unreadable seam needs no test here — its zero cannot
+		// clear the issue, because the provisional arm below catches it first.
+		subGate := is.SubIssueGapState != github.SeamNotApplicable &&
+			is.SubIssuesTotal-is.SubIssuesCompleted > 0
+		// A seam the backend could not read leaves readiness unconfirmable for the
+		// same reason a capped edge list does — an empty result proves nothing. A seam
+		// the forge does not carry is not a fault and withholds nothing.
+		unevaluable := seamWithholds(is.BlockedByState) || seamWithholds(is.SubIssueGapState)
 
 		item := Issue{
 			Number:             is.Number,
@@ -134,9 +143,10 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		case len(blockedBy) > 0 || subGate:
 			facts.BlockedCount++
 			facts.Blocked = append(facts.Blocked, item)
-		case is.BlockedByTruncated:
-			// Appears unblocked, but a capped edge list may hide an open blocker, so
-			// readiness cannot be confirmed. Not ready, not a gate.
+		case is.BlockedByTruncated || unevaluable:
+			// Appears unblocked, but a capped edge list may hide an open blocker and an
+			// unread seam may hide anything at all, so readiness cannot be confirmed.
+			// Not ready, not a gate.
 			facts.ProvisionalCount++
 		default:
 			facts.ReadyCount++
@@ -225,6 +235,21 @@ func (f Facts) Classification() Classification {
 		Gates:            gates,
 		GatesTruncated:   f.GatesTruncated,
 		Limit:            f.Limit,
+	}
+}
+
+// seamWithholds reports whether a seam state leaves a readiness verdict unconfirmed.
+// It enumerates the states that leave a verdict standing rather than the states that
+// withhold, so a state added later fails safe: an unrecognized one lands in
+// provisional rather than falling through to ready, which is the classification this
+// package exists to keep honest. The empty string is the unset zero value, which
+// means available.
+func seamWithholds(s github.SeamState) bool {
+	switch s {
+	case "", github.SeamAvailable, github.SeamNotApplicable:
+		return false
+	default:
+		return true
 	}
 }
 
