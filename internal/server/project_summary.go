@@ -119,7 +119,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 		// The classification-only projection: recommendations already ships every
 		// candidate's raw blocked-by/blocking edges, so the summary adds the graph-level
 		// ready/blocked split and the gate set, not a second copy of the edges.
-		dependencies := dependency.Reduce(issues, totalOpen, in.Limit).Classification()
+		dependencies := dependency.Reduce(issues, totalOpen, in.Limit, fetcher.Capabilities()).Classification()
 
 		facts := summary.Facts{
 			Repo:        ownerRepo,

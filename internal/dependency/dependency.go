@@ -62,6 +62,20 @@ type Facts struct {
 	Blocked          []Issue `json:"blocked"`
 	BlockedTruncated bool    `json:"blockedTruncated"`
 	Limit            int     `json:"limit"`
+	// Seams says which inputs the readiness verdict rests on and whether this forge
+	// carries each, so a caller renders "readiness here rests on blocked-by edges
+	// alone" from a stated fact rather than inferring it from a population of zeros.
+	Seams SeamReport `json:"seams"`
+}
+
+// SeamReport is the forge-level state of each input a readiness verdict rests on.
+// It is stated once for the whole block because a forge either carries a
+// relationship or does not — unlike the per-issue states, which record what a single
+// read obtained. A seam reported notApplicable here is why an issue can be ready with
+// that input unexamined.
+type SeamReport struct {
+	BlockedBy   github.SeamState `json:"blockedBy"`
+	SubIssueGap github.SeamState `json:"subIssueGap"`
 }
 
 // Issue is one open issue reduced to its identifying facts and its authoritative
@@ -100,7 +114,7 @@ type Issue struct {
 // a truncated blocked-by list is provisional, not ready — the truncation contract
 // that keeps a capped edge list from reading as readiness. Everything else is
 // ready. A gate is a ready issue that blocks open downstream work.
-func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
+func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Capabilities) Facts {
 	facts := Facts{
 		OpenIssueCount: totalOpen,
 		FetchedCount:   len(issues),
@@ -108,9 +122,22 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int) Facts {
 		Gates:          make([]Issue, 0),
 		Blocked:        make([]Issue, 0),
 		Limit:          listLimit,
+		Seams: SeamReport{
+			BlockedBy:   seamForCapability(caps.BlockedByEdges),
+			SubIssueGap: seamForCapability(caps.SubIssueHierarchy),
+		},
 	}
 
 	for _, is := range issues {
+		// The forge-level fact wins over the per-issue one: where the relationship does
+		// not exist here, no read of it can have failed, so a per-issue unavailable
+		// would be a contradiction rather than a second opinion.
+		if !caps.BlockedByEdges {
+			is.BlockedByState = github.SeamNotApplicable
+		}
+		if !caps.SubIssueHierarchy {
+			is.SubIssueGapState = github.SeamNotApplicable
+		}
 		blockedBy := reduce.OpenDependencyNumbers(is.BlockedBy)
 		blocking := reduce.OpenDependencyNumbers(is.Blocking)
 		// The sub-issue summary counts every child (all repos, never capped), so the
@@ -196,6 +223,10 @@ type Classification struct {
 	Gates            []Gate `json:"gates"`
 	GatesTruncated   bool   `json:"gatesTruncated"`
 	Limit            int    `json:"limit"`
+	// Seams travels with the classification for the same reason it travels with the
+	// facts: a ready count means something different where a seam has no carrier, and
+	// a caller reading only this projection would otherwise have no way to know.
+	Seams SeamReport `json:"seams"`
 }
 
 // Gate is one do-first root in the summary projection: an issue that is itself
@@ -235,7 +266,19 @@ func (f Facts) Classification() Classification {
 		Gates:            gates,
 		GatesTruncated:   f.GatesTruncated,
 		Limit:            f.Limit,
+		Seams:            f.Seams,
 	}
+}
+
+// seamForCapability maps a forge's carriage of a relationship to the seam state the
+// block reports for it. A carried seam reports available at block level even where an
+// individual read of it failed: the per-issue state carries that, and flattening the
+// two would let one unreadable issue misreport the whole forge.
+func seamForCapability(carried bool) github.SeamState {
+	if carried {
+		return github.SeamAvailable
+	}
+	return github.SeamNotApplicable
 }
 
 // seamWithholds reports whether a seam state leaves a readiness verdict unconfirmed.

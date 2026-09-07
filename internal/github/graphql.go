@@ -298,6 +298,15 @@ func NewGraphQLFetcher() *GraphQLFetcher {
 	}
 }
 
+// Capabilities reports that GitHub carries both dependency relationships: the issue
+// query selects blockedBy/blocking and the subIssues connection with its summary, so
+// every seam a readiness verdict rests on has a carrier here. A backend speaking a
+// forge without one of them says so instead, and the reduction reports the verdict as
+// complete-without-it rather than as unconfirmed.
+func (f *GraphQLFetcher) Capabilities() Capabilities {
+	return Capabilities{BlockedByEdges: true, SubIssueHierarchy: true}
+}
+
 // ListOpenIssues paginates the full open-issue set, stopping when the connection is
 // exhausted, the fetchLimit safety backstop is reached, or a defensive guard trips (a
 // cursor that fails to advance), and reports the repository's exact open count via

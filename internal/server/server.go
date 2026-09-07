@@ -268,7 +268,7 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		quality := backlog.ReduceQuality(result.Issues, result.TotalOpen, mapQuality(cfg.Quality), in.Limit, n)
 		overlap := backlog.ReduceOverlap(result.Issues, result.TotalOpen, backlog.OverlapParams{TitleThreshold: cfg.Overlap.TitleSimilarityThreshold}, in.Limit)
 		crossref := backlog.ReduceCrossRef(result.Issues, result.TotalOpen, in.Limit)
-		dependencies := dependency.Reduce(result.Issues, result.TotalOpen, in.Limit)
+		dependencies := dependency.Reduce(result.Issues, result.TotalOpen, in.Limit, fetcher.Capabilities())
 
 		facts := backlog.Facts{
 			Repo:        ownerRepo,

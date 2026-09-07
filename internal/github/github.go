@@ -151,6 +151,25 @@ const (
 	SeamNotApplicable SeamState = "notApplicable"
 )
 
+// Capabilities says which dependency relationships a backend's forge carries at all.
+// It is the forge-level companion to the per-issue seam states: this answers "can
+// this ever be read here", the per-issue state answers "was it read this time". The
+// two need separating because they fail differently — an uncarried relationship
+// withholds nothing and leaves a verdict complete, while an unread one leaves it
+// unconfirmable.
+//
+// The fields are positive ("carries this") so the zero value claims nothing, which
+// makes a backend that forgets to answer fail toward reporting less rather than
+// toward false confidence.
+type Capabilities struct {
+	// BlockedByEdges is whether the forge has issue-to-issue blocking relationships.
+	BlockedByEdges bool
+	// SubIssueHierarchy is whether the forge has parent/child issues. A forge without
+	// them is not missing data — it has no such concept, so a readiness verdict there
+	// rests on the blocking edges alone and is complete.
+	SubIssueHierarchy bool
+}
+
 // MarshalJSON renders the unset zero value as SeamAvailable so a producer that reads
 // every seam states nothing and still serializes honestly. Every comparison in the
 // reductions is therefore against the two failure states, never for SeamAvailable —
@@ -412,6 +431,12 @@ type IssueEventsResult struct {
 // REST-sourced fetch, since the events stream has no GraphQL equivalent the other
 // shapes use.
 type Fetcher interface {
+	// Capabilities reports which dependency relationships this backend's forge
+	// carries at all. It is on the interface rather than in operator configuration so
+	// a second backend cannot ship without stating its position — the compiler asks
+	// the question, and a fact about an API stays with the code that speaks it rather
+	// than in a file nobody recomputes.
+	Capabilities() Capabilities
 	ListOpenIssues(ctx context.Context, ownerRepo string, fetchLimit int) (IssueListResult, error)
 	ListOpenIssuesWithLabel(ctx context.Context, ownerRepo, label string, fetchLimit int) (IssueListResult, error)
 	ListIssuesUpdatedSince(ctx context.Context, ownerRepo string, since time.Time, fetchLimit int) (IssueActivityResult, error)

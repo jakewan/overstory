@@ -71,6 +71,10 @@ type fakeFetcher struct {
 	eventsErr    error
 	eventsByRepo map[string]eventsCanned
 	eventsCalls  *atomic.Int64
+	// capabilities drives what the fake claims its forge carries. Its zero value is
+	// read as the GitHub-shaped forge (see Capabilities below) so a test states this
+	// only when the forge's shape is what it exercises.
+	capabilities github.Capabilities
 	// Secondary-fetch call counters for projection's fetch-skip tests. Each is a
 	// pointer for the same copy-by-value reason as authoredCalls: fakeFetcher is
 	// held in the interface by value and copied on every value-receiver call, so a
@@ -103,6 +107,17 @@ type authoredCanned struct {
 func withBudget(r github.AuthoredActivityResult, remaining int, reset time.Time) github.AuthoredActivityResult {
 	r.RateLimit = &github.RateLimit{Remaining: remaining, ResetAt: reset}
 	return r
+}
+
+// Capabilities reads an unset capabilities field as the GitHub-shaped forge — both
+// relationships carried — so the many tests that predate the seam contract keep
+// describing a backend that reads everything. A test exercising a forge that carries
+// less sets the field, and any non-zero value is honored as written.
+func (f fakeFetcher) Capabilities() github.Capabilities {
+	if f.capabilities == (github.Capabilities{}) {
+		return github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: true}
+	}
+	return f.capabilities
 }
 
 func (f fakeFetcher) ListOpenIssues(_ context.Context, _ string, _ int) (github.IssueListResult, error) {
@@ -500,6 +515,59 @@ func TestBacklogReviewDependencyNotApplicableSeamStaysReady(t *testing.T) {
 	}
 	if dep.ProvisionalCount != 0 {
 		t.Errorf("ProvisionalCount = %d, want 0", dep.ProvisionalCount)
+	}
+}
+
+// TestBacklogReviewDependencyReportsSeamsCarried pins the forge-level half of the
+// contract: the block states which seams the backend carries at all, so a caller
+// renders "readiness rests on blocked-by edges alone" from the facts rather than
+// inferring it from an absence. The GitHub fetcher carries both, which is the one
+// part of the seam contract with a live producer today.
+func TestBacklogReviewDependencyReportsSeamsCarried(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(1, daysAgo(1))},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available", dep.Seams.BlockedBy)
+	}
+	if dep.Seams.SubIssueGap != github.SeamAvailable {
+		t.Errorf("Seams.SubIssueGap = %v, want available", dep.Seams.SubIssueGap)
+	}
+}
+
+// TestBacklogReviewDependencySeamNotCarriedByForge pins the forge-level fact
+// overriding the per-issue one: where the backend declares it carries no sub-issue
+// hierarchy, every issue's gap reads notApplicable regardless of what the fetched
+// issue carried, and the block says so once rather than the caller deducing it from
+// a population of zeros.
+func TestBacklogReviewDependencySeamNotCarriedByForge(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{
+		result:       github.IssueListResult{Issues: []github.Issue{issue(1, daysAgo(1))}, TotalOpen: 1},
+		capabilities: github.Capabilities{BlockedByEdges: true, SubIssueHierarchy: false},
+	}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.Seams.SubIssueGap != github.SeamNotApplicable {
+		t.Errorf("Seams.SubIssueGap = %v, want notApplicable (the forge carries no hierarchy)", dep.Seams.SubIssueGap)
+	}
+	if dep.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available", dep.Seams.BlockedBy)
+	}
+	if dep.ReadyCount != 1 {
+		t.Errorf("ReadyCount = %d, want 1 (an uncarried seam withholds nothing)", dep.ReadyCount)
 	}
 }
 
