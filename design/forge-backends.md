@@ -22,7 +22,10 @@ The problem is recorded in #133.
 - **The tool surface and the shape of the facts do not change.** A caller does not branch on which forge produced a response, except where a fact states that an input was unavailable or does not apply.
 - **The server reduces; the caller renders.**
 - **An input that was not read is never reported as read and found clear.** `SeamState` and `Capabilities` already carry this for the readiness inputs. Every other input a backend might fail to supply needs the same treatment (see [Inputs without an availability signal](#inputs-without-an-availability-signal)).
-- **Targeting stays explicit.** There is no ambient default repository and no ambient default forge.
+- **Targeting stays explicit, and a repository's forge is never ambient.**
+  - There is no default repository.
+  - A repository's forge is never taken from the environment or from a client's configuration, such as a CLI's default host.
+  - Today a bare `owner/repo` means GitHub, as a fixed rule of the address. Whether a bare address keeps that meaning once a second forge exists is part of [the identity question](#where-the-marker-lives-open).
 - **The server is read-only against every forge.** It issues reads; it creates, edits, closes and labels nothing.
 - **A credential never appears in a log or a returned error.**
 - **A credential is sent only to the host that issued it, including across redirects.** A second backend gets its own authentication path rather than a redirected GitHub one. Today's token source runs `gh auth token` without naming a host, so binding each credential to its host is new work for both backends.
@@ -96,7 +99,12 @@ No surveyed tool puts a host field on a per-repository entry beside a bare slug.
 
 Credentials are keyed by host almost everywhere: per-host entries in the GitHub and GitLab CLIs' configuration, Backstage's per-host integrations, Renovate's host rules. Environment-variable tokens are where that binding gets bypassed. The GitHub CLI guards against it: `GH_TOKEN` applies only to `github.com` and `ghe.com` hosts, and GitHub Enterprise Server hosts take a separate variable. `tea` does not: its environment login always overrides the login matched from the repository's remote.
 
-For the two shapes above, this means the prevailing form is a host-qualified reference that falls back to a default host. That form keeps every existing `owner/repo` key meaning GitHub, but it is also the form an older binary rejects outright. Which shape overstory adopts stays open.
+For the two shapes above, this means the prevailing form is a host-qualified reference where a bare slug falls back to a default host.
+
+- **The fallback would be a fixed rule, not an ambient setting.** Adopted here, it would keep every existing `owner/repo` key meaning GitHub, and it would never be read from the environment (see [Invariants](#invariants-a-second-backend-preserves)).
+- **An older binary rejects it outright.** A host-qualified key is exactly the form such a binary refuses to load.
+
+Which shape Overstory adopts stays open.
 
 ## Backend contract
 
@@ -132,7 +140,13 @@ Every method has a source. The gaps sit at the level of individual fields, below
 ### Open issues
 
 - **Body text.** `body` is raw markdown, and the render endpoints (`/markdown`, `/markdown/raw`) return HTML. So `BodyText`, which is plain text with markdown and template scaffolding stripped, needs a local strategy. The quality reduction's length check measures that text, so a different stripping rule changes what the check means. The strategy is open.
-- **Open total.** The specification does not declare `X-Total-Count` on the issue list. It does declare it on the comment, milestone, review and timeline lists, and Codeberg sends it on the issue list regardless. The repository object's `open_issues_count` is a candidate source for the open total. Which source is authoritative is to be settled on a dev instance.
+- **Open totals.** `TotalOpen` carries weight in two places: the reductions mark a window truncated when fewer issues were fetched than it states, and the critical-path block treats a labeled fetch as complete only when the two are equal.
+  - **The specification declares no total on the issue list.** It declares `X-Total-Count` on the comment, milestone, review and timeline lists, but not on the issue list.
+  - **Codeberg sends one anyway.** There it reflects the query's filters, the label filter included (observed on `16.0.0-dev-741`).
+  - **The repository object's `open_issues_count` covers the unfiltered case only.** It is a candidate for that total, but it cannot stand in for a labeled fetch's total.
+  - **A missing total must not be replaced by the page length.** A backend without a filtered total that returned the page length as `TotalOpen` would clear a gate from an incomplete set, so it needs an explicit unconfirmed state instead.
+
+  Which sources are authoritative is to be settled on a dev instance.
 - **Dependency edges.**
   - The dependency and blocks responses return `Issue` objects carrying `repository.full_name`, so cross-repository edges can be dropped as they are today.
   - Those responses are declared without paging headers, so how a capped edge list is detected is open.
@@ -157,7 +171,7 @@ The milestone list declares `X-Total-Count` for the open total.
 
 - **Direct fields.** `draft`, `head.ref` and `updated_at` map directly.
 - **CI state.** It comes from the combined commit status. Its vocabulary is `pending`, `success`, `error`, `failure` and `warning` on `v15.0.8`, with `skipped` added on `v16.0.4`. That is not GitHub's check-rollup vocabulary, so `CIStatus` needs an explicit mapping, and the set it maps from varies by version.
-- **Open total.** The pull-request list does not declare `X-Total-Count`.
+- **Open total.** The pull-request list does not declare `X-Total-Count`, yet the summary marks the open-PR list truncated when fewer were fetched than `TotalOpen` states. The repository object's `open_pr_counter` is the candidate source. Without a confirmed total, the list needs an explicit unconfirmed state rather than a page length passed off as the total.
 
 ### Authored activity
 
@@ -195,10 +209,11 @@ The readiness inputs have `SeamState`. These inputs have no availability signal:
 
 - `Blocking` and `ReferencedBy`, which carry truncation flags only
 - `LastActivityAt` and `BodyText`, which carry neither
+- `TotalOpen` on the issue and pull-request results, where a page length standing in for a missing total reads as a complete window
 - every `AuthoredActivityResult` count
 - `IssueEvent.ViaAutomation`, where `false` reads as "not automation"
 
-A backend that cannot supply one of these yields a silent zero or `false`, the same failure the readiness seams exist to prevent. Each needs an availability signal before a backend that can withhold it ships.
+A backend that cannot supply one of these yields a silent zero, `false`, or complete-looking total, the same failure the readiness seams exist to prevent. Each needs an availability signal before a backend that can withhold it ships.
 
 ## Authentication
 
@@ -225,6 +240,7 @@ A backend that cannot supply one of these yields a silent zero or `false`, the s
   - commit-email attribution, including migrated no-reply addresses
   - `closed_at` after a reopen
   - the per-repository dependency switch
+  - which open totals are authoritative: the issue list's `X-Total-Count` under filters, `open_issues_count`, and `open_pr_counter`
   - whether migrating a repository from GitHub preserves issue and pull-request numbers
 - **Tool-level tests need no backend-specific fake.** `fakeFetcher` returns canned results and ignores the repository except in its per-repository batch maps.
 
@@ -265,10 +281,11 @@ Hits that concern only where this repository itself is hosted, such as its secur
 
 ## Open questions
 
-- **Identity:** a field or a host-qualified key, and whether the marker or the archived signal is primary.
+- **Identity:** a field or a host-qualified key, whether a bare `owner/repo` keeps meaning GitHub, and whether the marker or the archived signal is primary.
 - **Credentials:** the token source for a second backend, and whether HTTPS is required.
 - **Versions:** which Forgejo release lines are supported, and for how long.
 - **Body text:** how `BodyText` is produced from raw markdown.
+- **Open totals:** which sources are authoritative, and how a result without a confirmed total says so.
 - **Package layout:** where the domain types live.
 - **Commit attribution:** how commit emails map to accounts, including migrated history.
 - **Migration numbering:** whether migrating a repository preserves issue and pull-request numbers. Issue references such as #133 in this repository's history depend on it.
