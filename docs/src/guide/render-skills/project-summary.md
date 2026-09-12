@@ -156,7 +156,7 @@ This block is **classification-only** — the per-issue blocked list and raw `bl
 
 ### Rate-limit note (conditional)
 
-The `rateLimit` block is present only when the GraphQL points budget ran low during the fetch (`omitempty` — it is usually absent). When present, render a short caution: `remaining` points left, resets at `resetAt`. Absent means no concern — say nothing. (A *hard* rate-limit failure surfaces as a tool-call error in Step 1, not as this block.)
+`rateLimit` is the budget the fetches reported: `remaining` points, and the `resetAt` instant when they refill. It appears on nearly every response, so its presence alone is not a warning. Render a short caution only when it affects what the reader does next: `remaining` is `0`, which typically marks a secondary fetch that was throttled (that block also reads `unavailable: rate_limited`), or `remaining` is low enough that running again soon would likely be throttled. Otherwise say nothing. A missing `rateLimit` means no budget was reported, which is unknown rather than all-clear, and also calls for nothing. (A *hard* rate-limit failure on the primary open-issue fetch surfaces as a tool-call error, not as this block.)
 
 ## Step 3: What's Next
 
