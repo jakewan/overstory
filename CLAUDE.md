@@ -94,6 +94,7 @@ Go authoring conventions are in `.claude/rules/go-practices.md` (loaded when Cla
 - `SECURITY.md` — reporting channel, plus the credential, supply-chain, and data-handling claims. It asserts how the server treats the `gh`-sourced token, so a change to `internal/github/token.go` or the request path should be checked against it; it also asserts what CI scans, pins, and verifies, so a change to the workflows, `mise.lock`, or the Dependabot config should be checked against it too.
 - `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1, with conduct reports routed the same way security reports are.
 - `.github/copilot-instructions.md` — review guidance for GitHub Copilot.
+- `design/forge-backends.md` — a non-normative design for serving repositories on a second forge (Forgejo). Nothing in it is built: it records intended direction and open questions, not guidance to act on. Settled parts graduate into the key design decisions above as they land.
 
 [bdd]: https://en.wikipedia.org/wiki/Behavior-driven_development
 [tdd]: https://en.wikipedia.org/wiki/Test-driven_development
