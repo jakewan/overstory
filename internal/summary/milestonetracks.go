@@ -12,9 +12,9 @@ import (
 
 // MilestoneTracksFacts is the within-milestone track block: each open milestone's
 // parsed track structure, the priority ordering operators encode in the milestone
-// description. Available is false only when the milestone fetch failed; the block
-// then degrades rather than failing the whole call, and Unavailable names the
-// reason. OpenMilestones is the repository's exact open-milestone count and
+// description. Available is false only when the milestone fetch failed and the block
+// degraded rather than failing the whole call (a credential failure fails the call
+// instead), and Unavailable names the reason. OpenMilestones is the repository's exact open-milestone count and
 // FetchTruncated marks a milestone fetch that did not cover them all, so a capped
 // fetch never silently omits milestones. Repo, GeneratedAt, RateLimit, and SizeBound
 // are stamped by the handler, not the reduction (the reduction is a pure function of
