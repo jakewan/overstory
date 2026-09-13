@@ -541,7 +541,12 @@ var (
 	// ErrAuthorNotFound means the requested author login does not resolve to a
 	// GitHub user, so every authored-activity count would be a meaningless zero,
 	// indistinguishable from a real-but-inactive user — surfaced as an error
-	// rather than coerced to zero.
+	// rather than coerced to zero. GitHub answers an organization login the same
+	// way (observed), and may also answer so for an account that exists but the
+	// token cannot see, such as a managed user outside its enterprise or a
+	// suspended account — unverified, for want of such a login to probe. If it
+	// does, the caller is told a real account is not a user, but no count is ever
+	// wrong: the call fails rather than returning numbers.
 	ErrAuthorNotFound = errors.New("author login not found")
 	// ErrRateLimited means the GitHub API rejected the request for rate limiting.
 	ErrRateLimited = errors.New("GitHub API rate limit exceeded")
