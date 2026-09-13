@@ -113,25 +113,39 @@ func TestAuthoredActivityMapsSixCounts(t *testing.T) {
 	}
 }
 
+// TestAuthoredActivityUnknownAuthorErrors pins that an unknown login — not a
+// real-but-inactive user — surfaces as ErrAuthorNotFound naming the login. GitHub
+// answers one with a null user beside a NOT_FOUND error whose path is user, and the
+// searches still return zero counts; the null user without an error keeps the
+// decode-side check covered as well.
 func TestAuthoredActivityUnknownAuthorErrors(t *testing.T) {
-	// user resolves null — an unknown login, not a real-but-inactive user.
-	search := `{"data":{"user":null,"s0":{"issueCount":0},"s1":{"issueCount":0},"s2":{"issueCount":0},"s3":{"issueCount":0},"s4":{"issueCount":0}}}`
-	srv, requests := authoredServer(t, search, "")
+	counts := `"s0":{"issueCount":0},"s1":{"issueCount":0},"s2":{"issueCount":0},"s3":{"issueCount":0},"s4":{"issueCount":0}`
+	for _, tc := range []struct {
+		name   string
+		search string
+	}{
+		{"NOT_FOUND at the user path", `{"data":{"user":null,` + counts + `},"errors":[{"type":"NOT_FOUND","path":["user"],"message":"Could not resolve to a User with the login of 'nope'."}]}`},
+		{"null user without an error", `{"data":{"user":null,` + counts + `}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, requests := authoredServer(t, tc.search, "")
 
-	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
-	until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
-	_, err := fetcherTo(srv.URL, "tok").AuthoredActivity(context.Background(), "acme/widgets", "nope", since, until)
-	if !errors.Is(err, ErrAuthorNotFound) {
-		t.Fatalf("err = %v, want ErrAuthorNotFound", err)
-	}
-	if !strings.Contains(err.Error(), "nope") {
-		t.Errorf("error %q does not name the unresolved login", err)
-	}
-	// The commit-history request must be skipped when the author doesn't resolve —
-	// there is no id to filter on. Assert the request count directly rather than
-	// inferring it from the error type.
-	if *requests != 1 {
-		t.Errorf("made %d requests, want 1 (second request must be skipped for an unknown author)", *requests)
+			since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+			until := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+			_, err := fetcherTo(srv.URL, "tok").AuthoredActivity(context.Background(), "acme/widgets", "nope", since, until)
+			if !errors.Is(err, ErrAuthorNotFound) {
+				t.Fatalf("err = %v, want ErrAuthorNotFound", err)
+			}
+			if !strings.Contains(err.Error(), "nope") {
+				t.Errorf("error %q does not name the unresolved login", err)
+			}
+			// The commit-history request must be skipped when the author doesn't
+			// resolve — there is no id to filter on. Assert the request count directly
+			// rather than inferring it from the error type.
+			if *requests != 1 {
+				t.Errorf("made %d requests, want 1 (second request must be skipped for an unknown author)", *requests)
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -809,6 +810,11 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 		"q0":     qs[0], "q1": qs[1], "q2": qs[2], "q3": qs[3], "q4": qs[4],
 	}
 	data, budget1, err := f.doRaw(ctx, authoredSearchQuery, vars1, owner, name)
+	if errors.Is(err, ErrAuthorNotFound) {
+		// The classifier knows only that the user lookup missed; name the login here,
+		// as the null-user check below does.
+		return AuthoredActivityResult{}, fmt.Errorf("%q in %s/%s: %w", author, owner, name, ErrAuthorNotFound)
+	}
 	if err != nil {
 		return AuthoredActivityResult{}, err
 	}
@@ -1214,6 +1220,15 @@ func classifyGraphQLErrors(errs []gqlError, hdr http.Header, budget *rateLimitNo
 	for _, e := range errs {
 		switch e.Type {
 		case "NOT_FOUND":
+			// GitHub names the lookup that missed in the error's path: user for the
+			// authored query's login, repository for the repository-rooted queries
+			// (observed against the live API). Only a user path is an author miss; any
+			// other NOT_FOUND keeps meaning the repository. Were GitHub to stop sending
+			// path, an unknown login would read as a missing repository again — the live
+			// schema test's unknown-login call is what would notice.
+			if len(e.Path) > 0 && e.Path[0] == "user" {
+				return fmt.Errorf("%s/%s: %w", owner, name, ErrAuthorNotFound)
+			}
 			return fmt.Errorf("%s/%s: %w", owner, name, ErrRepoNotFound)
 		case "RATE_LIMITED":
 			rle := parseRateLimited(hdr)
@@ -1300,9 +1315,12 @@ type commitHistoryData struct {
 	} `json:"defaultBranchRef"`
 }
 
+// gqlError decodes one entry of a GraphQL errors array. Path is []any because a
+// GraphQL path mixes field names with list indices.
 type gqlError struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	Path    []any  `json:"path"`
 }
 
 // issueEventNode decodes one REST issue-event into the flattened IssueEvent.

@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -52,5 +53,14 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 		t.Errorf("ListIssueEvents against %s: %v", repo, err)
 	} else if len(res.Events) > 0 && res.Events[0].EventID == 0 {
 		t.Errorf("ListIssueEvents against %s decoded a zero event id — the REST payload shape may have drifted", repo)
+	}
+	// GitHub reports an unknown login as a NOT_FOUND error beside a null user, and
+	// which of the two the classifier meets first decides whether the caller hears
+	// about the author or about a missing repository — a shape only the real API can
+	// confirm. The login is longer than any registered one is expected to be; were an
+	// account ever to hold it, the call would return counts and this would fail rather
+	// than pass silently.
+	if _, err := f.AuthoredActivity(ctx, repo, "overstory-live-test-login-longer-than-github-allows", time.Now().AddDate(0, 0, -30), time.Now()); !errors.Is(err, ErrAuthorNotFound) {
+		t.Errorf("AuthoredActivity against %s with an unknown login: err = %v, want ErrAuthorNotFound", repo, err)
 	}
 }
