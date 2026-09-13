@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,131 @@ type staticToken struct {
 }
 
 func (s staticToken) Token(_ context.Context) (string, error) { return s.token, s.err }
+
+func (staticToken) Invalidate(string) {}
+
+// scriptedToken is a TokenSource whose token changes only when the one it hands out
+// is invalidated, stepping through tokens in order and staying on the last. When
+// askErr is set, every ask after an invalidation returns it instead. It records each
+// invalidated token so a test can assert a rejection reached the source.
+type scriptedToken struct {
+	mu          sync.Mutex
+	tokens      []string
+	next        int
+	askErr      error
+	invalidated []string
+}
+
+func (s *scriptedToken) Token(_ context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.askErr != nil && len(s.invalidated) > 0 {
+		return "", s.askErr
+	}
+	return s.tokens[s.next], nil
+}
+
+func (s *scriptedToken) Invalidate(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.invalidated = append(s.invalidated, token)
+	if token == s.tokens[s.next] && s.next < len(s.tokens)-1 {
+		s.next++
+	}
+}
+
+// TestFetcherRetriesOnceWithReplacementToken pins what a rejected token (401) does on
+// both request paths, which build their requests separately. The request is retried
+// once, and only with a token the source hands out in place of the rejected one; a
+// source with nothing different to offer, or one that fails when asked again, lets
+// the failure stand. No outcome names the repository, since none is the cause.
+func TestFetcherRetriesOnceWithReplacementToken(t *testing.T) {
+	const emptyIssues = `{"data":{"repository":{"issues":{"totalCount":0,"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}}`
+	paths := []struct {
+		name    string
+		body    string
+		graphQL bool
+		fetch   func(url string, src TokenSource) error
+	}{
+		{"graphql", emptyIssues, true, func(url string, src TokenSource) error {
+			_, err := (&GraphQLFetcher{endpoint: url, tokens: src, client: &http.Client{}}).ListOpenIssues(context.Background(), "acme/widgets", 100)
+			return err
+		}},
+		{"rest", `[]`, false, func(url string, src TokenSource) error {
+			_, err := (&GraphQLFetcher{restEndpoint: url, tokens: src, client: &http.Client{}}).ListIssueEvents(context.Background(), "acme/widgets", time.Now().Add(-time.Hour), 100)
+			return err
+		}},
+	}
+	cases := []struct {
+		name        string
+		tokens      []string
+		askErr      error
+		accepted    string
+		wantErr     error
+		wantBearers []string
+	}{
+		{name: "replacement token", tokens: []string{"stale", "fresh"}, accepted: "fresh", wantBearers: []string{"stale", "fresh"}},
+		{name: "same token again", tokens: []string{"stale"}, accepted: "fresh", wantErr: ErrGHNotAuthed, wantBearers: []string{"stale"}},
+		{name: "replacement also rejected", tokens: []string{"stale", "fresh"}, wantErr: ErrGHNotAuthed, wantBearers: []string{"stale", "fresh"}},
+		{name: "asking again fails", tokens: []string{"stale"}, askErr: ErrGHNotFound, accepted: "fresh", wantErr: ErrGHNotFound, wantBearers: []string{"stale"}},
+	}
+	for _, p := range paths {
+		for _, tc := range cases {
+			t.Run(p.name+"/"+tc.name, func(t *testing.T) {
+				var (
+					mu      sync.Mutex
+					bearers []string
+				)
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "bearer ")
+					mu.Lock()
+					bearers = append(bearers, bearer)
+					mu.Unlock()
+					if p.graphQL {
+						var payload struct {
+							Query string `json:"query"`
+						}
+						if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Query == "" {
+							t.Errorf("request with token %q carried no query (decode error %v)", bearer, err)
+						}
+					}
+					if tc.accepted == "" || bearer != tc.accepted {
+						w.WriteHeader(http.StatusUnauthorized)
+						return
+					}
+					if _, err := io.WriteString(w, p.body); err != nil {
+						t.Errorf("write response: %v", err)
+					}
+				}))
+				t.Cleanup(srv.Close)
+				src := &scriptedToken{tokens: tc.tokens, askErr: tc.askErr}
+
+				err := p.fetch(srv.URL, src)
+
+				if tc.wantErr == nil {
+					if err != nil {
+						t.Fatalf("fetch error = %v, want nil", err)
+					}
+				} else {
+					if !errors.Is(err, tc.wantErr) {
+						t.Fatalf("fetch error = %v, want %v", err, tc.wantErr)
+					}
+					if strings.Contains(err.Error(), "acme/widgets") {
+						t.Errorf("error %q names the repository", err)
+					}
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if strings.Join(bearers, ",") != strings.Join(tc.wantBearers, ",") {
+					t.Errorf("tokens sent = %v, want %v", bearers, tc.wantBearers)
+				}
+				if len(src.invalidated) == 0 || src.invalidated[0] != "stale" {
+					t.Errorf("invalidated = %v, want the rejected token %q first", src.invalidated, "stale")
+				}
+			})
+		}
+	}
+}
 
 // fetcherTo builds a GraphQLFetcher pointed at a test server with a static
 // token — no real gh, no real network.

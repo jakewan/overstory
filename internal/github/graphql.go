@@ -318,15 +318,11 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 	if err != nil {
 		return IssueListResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return IssueListResult{}, err
-	}
 
 	issues, totalOpen, budget, err := paginateOpenSet(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (issuesConnection, *RateLimit, error) {
-			return f.query(ctx, token, owner, name, first, after)
+			return f.query(ctx, owner, name, first, after)
 		},
 		func(c issuesConnection) ([]issueNode, int, cursorState) {
 			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -349,9 +345,9 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 // queried field name verbatim, so the two agree on every real response. It is a free
 // function, not a method, because Go forbids type parameters on methods; the wrappers
 // stay methods that delegate to it.
-func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, token, query string, vars map[string]any, owner, name, field, subject string) (T, *RateLimit, error) {
+func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, query string, vars map[string]any, owner, name, field, subject string) (T, *RateLimit, error) {
 	var conn T
-	repo, budget, err := f.do(ctx, token, query, vars, owner, name)
+	repo, budget, err := f.do(ctx, query, vars, owner, name)
 	if err != nil {
 		return conn, nil, err
 	}
@@ -369,8 +365,8 @@ func decodeConnection[T any](ctx context.Context, f *GraphQLFetcher, token, quer
 
 // query fetches one page of the open-issue grooming window, decoding the shared
 // spine's raw repository payload into the open-issue connection.
-func (f *GraphQLFetcher) query(ctx context.Context, token, owner, name string, first int, after *string) (issuesConnection, *RateLimit, error) {
-	return decodeConnection[issuesConnection](ctx, f, token, issuesQuery, queryVars(owner, name, first, after), owner, name, "issues", "issues")
+func (f *GraphQLFetcher) query(ctx context.Context, owner, name string, first int, after *string) (issuesConnection, *RateLimit, error) {
+	return decodeConnection[issuesConnection](ctx, f, issuesQuery, queryVars(owner, name, first, after), owner, name, "issues", "issues")
 }
 
 // ListOpenIssuesWithLabel fetches up to fetchLimit open issues carrying the given
@@ -383,15 +379,11 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 	if err != nil {
 		return IssueListResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return IssueListResult{}, err
-	}
 
 	issues, totalOpen, budget, err := paginateOpenSet(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (criticalPathConnection, *RateLimit, error) {
-			return f.queryLabeled(ctx, token, owner, name, label, first, after)
+			return f.queryLabeled(ctx, owner, name, label, first, after)
 		},
 		func(c criticalPathConnection) ([]criticalPathNode, int, cursorState) {
 			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -407,26 +399,26 @@ func (f *GraphQLFetcher) ListOpenIssuesWithLabel(ctx context.Context, ownerRepo,
 // queryLabeled fetches one page of the label-scoped open-issue window, decoding the
 // shared spine's raw repository payload into the lean critical-path connection. The
 // label rides as a variable (not in queryVars, which the unlabeled shapes share).
-func (f *GraphQLFetcher) queryLabeled(ctx context.Context, token, owner, name, label string, first int, after *string) (criticalPathConnection, *RateLimit, error) {
+func (f *GraphQLFetcher) queryLabeled(ctx context.Context, owner, name, label string, first int, after *string) (criticalPathConnection, *RateLimit, error) {
 	vars := map[string]any{"owner": owner, "name": name, "label": label, "first": first}
 	if after != nil {
 		vars["after"] = *after
 	}
-	return decodeConnection[criticalPathConnection](ctx, f, token, criticalPathIssuesQuery, vars, owner, name, "issues", "critical-path issues")
+	return decodeConnection[criticalPathConnection](ctx, f, criticalPathIssuesQuery, vars, owner, name, "issues", "critical-path issues")
 }
 
 // queryActivity fetches one page of the open-and-closed activity window for the
 // trajectory reduction, decoding the shared spine's payload into the lean
 // activity connection.
-func (f *GraphQLFetcher) queryActivity(ctx context.Context, token, owner, name string, first int, after *string) (activityConnection, *RateLimit, error) {
-	return decodeConnection[activityConnection](ctx, f, token, activityQuery, queryVars(owner, name, first, after), owner, name, "issues", "activity")
+func (f *GraphQLFetcher) queryActivity(ctx context.Context, owner, name string, first int, after *string) (activityConnection, *RateLimit, error) {
+	return decodeConnection[activityConnection](ctx, f, activityQuery, queryVars(owner, name, first, after), owner, name, "issues", "activity")
 }
 
 // queryPRActivity fetches one page of the open-and-closed/merged pull-request
 // activity window for the PR-trajectory reduction, decoding the shared spine's
 // payload into the lean PR-activity connection.
-func (f *GraphQLFetcher) queryPRActivity(ctx context.Context, token, owner, name string, first int, after *string) (prActivityConnection, *RateLimit, error) {
-	return decodeConnection[prActivityConnection](ctx, f, token, prActivityQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull-request activity")
+func (f *GraphQLFetcher) queryPRActivity(ctx context.Context, owner, name string, first int, after *string) (prActivityConnection, *RateLimit, error) {
+	return decodeConnection[prActivityConnection](ctx, f, prActivityQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull-request activity")
 }
 
 // queryVars builds the GraphQL variables shared by both fetch shapes; after is
@@ -447,22 +439,25 @@ func queryVars(owner, name string, first int, after *string) map[string]any {
 // into classifyGraphQLErrors so a RATE_LIMITED error can fall back to its resetAt
 // when the response carried no rate headers — the throttle recovery signal the
 // server surfaces.
-func (f *GraphQLFetcher) doRaw(ctx context.Context, token, query string, vars map[string]any, owner, name string) (data json.RawMessage, budget *RateLimit, err error) {
+func (f *GraphQLFetcher) doRaw(ctx context.Context, query string, vars map[string]any, owner, name string) (data json.RawMessage, budget *RateLimit, err error) {
 	payload, merr := json.Marshal(map[string]any{"query": query, "variables": vars})
 	if merr != nil {
 		return nil, nil, fmt.Errorf("encoding GraphQL query: %w", merr)
 	}
-	req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, f.endpoint, bytes.NewReader(payload))
-	if rerr != nil {
-		return nil, nil, fmt.Errorf("building request: %w", rerr)
-	}
-	req.Header.Set("Authorization", "bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", userAgent)
-
-	resp, doErr := f.client.Do(req)
-	if doErr != nil {
-		return nil, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
+	// The body reader is made per attempt, so a retry on a replacement token re-sends
+	// the query rather than an already-drained reader.
+	resp, sendErr := f.send(ctx, owner, name, func(token string) (*http.Request, error) {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodPost, f.endpoint, bytes.NewReader(payload))
+		if rerr != nil {
+			return nil, fmt.Errorf("building request: %w", rerr)
+		}
+		req.Header.Set("Authorization", "bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", userAgent)
+		return req, nil
+	})
+	if sendErr != nil {
+		return nil, nil, sendErr
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil && err == nil {
@@ -504,8 +499,8 @@ func (f *GraphQLFetcher) doRaw(ctx context.Context, token, query string, vars ma
 // data.repository payload plus the rateLimit budget, leaving connection/node
 // decoding to each caller. It is the single home for the null-repository check
 // the repository-rooted fetch shapes share, built on doRaw's request spine.
-func (f *GraphQLFetcher) do(ctx context.Context, token, query string, vars map[string]any, owner, name string) (json.RawMessage, *RateLimit, error) {
-	data, budget, err := f.doRaw(ctx, token, query, vars, owner, name)
+func (f *GraphQLFetcher) do(ctx context.Context, query string, vars map[string]any, owner, name string) (json.RawMessage, *RateLimit, error) {
+	data, budget, err := f.doRaw(ctx, query, vars, owner, name)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -675,14 +670,10 @@ func (f *GraphQLFetcher) ListIssuesUpdatedSince(ctx context.Context, ownerRepo s
 	if err != nil {
 		return IssueActivityResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return IssueActivityResult{}, err
-	}
 	activities, truncated, budget, err := paginateFloor(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (activityConnection, *RateLimit, error) {
-			return f.queryActivity(ctx, token, owner, name, first, after)
+			return f.queryActivity(ctx, owner, name, first, after)
 		},
 		func(c activityConnection) ([]issueActivityNode, cursorState) {
 			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -709,14 +700,10 @@ func (f *GraphQLFetcher) ListPullRequestsUpdatedSince(ctx context.Context, owner
 	if err != nil {
 		return PullRequestActivityResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return PullRequestActivityResult{}, err
-	}
 	activities, truncated, budget, err := paginateFloor(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (prActivityConnection, *RateLimit, error) {
-			return f.queryPRActivity(ctx, token, owner, name, first, after)
+			return f.queryPRActivity(ctx, owner, name, first, after)
 		},
 		func(c prActivityConnection) ([]prActivityNode, cursorState) {
 			return c.Nodes, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -740,15 +727,11 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 	if err != nil {
 		return MilestoneListResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return MilestoneListResult{}, err
-	}
 
 	milestones, totalOpen, budget, err := paginateOpenSet(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (milestonesConnection, *RateLimit, error) {
-			return f.queryMilestones(ctx, token, owner, name, first, after)
+			return f.queryMilestones(ctx, owner, name, first, after)
 		},
 		func(c milestonesConnection) ([]milestoneNode, int, cursorState) {
 			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -763,8 +746,8 @@ func (f *GraphQLFetcher) ListOpenMilestones(ctx context.Context, ownerRepo strin
 
 // queryMilestones fetches one page of open milestones, decoding the shared
 // spine's raw repository payload into the milestone connection.
-func (f *GraphQLFetcher) queryMilestones(ctx context.Context, token, owner, name string, first int, after *string) (milestonesConnection, *RateLimit, error) {
-	return decodeConnection[milestonesConnection](ctx, f, token, milestonesQuery, queryVars(owner, name, first, after), owner, name, "milestones", "milestones")
+func (f *GraphQLFetcher) queryMilestones(ctx context.Context, owner, name string, first int, after *string) (milestonesConnection, *RateLimit, error) {
+	return decodeConnection[milestonesConnection](ctx, f, milestonesQuery, queryVars(owner, name, first, after), owner, name, "milestones", "milestones")
 }
 
 // ListOpenPullRequests fetches up to fetchLimit open pull requests, paginating
@@ -775,15 +758,11 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 	if err != nil {
 		return PullRequestListResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return PullRequestListResult{}, err
-	}
 
 	prs, totalOpen, budget, err := paginateOpenSet(
 		ctx, fetchLimit,
 		func(ctx context.Context, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
-			return f.queryPullRequests(ctx, token, owner, name, first, after)
+			return f.queryPullRequests(ctx, owner, name, first, after)
 		},
 		func(c pullRequestsConnection) ([]pullRequestNode, int, cursorState) {
 			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
@@ -798,8 +777,8 @@ func (f *GraphQLFetcher) ListOpenPullRequests(ctx context.Context, ownerRepo str
 
 // queryPullRequests fetches one page of open pull requests, decoding the shared
 // spine's raw repository payload into the pull-request connection.
-func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, token, owner, name string, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
-	return decodeConnection[pullRequestsConnection](ctx, f, token, pullRequestsQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull requests")
+func (f *GraphQLFetcher) queryPullRequests(ctx context.Context, owner, name string, first int, after *string) (pullRequestsConnection, *RateLimit, error) {
+	return decodeConnection[pullRequestsConnection](ctx, f, pullRequestsQuery, queryVars(owner, name, first, after), owner, name, "pullRequests", "pull requests")
 }
 
 // AuthoredActivity counts what `author` authored and engaged with in ownerRepo
@@ -818,10 +797,6 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 	if author == "" {
 		return AuthoredActivityResult{}, fmt.Errorf("author login is required")
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return AuthoredActivityResult{}, err
-	}
 
 	// One window, one instant: the same RFC3339 UTC bounds drive both the search
 	// date qualifiers and the history GitTimestamps, so the two requests can't
@@ -833,7 +808,7 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 		"author": author,
 		"q0":     qs[0], "q1": qs[1], "q2": qs[2], "q3": qs[3], "q4": qs[4],
 	}
-	data, budget1, err := f.doRaw(ctx, token, authoredSearchQuery, vars1, owner, name)
+	data, budget1, err := f.doRaw(ctx, authoredSearchQuery, vars1, owner, name)
 	if err != nil {
 		return AuthoredActivityResult{}, err
 	}
@@ -848,7 +823,7 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 	}
 
 	vars2 := map[string]any{"owner": owner, "name": name, "id": sd.User.ID, "since": sinceStr, "until": untilStr}
-	repo, budget2, err := f.do(ctx, token, commitHistoryQuery, vars2, owner, name)
+	repo, budget2, err := f.do(ctx, commitHistoryQuery, vars2, owner, name)
 	if err != nil {
 		return AuthoredActivityResult{}, err
 	}
@@ -902,10 +877,6 @@ func (f *GraphQLFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, 
 	if err != nil {
 		return IssueEventsResult{}, err
 	}
-	token, err := f.tokens.Token(ctx)
-	if err != nil {
-		return IssueEventsResult{}, err
-	}
 
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/events?per_page=%d", f.restEndpoint, owner, name, restPageSize)
 	var (
@@ -923,7 +894,7 @@ func (f *GraphQLFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, 
 		if len(events) >= fetchLimit {
 			break
 		}
-		body, hdr, pageBudget, qerr := f.doREST(ctx, token, url, owner, name)
+		body, hdr, pageBudget, qerr := f.doREST(ctx, url, owner, name)
 		if qerr != nil {
 			return IssueEventsResult{}, qerr
 		}
@@ -1004,24 +975,75 @@ func effectivePort(u *url.URL) string {
 	return ""
 }
 
+// send issues the request build makes with the token source's token, and is the one
+// place a token is attached to a request. A 401 means the API rejected that token (a
+// cached token since revoked, say), so the token is invalidated and the source asked
+// again; when it hands out a different token, the operator having logged in since,
+// the request is sent once more with that. A source with nothing different to offer
+// leaves the 401 unread for the caller to classify as ErrGHNotAuthed. A token-source
+// error is returned as is, without the repository: it belongs to the credential, not
+// to the repository the request was for.
+func (f *GraphQLFetcher) send(ctx context.Context, owner, name string, build func(token string) (*http.Request, error)) (*http.Response, error) {
+	token, err := f.tokens.Token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.sendWith(build, token, owner, name)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		return resp, err
+	}
+	f.tokens.Invalidate(token)
+	replacement, err := f.tokens.Token(ctx)
+	if err == nil && replacement == token {
+		return resp, nil
+	}
+	// The rejected response is discarded from here. A failed close is returned rather
+	// than retried past: a connection that will not close is not one to reuse.
+	if cerr := resp.Body.Close(); cerr != nil {
+		if err != nil {
+			return nil, fmt.Errorf("%w; closing GitHub response body: %w", err, cerr)
+		}
+		return nil, fmt.Errorf("closing GitHub response body: %w", cerr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return f.sendWith(build, replacement, owner, name)
+}
+
+// sendWith builds the request for token and sends it. A transport failure names the
+// repository, as the other request failures do.
+func (f *GraphQLFetcher) sendWith(build func(token string) (*http.Request, error), token, owner, name string) (*http.Response, error) {
+	req, err := build(token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, err)
+	}
+	return resp, nil
+}
+
 // doREST executes one REST GET and returns the raw body, the response headers
 // (for Link pagination and budget), and the REST core-pool budget, after
 // REST-specific status classification. Unlike do/doRaw it decodes no GraphQL
 // envelope: a REST endpoint returns a bare JSON array with the budget in headers
 // only. The body is read before classification so a 403/429 secondary-rate-limit
 // message in the body can be inspected.
-func (f *GraphQLFetcher) doREST(ctx context.Context, token, url, owner, name string) (body []byte, hdr http.Header, budget *RateLimit, err error) {
-	req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if rerr != nil {
-		return nil, nil, nil, fmt.Errorf("building request: %w", rerr)
-	}
-	req.Header.Set("Authorization", "bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", userAgent)
-
-	resp, doErr := f.client.Do(req)
-	if doErr != nil {
-		return nil, nil, nil, fmt.Errorf("querying GitHub for %s/%s: %w", owner, name, doErr)
+func (f *GraphQLFetcher) doREST(ctx context.Context, url, owner, name string) (body []byte, hdr http.Header, budget *RateLimit, err error) {
+	resp, sendErr := f.send(ctx, owner, name, func(token string) (*http.Request, error) {
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if rerr != nil {
+			return nil, fmt.Errorf("building request: %w", rerr)
+		}
+		req.Header.Set("Authorization", "bearer "+token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", userAgent)
+		return req, nil
+	})
+	if sendErr != nil {
+		return nil, nil, nil, sendErr
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil && err == nil {

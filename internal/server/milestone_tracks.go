@@ -31,7 +31,7 @@ type milestoneTracksInput struct {
 func milestoneTracksTool() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "milestone_tracks",
-		Description: "Survey a GitHub repository's open milestones and return the within-milestone track structure operators encode in each milestone's description, as compact structured facts for the caller to render. For each open milestone, the parsed tracks in description order — each with its label, an optional raw status annotation (a bold run-in's parenthetical, e.g. \"critical-path\", uninterpreted), and its member issue numbers in order (each with a raw status token: \"~~\" for a struck/abandoned member, a checkbox marker char, or none). Tracks are started by manifest-declared markers (heading levels and/or bold run-in labels) with a prose-section label stoplist; where a track ends is not configurable, following markdown's section nesting instead: a track ends at the next heading of equal or lesser depth than its own, while a deeper heading is a sub-section whose references stay with the track. A heading-started track takes that heading's depth; a bold-run-in track takes the depth one level inside its enclosing section, or ends at the first heading of any depth when written before any heading. A description with no track structure yields a milestone with no tracks — the common case — rather than an error. The milestone fetch marks the block unavailable (with a rate_limited/fetch_failed reason) on failure rather than failing the call, and the result-set limits (milestones listed, tracks per milestone, members per track) are surfaced, never silently truncated, alongside a per-milestone unassignedRefs count of issue references a boundary left outside every track. The server extracts the structure; tier/cut-line ranking judgment stays caller-side.",
+		Description: "Survey a GitHub repository's open milestones and return the within-milestone track structure operators encode in each milestone's description, as compact structured facts for the caller to render. For each open milestone, the parsed tracks in description order — each with its label, an optional raw status annotation (a bold run-in's parenthetical, e.g. \"critical-path\", uninterpreted), and its member issue numbers in order (each with a raw status token: \"~~\" for a struck/abandoned member, a checkbox marker char, or none). Tracks are started by manifest-declared markers (heading levels and/or bold run-in labels) with a prose-section label stoplist; where a track ends is not configurable, following markdown's section nesting instead: a track ends at the next heading of equal or lesser depth than its own, while a deeper heading is a sub-section whose references stay with the track. A heading-started track takes that heading's depth; a bold-run-in track takes the depth one level inside its enclosing section, or ends at the first heading of any depth when written before any heading. A description with no track structure yields a milestone with no tracks — the common case — rather than an error. The milestone fetch marks the block unavailable (with a rate_limited/fetch_failed reason) on failure rather than failing the call — except a credential failure (gh not installed, holding no token GitHub accepts, or not responding), which fails the call with an error naming the fix — and the result-set limits (milestones listed, tracks per milestone, members per track) are surfaced, never silently truncated, alongside a per-milestone unassignedRefs count of issue references a boundary left outside every track. The server extracts the structure; tier/cut-line ranking judgment stays caller-side.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
@@ -48,7 +48,8 @@ func milestoneTracksTool() *mcp.Tool {
 // milestones (with their descriptions), and reduces them to the within-milestone
 // track facts. The milestone fetch is the only fetch; its failure degrades the
 // block to unavailable rather than failing the call (mirroring the orientation
-// tool's milestone block). A manifest error names a file, so it is logged to stderr
+// tool's milestone block), except a credential failure, which fails the call so the
+// caller sees the fix. A manifest error names a file, so it is logged to stderr
 // and replaced with a repo-named message. Identity (repo, generatedAt) and the
 // rate-limit budget are stamped here, not in the pure reduction.
 func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher, now func() time.Time) mcp.ToolHandlerFor[milestoneTracksInput, summary.MilestoneTracksFacts] {
@@ -65,7 +66,10 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 			return nil, summary.MilestoneTracksFacts{}, fmt.Errorf("manifest configuration error for %s", ownerRepo)
 		}
 
-		facts, budget := milestoneTracksReduce(ctx, fetcher, ownerRepo, cfg.MilestoneTracks, in.Limit, now)
+		facts, budget, err := milestoneTracksReduce(ctx, fetcher, ownerRepo, cfg.MilestoneTracks, in.Limit, now)
+		if err != nil {
+			return nil, summary.MilestoneTracksFacts{}, fmt.Errorf("fetching milestones for %s: %w", ownerRepo, err)
+		}
 		facts.Repo = ownerRepo
 		facts.GeneratedAt = now()
 		facts.RateLimit = mapRateLimit(budget)
@@ -94,23 +98,28 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 	}
 }
 
-// milestoneTracksReduce runs the milestone fetch and reduces it, degrading to an
-// unavailable block on failure the same way summaryMilestones does: a rate limit
-// names its reason and returns a zero-remaining budget carrying the reset instant;
-// any other failure stays on stderr and returns a nil budget. Both degrade paths
-// return a non-nil empty slice so the output renders [] rather than null.
-func milestoneTracksReduce(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.MilestoneTracksConfig, limit int, now func() time.Time) (summary.MilestoneTracksFacts, *github.RateLimit) {
+// milestoneTracksReduce runs the milestone fetch and reduces it. A credential
+// failure is returned for the handler to fail the call with (see credentialFailure):
+// it is the tool's only fetch, so a degraded block would hide the fix. Any other
+// failure degrades to an unavailable block the way summaryMilestones does: a rate
+// limit names its reason and returns a zero-remaining budget carrying the reset
+// instant; any other failure stays on stderr and returns a nil budget. Both degrade
+// paths return a non-nil empty slice so the output renders [] rather than null.
+func milestoneTracksReduce(ctx context.Context, fetcher github.Fetcher, ownerRepo string, cfg manifest.MilestoneTracksConfig, limit int, now func() time.Time) (summary.MilestoneTracksFacts, *github.RateLimit, error) {
 	res, err := fetcher.ListOpenMilestones(ctx, ownerRepo, cfg.FetchLimit)
 	if err == nil {
 		truncated := len(res.Milestones) < res.TotalOpen
-		return summary.ReduceMilestoneTracks(res.Milestones, res.TotalOpen, truncated, mapTrackParams(cfg), limit), res.RateLimit
+		return summary.ReduceMilestoneTracks(res.Milestones, res.TotalOpen, truncated, mapTrackParams(cfg), limit), res.RateLimit, nil
+	}
+	if credentialFailure(err) {
+		return summary.MilestoneTracksFacts{}, nil, err
 	}
 	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return summary.MilestoneTracksFacts{Available: false, Unavailable: "rate_limited", Milestones: []summary.MilestoneTrackSet{}},
-			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}
+			&github.RateLimit{Remaining: 0, ResetAt: rateLimitResetTime(rle, now)}, nil
 	}
 	log.Printf("overstory: milestone_tracks fetch for %s: %v", ownerRepo, err)
-	return summary.MilestoneTracksFacts{Available: false, Unavailable: "fetch_failed", Milestones: []summary.MilestoneTrackSet{}}, nil
+	return summary.MilestoneTracksFacts{Available: false, Unavailable: "fetch_failed", Milestones: []summary.MilestoneTrackSet{}}, nil, nil
 }
 
 // mapTrackParams adapts the manifest's milestone-track convention to the reduction's

@@ -11,7 +11,7 @@
 // is REST-sourced, having no GraphQL equivalent.
 //
 // Data is fetched in-process over net/http (no heavy client dependency); the
-// only subprocess is `gh auth token --hostname github.com` for credential bootstrap. The Fetcher
+// only subprocess is `gh auth token --hostname github.com` for fetching the credential. The Fetcher
 // interface is the seam that lets callers and tests substitute a fake.
 package github
 
@@ -525,10 +525,16 @@ type Fetcher interface {
 var (
 	// ErrGHNotFound means the gh CLI is not on PATH, so credentials can't be
 	// obtained.
-	ErrGHNotFound = errors.New("gh CLI not found on PATH")
-	// ErrGHNotAuthed means no usable token for githubHost came from gh: gh failed or
-	// timed out fetching one, returned none, or the API rejected the one it returned.
+	ErrGHNotFound = errors.New("gh CLI not found on PATH; install gh, or add its directory to the PATH overstory is started with")
+	// ErrGHNotAuthed means no usable token for githubHost came from gh: gh failed
+	// fetching one, returned none, or the API rejected it (401) and gh offered no
+	// replacement the API accepted.
 	ErrGHNotAuthed = errors.New("could not obtain a valid gh CLI token for " + githubHost + "; run 'gh auth login --hostname " + githubHost + "'")
+	// ErrGHTimedOut means gh did not answer within the token source's timeout. It is
+	// kept apart from ErrGHNotAuthed because logging in again is not the fix for a gh
+	// that hangs. It points at gh auth status, not gh auth token: a caller following
+	// the advice would otherwise print the token whenever gh does answer.
+	ErrGHTimedOut = errors.New("gh auth token --hostname " + githubHost + " did not respond; check gh's stored credentials with 'gh auth status --hostname " + githubHost + "'")
 	// ErrRepoNotFound means the repository does not exist or is not accessible
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")
