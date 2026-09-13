@@ -14,11 +14,12 @@ Overstory is in early development and cuts no tagged releases yet, so the suppor
 
 ## Credential model
 
-Overstory does not manage credentials of its own. It authenticates to GitHub by shelling out to `gh auth token` once per process, inheriting whatever authentication the operator's [`gh`](https://cli.github.com/) CLI already holds. Consequences worth knowing:
+Overstory does not manage credentials of its own. It authenticates to GitHub by shelling out to `gh auth token --hostname github.com` once per process, inheriting the authentication the operator's [`gh`](https://cli.github.com/) CLI already holds for github.com. Consequences worth knowing:
 
+- **The token is requested for github.com, and it is sent only to github.com's API.** The server names the host rather than taking `gh`'s default host, so a login `gh` stores for another host — a GitHub Enterprise Server login, or the login for whichever host `GH_HOST` names — is never sent to github.com. Pagination follows only links that stay on that API host; a response pointing anywhere else is refused rather than followed. One exception comes from `gh` rather than the server: `gh` applies `GH_TOKEN` and `GITHUB_TOKEN` to github.com and to `ghe.com` hosts alike, so a token in either variable is used as set, whichever host issued it.
 - **The server's access equals the operator's `gh` access.** It can read any repository that token can read, including private ones. It never widens that scope, and it requests no scopes of its own.
 - **The token is held in memory only** — fetched lazily on first use and, once obtained, cached for the life of the process. Nothing is written to disk, and no token is embedded in a manifest or config file.
-- **The token is never logged and never appears in a returned error.** When `gh` fails, the error is classified (not installed, or not authenticated) without echoing the subprocess's stderr, which can carry sensitive detail.
+- **The token is never logged and never appears in a returned error.** When `gh` fails, the error is classified (not installed, or no valid token could be obtained for github.com) without echoing the subprocess's stderr, which can carry sensitive detail.
 - **The server is read-only against GitHub.** It issues queries; it does not create, edit, close, or label anything.
 
 ## Build and CI supply chain

@@ -23,7 +23,7 @@ Install the binary and register it as an MCP server:
 just install   # build and install to ~/.local/bin/overstory
 ```
 
-Overstory authenticates to GitHub using your existing [`gh`](https://cli.github.com/) credentials (`gh auth token`) — there's no separate token to configure; just be logged in (`gh auth status`). The command an agent runs is the bare `overstory` binary (no arguments); conventions come from an operator-supplied per-repo manifest.
+Overstory authenticates to GitHub using your existing [`gh`](https://cli.github.com/) credentials for github.com (`gh auth token --hostname github.com`) — there's no separate token to configure; just be logged in to github.com (`gh auth status --hostname github.com`). The command an agent runs is the bare `overstory` binary (no arguments); conventions come from an operator-supplied per-repo manifest.
 
 The full guide lives in the documentation book under [`docs/`](docs/):
 

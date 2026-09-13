@@ -28,7 +28,7 @@ The problem is recorded in #133.
   - Today a bare `owner/repo` means GitHub, as a fixed rule of the address. Whether a bare address keeps that meaning once a second forge exists is part of [the identity question](#where-the-marker-lives-open).
 - **The server is read-only against every forge.** It issues reads; it creates, edits, closes and labels nothing.
 - **A credential never appears in a log or a returned error.**
-- **A credential is sent only to the host that issued it, including across redirects.** A second backend gets its own authentication path rather than a redirected GitHub one. Today's token source runs `gh auth token` without naming a host, so binding each credential to its host is new work for both backends.
+- **A credential is sent only to the host that issued it, including across redirects.** A second backend gets its own authentication path rather than a redirected GitHub one.
 
 ## Where GitHub is built in today
 

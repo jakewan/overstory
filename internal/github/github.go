@@ -11,7 +11,7 @@
 // is REST-sourced, having no GraphQL equivalent.
 //
 // Data is fetched in-process over net/http (no heavy client dependency); the
-// only subprocess is `gh auth token` for credential bootstrap. The Fetcher
+// only subprocess is `gh auth token --hostname github.com` for credential bootstrap. The Fetcher
 // interface is the seam that lets callers and tests substitute a fake.
 package github
 
@@ -526,8 +526,9 @@ var (
 	// ErrGHNotFound means the gh CLI is not on PATH, so credentials can't be
 	// obtained.
 	ErrGHNotFound = errors.New("gh CLI not found on PATH")
-	// ErrGHNotAuthed means gh is installed but not authenticated.
-	ErrGHNotAuthed = errors.New("gh CLI is not authenticated; run 'gh auth login'")
+	// ErrGHNotAuthed means no usable token for githubHost came from gh: gh failed or
+	// timed out fetching one, returned none, or the API rejected the one it returned.
+	ErrGHNotAuthed = errors.New("could not obtain a valid gh CLI token for " + githubHost + "; run 'gh auth login --hostname " + githubHost + "'")
 	// ErrRepoNotFound means the repository does not exist or is not accessible
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")
