@@ -526,8 +526,9 @@ var (
 	// ErrGHNotFound means the gh CLI is not on PATH, so credentials can't be
 	// obtained.
 	ErrGHNotFound = errors.New("gh CLI not found on PATH")
-	// ErrGHNotAuthed means gh is installed but not authenticated.
-	ErrGHNotAuthed = errors.New("gh CLI is not authenticated; run 'gh auth login'")
+	// ErrGHNotAuthed means gh holds no usable token for githubHost: none is logged
+	// in there, or the API rejected the one gh returned.
+	ErrGHNotAuthed = errors.New("gh CLI has no valid token for " + githubHost + "; run 'gh auth login --hostname " + githubHost + "'")
 	// ErrRepoNotFound means the repository does not exist or is not accessible
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")

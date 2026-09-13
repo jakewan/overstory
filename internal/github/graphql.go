@@ -14,11 +14,16 @@ import (
 )
 
 const (
-	defaultEndpoint = "https://api.github.com/graphql"
+	// githubHost is the host every request goes to, and so the only host whose
+	// credential may be sent. Both endpoints derive from it and GHTokenSource asks gh
+	// for its token by name, so the credential and the requests cannot name
+	// different hosts.
+	githubHost      = "github.com"
+	defaultEndpoint = "https://api." + githubHost + "/graphql"
 	// defaultRESTEndpoint is the REST API base (no /graphql suffix); the
 	// issue-events fetch is the only REST-sourced shape, so it is kept separate from
 	// the GraphQL endpoint rather than derived from it.
-	defaultRESTEndpoint = "https://api.github.com"
+	defaultRESTEndpoint = "https://api." + githubHost
 	pageSize            = 100
 	// restPageSize is GitHub REST's maximum per_page; the issue-events fetch pages
 	// at the max to minimize round trips before crossing the window floor.

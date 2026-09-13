@@ -23,10 +23,12 @@ type TokenSource interface {
 const ghTokenTimeout = 10 * time.Second
 
 // GHTokenSource sources the token from `gh auth token`, so overstory inherits
-// the operator's existing gh authentication rather than managing its own. The
-// token is fetched lazily on first use and cached for the process, guarded for
-// concurrent tool calls. The token is a credential: it is never logged nor
-// included in a returned error.
+// the operator's existing gh authentication rather than managing its own. It names
+// githubHost rather than taking gh's default host, which GH_HOST or a lone
+// Enterprise Server login can point elsewhere — that host's token would then be
+// sent to a host that did not issue it. The token is fetched lazily on first use
+// and cached for the process, guarded for concurrent tool calls. The token is a
+// credential: it is never logged nor included in a returned error.
 type GHTokenSource struct {
 	mu     sync.Mutex
 	cached string
@@ -43,7 +45,7 @@ func (s *GHTokenSource) Token(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ghTokenTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "gh", "auth", "token")
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", githubHost)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
