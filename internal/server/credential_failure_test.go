@@ -26,7 +26,7 @@ var credentialFailures = []struct {
 	{"no usable token", github.ErrGHNotAuthed, github.ErrGHNotAuthed},
 	{"no usable token, wrapped", fmt.Errorf("obtaining gh token: %w", github.ErrGHNotAuthed), github.ErrGHNotAuthed},
 	{"gh not installed", github.ErrGHNotFound, github.ErrGHNotFound},
-	{"gh did not respond", fmt.Errorf("obtaining gh token: %w (waited 10s)", github.ErrGHTimedOut), github.ErrGHTimedOut},
+	{"gh did not respond", fmt.Errorf("obtaining gh token after waiting 10s: %w", github.ErrGHTimedOut), github.ErrGHTimedOut},
 }
 
 // TestBatchToolsFailTheCallOnCredentialFailure pins that a credential failure, which
@@ -199,6 +199,51 @@ func TestMilestoneTracksFailsTheCallOnCredentialFailure(t *testing.T) {
 			}
 			if msg := contentText(res); !strings.Contains(msg, cf.want.Error()) {
 				t.Errorf("error %q does not carry %q", msg, cf.want)
+			}
+		})
+	}
+}
+
+// TestBatchToolsFailTheCallOnCredentialFailureBesideFinishedEntries pins that a
+// credential failure fails the batch even when another repository already returned:
+// the call is one error, not partial results beside it. A token revoked partway
+// through a batch, with no replacement from gh, is the case this covers.
+func TestBatchToolsFailTheCallOnCredentialFailureBesideFinishedEntries(t *testing.T) {
+	tools := []struct {
+		name    string
+		call    func(*testing.T, *mcp.Server, map[string]any) *mcp.CallToolResult
+		fetcher fakeFetcher
+	}{
+		{"authored_activity_batch", callAuthoredActivityBatch, authoredBatchFetcher(map[string]authoredCanned{
+			"acme/a": {result: sixCounts(1, 0, 0, 0, 0, 0)},
+			"acme/b": {err: github.ErrGHNotAuthed},
+		})},
+		{"maintenance_activity_batch", callMaintenanceActivityBatch, fakeFetcher{eventsByRepo: map[string]eventsCanned{
+			"acme/a": {result: github.IssueEventsResult{}},
+			"acme/b": {err: github.ErrGHNotAuthed},
+		}}},
+	}
+	for _, tool := range tools {
+		t.Run(tool.name, func(t *testing.T) {
+			srv := New(WithFetcher(tool.fetcher), WithClock(func() time.Time { return fixedClock }))
+
+			res := tool.call(t, srv, map[string]any{
+				"repos":  []any{"acme/a", "acme/b"},
+				"author": "alice",
+				"since":  "2026-05-01T00:00:00Z",
+			})
+
+			if !res.IsError {
+				t.Fatalf("IsError = false, want the credential failure to fail the call beside a finished repository")
+			}
+			msg := contentText(res)
+			if !strings.Contains(msg, github.ErrGHNotAuthed.Error()) {
+				t.Errorf("error %q does not carry %q", msg, github.ErrGHNotAuthed)
+			}
+			for _, repo := range []string{"acme/a", "acme/b"} {
+				if strings.Contains(msg, repo) {
+					t.Errorf("error %q names repository %s", msg, repo)
+				}
 			}
 		})
 	}

@@ -69,7 +69,7 @@ func (s *GHTokenSource) Token(ctx context.Context) (string, error) {
 			// repository alone. Checked before runCtx, which inherits it.
 			return "", fmt.Errorf("obtaining gh token: %w", ctx.Err())
 		case runCtx.Err() != nil:
-			return "", fmt.Errorf("obtaining gh token: %w (waited %s)", ErrGHTimedOut, timeout)
+			return "", fmt.Errorf("obtaining gh token after waiting %s: %w", timeout, ErrGHTimedOut)
 		}
 		// gh exits non-zero when not logged in. Classify as an auth failure
 		// without echoing stderr, which could carry sensitive detail.

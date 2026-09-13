@@ -127,6 +127,9 @@ func TestGHTokenSourceBindsTokenToAPIHost(t *testing.T) {
 						t.Errorf("error %q echoes gh's stderr", err)
 					}
 				}
+				if errors.Is(tc.wantErr, ErrGHNotFound) && !strings.Contains(err.Error(), "install gh") {
+					t.Errorf("error %q does not name the fix", err)
+				}
 				return
 			}
 			if err != nil {
@@ -200,8 +203,10 @@ func TestGHTokenSourceClassifiesFailures(t *testing.T) {
 		if errors.Is(err, ErrGHNotAuthed) {
 			t.Errorf("Token() error = %v, also reads as a missing login", err)
 		}
-		if !strings.Contains(err.Error(), "github.com") {
-			t.Errorf("error %q does not name github.com", err)
+		// The command a caller is pointed at must not print the token, as gh auth token
+		// would; gh auth status reports on the stored credential without showing it.
+		if !strings.Contains(err.Error(), "gh auth status --hostname github.com") {
+			t.Errorf("error %q does not point at gh auth status for github.com", err)
 		}
 	})
 }

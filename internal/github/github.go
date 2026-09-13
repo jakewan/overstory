@@ -525,15 +525,16 @@ type Fetcher interface {
 var (
 	// ErrGHNotFound means the gh CLI is not on PATH, so credentials can't be
 	// obtained.
-	ErrGHNotFound = errors.New("gh CLI not found on PATH")
+	ErrGHNotFound = errors.New("gh CLI not found on PATH; install gh, or add its directory to the PATH overstory is started with")
 	// ErrGHNotAuthed means no usable token for githubHost came from gh: gh failed
 	// fetching one, returned none, or the API rejected it (401) and gh offered no
-	// different token.
+	// replacement the API accepted.
 	ErrGHNotAuthed = errors.New("could not obtain a valid gh CLI token for " + githubHost + "; run 'gh auth login --hostname " + githubHost + "'")
 	// ErrGHTimedOut means gh did not answer within the token source's timeout. It is
 	// kept apart from ErrGHNotAuthed because logging in again is not the fix for a gh
-	// that hangs.
-	ErrGHTimedOut = errors.New("gh auth token --hostname " + githubHost + " did not respond in time; run it in a terminal to see what it is waiting on")
+	// that hangs. It points at gh auth status, not gh auth token: a caller following
+	// the advice would otherwise print the token whenever gh does answer.
+	ErrGHTimedOut = errors.New("gh auth token --hostname " + githubHost + " did not respond; check gh's stored credentials with 'gh auth status --hostname " + githubHost + "'")
 	// ErrRepoNotFound means the repository does not exist or is not accessible
 	// with the current credentials.
 	ErrRepoNotFound = errors.New("repository not found or not accessible")
