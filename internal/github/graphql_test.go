@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1457,6 +1458,72 @@ func TestListIssueEventsNullActor(t *testing.T) {
 	}
 	if len(res.Events) != 1 || res.Events[0].Actor != "" {
 		t.Errorf("events = %+v, want one event with empty actor", res.Events)
+	}
+}
+
+// TestListIssueEventsRefusesPageLinkOffEndpoint pins that pagination never carries
+// the token to a host other than the REST endpoint's. The Link header is response
+// data the fetcher follows itself, so net/http's redirect handling — which drops
+// Authorization on a cross-host redirect — does not guard it.
+func TestListIssueEventsRefusesPageLinkOffEndpoint(t *testing.T) {
+	since := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	var foreignHits atomic.Int64
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignHits.Add(1)
+		for k, v := range eventsBudgetHeaders("4000", 1750000000) {
+			w.Header().Set(k, v)
+		}
+		w.WriteHeader(http.StatusOK)
+		writeBody(t, w, `[]`)
+	}))
+	t.Cleanup(foreign.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range eventsBudgetHeaders("4000", 1750000000) {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Link", "<"+foreign.URL+r.URL.Path+"?page=2>; rel=\"next\"")
+		w.WriteHeader(http.StatusOK)
+		writeBody(t, w, `[{"id":20,"event":"labeled","created_at":"2026-06-10T00:00:00Z","actor":{"login":"a"},"issue":{"number":1,"title":"x"}}]`)
+	}))
+	t.Cleanup(origin.Close)
+
+	const secret = "secret-token"
+	_, err := restFetcherTo(origin.URL, secret).ListIssueEvents(context.Background(), "acme/widgets", since, 100)
+	if err == nil {
+		t.Error("ListIssueEvents followed a page link off the REST endpoint without error")
+	} else if strings.Contains(err.Error(), secret) {
+		t.Errorf("error leaks the token: %q", err)
+	}
+	if n := foreignHits.Load(); n != 0 {
+		t.Errorf("foreign host received %d request(s), want 0", n)
+	}
+}
+
+// TestSameOrigin pins the origin comparison pagination relies on, including what a
+// two-server fixture cannot show: a scheme downgrade on the same host, and a
+// default port spelled out versus implied.
+func TestSameOrigin(t *testing.T) {
+	const base = "https://api.github.com"
+	for _, tc := range []struct {
+		name string
+		next string
+		want bool
+	}{
+		{"same host and scheme", "https://api.github.com/repos/o/r/issues/events?page=2", true},
+		{"default port spelled out", "https://api.github.com:443/repos/o/r/issues/events?page=2", true},
+		{"host differs only in case", "https://API.GitHub.com/repos/o/r/issues/events?page=2", true},
+		{"scheme downgrade", "http://api.github.com/repos/o/r/issues/events?page=2", false},
+		{"other port", "https://api.github.com:8443/repos/o/r/issues/events?page=2", false},
+		{"other host", "https://example.com/repos/o/r/issues/events?page=2", false},
+		{"lookalike host", "https://api.github.com.example.com/repos/o/r/issues/events?page=2", false},
+		{"relative link", "/repos/o/r/issues/events?page=2", false},
+		{"unparseable", "https://api.github.com:bad/", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameOrigin(base, tc.next); got != tc.want {
+				t.Errorf("sameOrigin(%q, %q) = %v, want %v", base, tc.next, got, tc.want)
+			}
+		})
 	}
 }
 

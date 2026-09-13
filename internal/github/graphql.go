@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,10 +15,10 @@ import (
 )
 
 const (
-	// githubHost is the host every request goes to, and so the only host whose
-	// credential may be sent. Both endpoints derive from it and GHTokenSource asks gh
-	// for its token by name, so the credential and the requests cannot name
-	// different hosts.
+	// githubHost is the host whose credential GHTokenSource requests from gh, and so
+	// the only host that credential may reach. The endpoints are built from it rather
+	// than spelled out beside it so the two cannot drift apart, and ListIssueEvents
+	// refuses a pagination link that leaves the REST endpoint.
 	githubHost      = "github.com"
 	defaultEndpoint = "https://api." + githubHost + "/graphql"
 	// defaultRESTEndpoint is the REST API base (no /graphql suffix); the
@@ -880,7 +881,8 @@ func (f *GraphQLFetcher) AuthoredActivity(ctx context.Context, ownerRepo, author
 // ListIssueEvents fetches the repository's issue and pull-request state-mutation
 // events, newest-first, back to the `since` floor (up to fetchLimit), for the
 // maintenance reduction. The REST endpoint has no since/until parameter and no
-// GraphQL cursor, so it pages by following the response Link header's rel="next"
+// GraphQL cursor, so it pages by following the response Link header's rel="next" —
+// refusing, with an error, a link that leaves the REST endpoint (see sameOrigin) —
 // and stops on the first event older than `since` (the floor, past which the
 // newest-first stream holds nothing in-window), the fetch cap, or exhaustion.
 // Events are deduplicated by GitHub's monotonic event id across pages, so a write
@@ -953,6 +955,11 @@ func (f *GraphQLFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, 
 			exhausted = true // Link chain ended: the stream is drained, coverage proven
 			break
 		}
+		if !sameOrigin(f.restEndpoint, next) {
+			// Refused rather than read as a truncated window: a link off the endpoint is
+			// never a normal end of the stream, and a quiet partial result would hide it.
+			return IssueEventsResult{}, fmt.Errorf("GitHub issue events for %s/%s: pagination link leaves the API endpoint; not following it", owner, name)
+		}
 		url = next
 	}
 	return IssueEventsResult{
@@ -960,6 +967,41 @@ func (f *GraphQLFetcher) ListIssueEvents(ctx context.Context, ownerRepo string, 
 		Truncated: !crossedFloor && !exhausted,
 		RateLimit: budget,
 	}, nil
+}
+
+// sameOrigin reports whether next has base's scheme, host, and effective port. A
+// pagination link is response data the fetcher requests itself with the bearer
+// token attached, so net/http's redirect rule — the Client docs: Authorization is
+// not forwarded to a host that is neither the original nor its subdomain — never
+// sees it; this check is what keeps the token on the endpoint. A relative or
+// unparseable link is not the same origin.
+func sameOrigin(base, next string) bool {
+	b, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	n, err := url.Parse(next)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(b.Scheme, n.Scheme) &&
+		strings.EqualFold(b.Hostname(), n.Hostname()) &&
+		effectivePort(b) == effectivePort(n)
+}
+
+// effectivePort is u's port, or its scheme's default when none is spelled out, so
+// "https://host" and "https://host:443" compare equal.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // doREST executes one REST GET and returns the raw body, the response headers
