@@ -9,11 +9,11 @@ import (
 	"testing"
 )
 
-// fakeGH stands in for the gh CLI. It mimics the host resolution the token source
-// must not depend on — an explicit --hostname wins, otherwise GH_HOST, otherwise
-// github.com — prints a token only for a host named in FAKE_GH_LOGGED_IN, fails
-// the way gh does for any other host, and appends each requested host to
-// FAKE_GH_LOG. FAKE_GH_EMPTY makes it print a blank token.
+// fakeGH stands in for the gh CLI. It models the part of gh's host resolution the
+// token source must not depend on — an explicit --hostname wins, otherwise
+// GH_HOST, otherwise github.com — prints a token only for a host named in
+// FAKE_GH_LOGGED_IN, fails the way gh does for any other host, and appends each
+// requested host to FAKE_GH_LOG. FAKE_GH_EMPTY makes it print a blank token.
 const fakeGH = `#!/bin/sh
 host="${GH_HOST:-github.com}"
 while [ $# -gt 0 ]; do
@@ -80,6 +80,24 @@ func TestGHTokenSourceBindsTokenToAPIHost(t *testing.T) {
 
 			token, err := NewGraphQLFetcher().tokens.Token(t.Context())
 
+			// Which host gh was asked for is checked on every path that reaches gh,
+			// failures included, so a failing fetch cannot hide a wrong-host request.
+			if !tc.noGH {
+				logged, rerr := os.ReadFile(logPath)
+				if rerr != nil {
+					t.Fatalf("reading fake gh log: %v", rerr)
+				}
+				requested := strings.Fields(string(logged))
+				if len(requested) == 0 {
+					t.Error("gh was never asked for a token")
+				}
+				for _, host := range requested {
+					if host != issuer {
+						t.Errorf("gh was asked for host %q's token, want %q", host, issuer)
+					}
+				}
+			}
+
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("Token() error = %v, want %v", err, tc.wantErr)
@@ -88,8 +106,10 @@ func TestGHTokenSourceBindsTokenToAPIHost(t *testing.T) {
 					t.Errorf("Token() returned a token alongside error %v", err)
 				}
 				if errors.Is(tc.wantErr, ErrGHNotAuthed) {
-					if !strings.Contains(err.Error(), issuer) {
-						t.Errorf("error %q does not name the host %q", err, issuer)
+					// A literal, not githubHost: the operator-facing docs promise the
+					// error names github.com, so a changed constant must fail here.
+					if !strings.Contains(err.Error(), "github.com") {
+						t.Errorf("error %q does not name github.com", err)
 					}
 					if strings.Contains(err.Error(), "no oauth token found") {
 						t.Errorf("error %q echoes gh's stderr", err)
@@ -102,15 +122,6 @@ func TestGHTokenSourceBindsTokenToAPIHost(t *testing.T) {
 			}
 			if token != tc.wantToken {
 				t.Errorf("Token() = %q, want %q", token, tc.wantToken)
-			}
-			logged, rerr := os.ReadFile(logPath)
-			if rerr != nil {
-				t.Fatalf("reading fake gh log: %v", rerr)
-			}
-			for requested := range strings.FieldsSeq(string(logged)) {
-				if requested != issuer {
-					t.Errorf("gh was asked for host %q's token, want %q", requested, issuer)
-				}
 			}
 		})
 	}

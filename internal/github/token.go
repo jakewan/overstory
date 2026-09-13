@@ -23,10 +23,11 @@ type TokenSource interface {
 const ghTokenTimeout = 10 * time.Second
 
 // GHTokenSource sources the token from `gh auth token`, so overstory inherits
-// the operator's existing gh authentication rather than managing its own. It names
-// githubHost rather than taking gh's default host, which GH_HOST or a lone
-// Enterprise Server login can point elsewhere — that host's token would then be
-// sent to a host that did not issue it. The token is fetched lazily on first use
+// the operator's existing gh authentication rather than managing its own. It passes
+// --hostname githubHost because, without it, `gh auth token` resolves go-gh's
+// auth.DefaultHost — GH_HOST, else the one configured host — so a GH_HOST setting or
+// a lone Enterprise Server login would hand back that host's token, to be sent to a
+// host that did not issue it. The token is fetched lazily on first use
 // and cached for the process, guarded for concurrent tool calls. The token is a
 // credential: it is never logged nor included in a returned error.
 type GHTokenSource struct {
