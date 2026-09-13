@@ -226,6 +226,61 @@ func TestAuthoredActivityBatchUnresolvableAuthor(t *testing.T) {
 	}
 }
 
+// TestAuthoredActivityBatchStopsLaunchingAfterUnresolvableAuthor pins that a batch
+// stops starting fetches once one reports the author unresolvable. The login resolves
+// the same way for every repository, so each remaining fetch would spend a search
+// request to learn the same thing. With one slot, exactly one fetch runs, whichever
+// repository wins it.
+func TestAuthoredActivityBatchStopsLaunchingAfterUnresolvableAuthor(t *testing.T) {
+	repos := []string{"acme/a", "acme/b", "acme/c", "acme/d"}
+	var calls atomic.Int64
+	byRepo := make(map[string]authoredCanned, len(repos))
+	for _, r := range repos {
+		byRepo[r] = authoredCanned{err: github.ErrAuthorNotFound}
+	}
+	handler := authoredActivityBatchHandler(fakeFetcher{authoredCalls: &calls, authoredByRepo: byRepo}, func() time.Time { return fixedClock }, 1, authoredBatchPerRepoTimeout)
+
+	_, _, err := handler(context.Background(), nil, authoredActivityBatchInput{Repos: repos, Author: "ghost", Since: "2026-05-01T00:00:00Z"})
+
+	if err == nil || !strings.Contains(err.Error(), `"ghost"`) {
+		t.Fatalf("error = %v, want one whole-batch error naming the login", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("fetch count = %d, want 1 (an unresolvable author stops new launches)", got)
+	}
+}
+
+// TestAuthoredActivityBatchCancelsInFlightFetchesOnUnresolvableAuthor pins that an
+// unresolvable author cuts short the fetches already running. The batch fails with it
+// and discards every entry, so waiting for them only delays the error. The first
+// fetch blocks until its context is done and the second reports the author
+// unresolvable; the call must return well inside the per-repo deadline that would
+// otherwise be what releases the first.
+func TestAuthoredActivityBatchCancelsInFlightFetchesOnUnresolvableAuthor(t *testing.T) {
+	const perRepoTimeout = 10 * time.Second
+	var calls atomic.Int64
+	fetcher := fakeFetcher{
+		authoredCalls: &calls,
+		authoredSeq: func(call int64) authoredCanned {
+			if call == 1 {
+				return authoredCanned{block: true}
+			}
+			return authoredCanned{err: github.ErrAuthorNotFound}
+		},
+	}
+	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 2, perRepoTimeout)
+	start := time.Now()
+
+	_, _, err := handler(context.Background(), nil, authoredActivityBatchInput{Repos: []string{"acme/a", "acme/b"}, Author: "ghost", Since: "2026-05-01T00:00:00Z"})
+
+	if elapsed := time.Since(start); elapsed > perRepoTimeout/5 {
+		t.Errorf("batch returned after %s, want well inside the %s per-repo deadline", elapsed, perRepoTimeout)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"ghost"`) {
+		t.Errorf("error = %v, want one whole-batch error naming the login", err)
+	}
+}
+
 // TestAuthoredActivityBatchValidatesInput pins pre-fetch validation: an empty or
 // oversized repos list, a malformed or duplicate slug, a missing author, and a
 // malformed or inverted window are each rejected before any fetch — surfacing as
@@ -424,7 +479,7 @@ func TestAuthoredActivityBatchThrottlePreemptsAuthorEscalation(t *testing.T) {
 		t.Fatal("IsError = true, want false")
 	}
 	if got := calls.Load(); got != 1 {
-		t.Errorf("fetch count = %d, want 1 (the lurking author_not_found never ran)", got)
+		t.Errorf("fetch count = %d, want 1 (the unresolvable-author fetch never ran)", got)
 	}
 	rateLimited, notAttempted := 0, 0
 	for _, r := range facts.Repos {

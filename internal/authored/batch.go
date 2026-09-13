@@ -10,15 +10,11 @@ import (
 // Per-repo unavailability reasons in a batch. The fan-out classifies each repo's
 // fetch outcome into one of these; an available repo carries none. They live here
 // (not in the server) so the reduction and the handler that fills BatchEntry share
-// one vocabulary. UnavailableAuthorNotFound is an internal sentinel only: the
-// handler converts it to a single whole-batch error (the author login is
-// repo-independent, so an unresolvable login fails every repo), and it never
-// reaches a returned RepoActivity.
+// one vocabulary.
 const (
-	UnavailableNotFound       = "not_found"
-	UnavailableRateLimited    = "rate_limited"
-	UnavailableFetchFailed    = "fetch_failed"
-	UnavailableAuthorNotFound = "author_not_found"
+	UnavailableNotFound    = "not_found"
+	UnavailableRateLimited = "rate_limited"
+	UnavailableFetchFailed = "fetch_failed"
 	// UnavailableNotAttempted marks a repo the fan-out deliberately did not fetch:
 	// once one repo is throttled the batch stops launching new fetches (backpressure,
 	// so it does not amplify the throttle it just hit), and every not-yet-started repo
