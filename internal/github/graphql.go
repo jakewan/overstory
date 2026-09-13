@@ -1224,8 +1224,9 @@ func classifyGraphQLErrors(errs []gqlError, hdr http.Header, budget *rateLimitNo
 			// authored query's login, repository for the repository-rooted queries
 			// (observed against the live API). Only a user path is an author miss; any
 			// other NOT_FOUND keeps meaning the repository. Were GitHub to stop sending
-			// path, an unknown login would read as a missing repository again — the live
-			// schema test's unknown-login call is what would notice.
+			// path, an unknown login would read as a missing repository again, and only
+			// an opt-in run of the live schema test (OVERSTORY_LIVE_REPO) would notice —
+			// nothing runs it automatically.
 			if len(e.Path) > 0 && e.Path[0] == "user" {
 				return fmt.Errorf("%s/%s: %w", owner, name, ErrAuthorNotFound)
 			}

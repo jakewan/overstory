@@ -864,9 +864,10 @@ func validateRepos(in []string, maxRepos int) ([]string, error) {
 // observes ctx.Err().
 //
 // Two adverse-condition adaptations layer on top: a throttle or a shared failure on
-// any repo trips stopLaunch so not-yet-started repos are skipped as not_attempted,
-// and a shared failure also cancels the fetches still running (see below); and each
-// fetch carries a perRepoTimeout deadline so a hung repo degrades to its own
+// any repo trips stopLaunch so not-yet-started repos are skipped — recorded as
+// not_attempted on a throttle — and a shared failure also cancels the fetches still
+// running (see below); and each fetch carries a perRepoTimeout deadline so a hung
+// repo degrades to its own
 // fetch_failed without stalling the rest.
 func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) ([]authored.BatchEntry, error) {
 	entries := make([]authored.BatchEntry, len(repos))
@@ -904,7 +905,10 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 	// sharedErr is the shared failure the handler reports. A credential failure replaces
 	// a recorded unresolvable author, never the reverse, so which one a batch reports
 	// doesn't depend on which fetch finished first: resolving the login needs a working
-	// token, so the credential is the one to fix first.
+	// token, so the credential is the one to fix first. That ranking relies on a fetch
+	// this batch cancelled never reading as a credential failure — the token source
+	// reports a cancelled caller as the cancellation (TestGHTokenSourceClassifiesFailures)
+	// — or the cancellation would outrank the error that caused it.
 	var (
 		sharedMu  sync.Mutex
 		sharedErr error

@@ -54,10 +54,10 @@ func TestLiveSchemaAcceptance(t *testing.T) {
 	} else if len(res.Events) > 0 && res.Events[0].EventID == 0 {
 		t.Errorf("ListIssueEvents against %s decoded a zero event id — the REST payload shape may have drifted", repo)
 	}
-	// GitHub reports an unknown login as a NOT_FOUND error beside a null user, and
-	// which of the two the classifier meets first decides whether the caller hears
-	// about the author or about a missing repository — a shape only the real API can
-	// confirm. The login is longer than any registered one is expected to be; were an
+	// GitHub reports an unknown login as a NOT_FOUND error at the user path, and the
+	// classifier must read that path to tell it from a missing repository — a response
+	// shape only the real API can confirm. The login is longer than any registered one
+	// is expected to be; were an
 	// account ever to hold it, the call would return counts and this would fail rather
 	// than pass silently.
 	if _, err := f.AuthoredActivity(ctx, repo, "overstory-live-test-login-longer-than-github-allows", time.Now().AddDate(0, 0, -30), time.Now()); !errors.Is(err, ErrAuthorNotFound) {

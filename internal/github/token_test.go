@@ -191,6 +191,23 @@ func TestGHTokenSourceClassifiesFailures(t *testing.T) {
 			t.Errorf("Token() error = %v, reported as a credential failure", err)
 		}
 	})
+	// A batch cancels its running fetches once one meets a failure every repository
+	// shares. A token fetch cut short that way must not read as a credential failure,
+	// which the batch ranks above the error that caused the cancellation.
+	t.Run("caller's context cancelled", func(t *testing.T) {
+		useFakeGH(t, "github.com")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		_, err := (&GHTokenSource{}).Token(ctx)
+
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Token() error = %v, want context.Canceled", err)
+		}
+		if errors.Is(err, ErrGHNotAuthed) || errors.Is(err, ErrGHTimedOut) {
+			t.Errorf("Token() error = %v, reported as a credential failure", err)
+		}
+	})
 	t.Run("gh does not respond in time", func(t *testing.T) {
 		useFakeGH(t, "github.com")
 		t.Setenv("FAKE_GH_SLEEP", "5")
