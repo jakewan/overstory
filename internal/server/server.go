@@ -908,7 +908,7 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 	// token, so the credential is the one to fix first. That ranking relies on a fetch
 	// this batch cancelled never reading as a credential failure — the token source
 	// reports a cancelled caller as the cancellation (TestGHTokenSourceClassifiesFailures)
-	// — or the cancellation would outrank the error that caused it.
+	// — or the cancellation could outrank the error that caused it.
 	var (
 		sharedMu  sync.Mutex
 		sharedErr error
@@ -970,12 +970,12 @@ func credentialFailure(err error) bool {
 // placeholder. A throttle carries its resolved reset instant; any other failure —
 // including a deadline trip, which classifies as no sentinel — is fetch_failed, its
 // cause logged to stderr (never the caller channel), as the trajectory fetch degrade
-// does.
+// does, unless the batch itself was cancelled, which discards the entry unlogged.
 func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, author string, since, until time.Time, now func() time.Time, perRepoTimeout time.Duration) (authored.BatchEntry, error) {
 	// On an already-cancelled batch, skip the network call: the handler discards
-	// the whole result on ctx.Err(), so this placeholder is never returned. This
-	// checks the parent ctx before deriving the per-repo deadline below, so a client
-	// cancellation is distinguished from this repo's own timeout.
+	// the whole result, so this placeholder is never returned. This checks the parent
+	// ctx before deriving the per-repo deadline below, so a batch cancellation is
+	// distinguished from this repo's own timeout.
 	if ctx.Err() != nil {
 		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}, nil
 	}
@@ -984,9 +984,9 @@ func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, autho
 	// it for the full transport timeout. A trip leaves the parent ctx alive, so it
 	// surfaces as this repo's fetch_failed (the DeadlineExceeded matches no sentinel
 	// and is not a RateLimitedError) without failing the batch.
-	ctx, cancel := context.WithTimeout(ctx, perRepoTimeout)
+	repoCtx, cancel := context.WithTimeout(ctx, perRepoTimeout)
 	defer cancel()
-	result, err := fetcher.AuthoredActivity(ctx, repo, author, since, until)
+	result, err := fetcher.AuthoredActivity(repoCtx, repo, author, since, until)
 	if err == nil {
 		return authored.BatchEntry{Repo: repo, Result: result}, nil
 	}
@@ -998,6 +998,13 @@ func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, autho
 	}
 	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableRateLimited, ResetAt: rateLimitResetTime(rle, now)}, nil
+	}
+	// A fetch the batch cancelled — after a failure every repo shares, or on the
+	// caller's cancellation — failed for no reason of its own, and its entry is
+	// discarded with the rest, so a diagnostic would report a failure that never
+	// happened. This reads the parent ctx: this repo's own deadline still logs.
+	if ctx.Err() != nil {
+		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}, nil
 	}
 	log.Printf("overstory: authored activity fetch for %s: %v", repo, err)
 	return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}, nil
@@ -1254,15 +1261,16 @@ func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []stri
 // credential failure is also returned as the error, for the handler to fail the
 // batch with; its entry is a placeholder. A throttle carries its resolved reset
 // instant; any other failure — including a deadline trip, which matches no sentinel
-// — is fetch_failed, its cause logged to stderr. There is no author-not-found path:
-// the events fetch resolves no actor.
+// — is fetch_failed, its cause logged to stderr unless the batch itself was cancelled
+// (see fetchAuthoredEntry). There is no author-not-found path: the events fetch
+// resolves no actor.
 func fetchMaintenanceEntry(ctx context.Context, fetcher github.Fetcher, repo string, since time.Time, now func() time.Time, perRepoTimeout time.Duration) (maintenance.BatchEntry, error) {
 	if ctx.Err() != nil {
 		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, perRepoTimeout)
+	repoCtx, cancel := context.WithTimeout(ctx, perRepoTimeout)
 	defer cancel()
-	result, err := fetcher.ListIssueEvents(ctx, repo, since, maintenanceFetchLimit)
+	result, err := fetcher.ListIssueEvents(repoCtx, repo, since, maintenanceFetchLimit)
 	if err == nil {
 		return maintenance.BatchEntry{Repo: repo, Result: result}, nil
 	}
@@ -1274,6 +1282,9 @@ func fetchMaintenanceEntry(ctx context.Context, fetcher github.Fetcher, repo str
 	}
 	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
 		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableRateLimited, ResetAt: rateLimitResetTime(rle, now)}, nil
+	}
+	if ctx.Err() != nil {
+		return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}, nil
 	}
 	log.Printf("overstory: maintenance activity fetch for %s: %v", repo, err)
 	return maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}, nil

@@ -193,7 +193,7 @@ func TestGHTokenSourceClassifiesFailures(t *testing.T) {
 	})
 	// A batch cancels its running fetches once one meets a failure every repository
 	// shares. A token fetch cut short that way must not read as a credential failure,
-	// which the batch ranks above the error that caused the cancellation.
+	// which the batch could rank above the error that caused the cancellation.
 	t.Run("caller's context cancelled", func(t *testing.T) {
 		useFakeGH(t, "github.com")
 		ctx, cancel := context.WithCancel(t.Context())
