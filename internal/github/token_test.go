@@ -81,21 +81,13 @@ func TestGHTokenSourceBindsTokenToAPIHost(t *testing.T) {
 		{name: "gh not on PATH", noGH: true, wantErr: ErrGHNotFound},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			binDir := t.TempDir()
-			logPath := filepath.Join(t.TempDir(), "hosts.log")
-			if !tc.noGH {
-				if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(fakeGH), 0o700); err != nil {
-					t.Fatalf("writing fake gh: %v", err)
-				}
+			logPath := useFakeGH(t, tc.loggedIn)
+			if tc.noGH {
+				t.Setenv("PATH", t.TempDir())
 			}
-			t.Setenv("PATH", binDir)
-			t.Setenv("FAKE_GH_LOG", logPath)
-			t.Setenv("FAKE_GH_LOGGED_IN", tc.loggedIn)
 			t.Setenv("GH_HOST", tc.ghHost)
 			if tc.emptyOut {
 				t.Setenv("FAKE_GH_EMPTY", "1")
-			} else {
-				t.Setenv("FAKE_GH_EMPTY", "")
 			}
 
 			token, err := NewGraphQLFetcher().tokens.Token(t.Context())
