@@ -867,9 +867,10 @@ func validateRepos(in []string, maxRepos int) ([]string, error) {
 // placeholders the handler discards wholesale once it observes ctx.Err().
 //
 // Two adverse-condition adaptations layer on top: a throttle or a credential failure
-// on any repo trips stopLaunch so not-yet-started repos are skipped as not_attempted
-// (see below), and each fetch carries a perRepoTimeout deadline so a hung repo
-// degrades to its own fetch_failed without stalling the rest.
+// on any repo trips stopLaunch so not-yet-started repos are skipped as not_attempted,
+// and a credential failure also cancels the fetches still running (see below); and
+// each fetch carries a perRepoTimeout deadline so a hung repo degrades to its own
+// fetch_failed without stalling the rest.
 func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) ([]authored.BatchEntry, error) {
 	entries := make([]authored.BatchEntry, len(repos))
 	// Guard two preconditions on the tuning parameters, so a future caller
@@ -890,12 +891,18 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 	// stopLaunch is the batch's stop signal, tripped by either of two outcomes that make
 	// launching more fetches waste. A throttle: the batch stops feeding the very
 	// secondary-rate-limit it just hit. A credential failure: every remaining fetch
-	// shares the token source and would fail the same way, each running gh again in
-	// turn behind the source's lock, for a batch the handler fails anyway. It is an
-	// atomic flag, not context cancellation, deliberately: in-flight fetches run on the
-	// parent ctx and must be allowed to complete — cancelling a shared ctx would abort
-	// them into fetch_failed.
+	// shares the token source and would fail the same way. On a throttle it is an
+	// atomic flag, not context cancellation, deliberately: the fetches already running
+	// keep results the batch returns, and cancelling them would abort them into
+	// fetch_failed.
 	var stopLaunch atomic.Bool
+	// A credential failure also cancels fanCtx, which every fetch runs on. The handler
+	// fails the batch with that error and discards every entry, so aborting the fetches
+	// still running loses nothing, and waiting for them would only delay the error —
+	// each queued on the token source behind a gh that may be hanging. The request ctx
+	// the handler checks for a client cancellation is its parent, so it stays clear.
+	fanCtx, cancelFan := context.WithCancel(ctx)
+	defer cancelFan()
 	var (
 		credOnce sync.Once
 		credErr  error
@@ -906,7 +913,7 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
-			case <-ctx.Done():
+			case <-fanCtx.Done():
 				entries[i] = authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}
 				return
 			}
@@ -918,9 +925,12 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 				entries[i] = authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableNotAttempted}
 				return
 			}
-			entry, err := fetchAuthoredEntry(ctx, fetcher, repo, author, since, until, now, perRepoTimeout)
+			entry, err := fetchAuthoredEntry(fanCtx, fetcher, repo, author, since, until, now, perRepoTimeout)
 			if err != nil {
-				credOnce.Do(func() { credErr = err })
+				credOnce.Do(func() {
+					credErr = err
+					cancelFan()
+				})
 				stopLaunch.Store(true)
 			}
 			if entry.Unavailable == authored.UnavailableRateLimited {
@@ -1175,8 +1185,9 @@ func maintenanceActivityBatchHandler(fetcher github.Fetcher, now func() time.Tim
 //
 // The same two adverse-condition adaptations as the authored fan-out layer on top:
 // a throttle or a credential failure on any repo trips stopLaunch so not-yet-started
-// repos are skipped as not_attempted, and each fetch carries a perRepoTimeout
-// deadline so a hung repo degrades to fetch_failed without stalling the rest.
+// repos are skipped as not_attempted, and a credential failure also cancels the
+// fetches still running; and each fetch carries a perRepoTimeout deadline so a hung
+// repo degrades to fetch_failed without stalling the rest.
 func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []string, since time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) ([]maintenance.BatchEntry, error) {
 	entries := make([]maintenance.BatchEntry, len(repos))
 	// Guard the tuning parameters so a misconfigured internal value degrades safely
@@ -1189,11 +1200,12 @@ func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []stri
 		perRepoTimeout = maintenanceBatchPerRepoTimeout
 	}
 	sem := make(chan struct{}, concurrency)
-	// stopLaunch is the stop flag (atomic, not ctx cancellation, so in-flight fetches
-	// on the parent ctx still complete rather than aborting into fetch_failed). Once
-	// any repo throttles or fails on the credential, new launches are skipped, for the
-	// reasons fanOutAuthored gives.
+	// stopLaunch is the stop flag: once any repo throttles or fails on the credential,
+	// new launches are skipped. A credential failure also cancels fanCtx, aborting the
+	// fetches still running. Both for the reasons fanOutAuthored gives.
 	var stopLaunch atomic.Bool
+	fanCtx, cancelFan := context.WithCancel(ctx)
+	defer cancelFan()
 	var (
 		credOnce sync.Once
 		credErr  error
@@ -1204,7 +1216,7 @@ func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []stri
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
-			case <-ctx.Done():
+			case <-fanCtx.Done():
 				entries[i] = maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableFetchFailed}
 				return
 			}
@@ -1212,9 +1224,12 @@ func fanOutMaintenance(ctx context.Context, fetcher github.Fetcher, repos []stri
 				entries[i] = maintenance.BatchEntry{Repo: repo, Unavailable: maintenance.UnavailableNotAttempted}
 				return
 			}
-			entry, err := fetchMaintenanceEntry(ctx, fetcher, repo, since, now, perRepoTimeout)
+			entry, err := fetchMaintenanceEntry(fanCtx, fetcher, repo, since, now, perRepoTimeout)
 			if err != nil {
-				credOnce.Do(func() { credErr = err })
+				credOnce.Do(func() {
+					credErr = err
+					cancelFan()
+				})
 				stopLaunch.Store(true)
 			}
 			if entry.Unavailable == maintenance.UnavailableRateLimited {

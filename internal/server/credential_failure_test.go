@@ -213,9 +213,72 @@ type orderedEvents struct {
 	seq   func(call int64) eventsCanned
 }
 
-func (f orderedEvents) ListIssueEvents(_ context.Context, _ string, _ time.Time, _ int) (github.IssueEventsResult, error) {
+func (f orderedEvents) ListIssueEvents(ctx context.Context, _ string, _ time.Time, _ int) (github.IssueEventsResult, error) {
 	c := f.seq(f.calls.Add(1))
+	if c.block {
+		<-ctx.Done()
+		return github.IssueEventsResult{}, ctx.Err()
+	}
 	return c.result, c.err
+}
+
+// TestBatchToolsCancelInFlightFetchesOnCredentialFailure pins that a credential
+// failure cuts short the fetches already running. The batch fails with it and
+// discards every entry, so waiting for them only delays the error, each fetch queued
+// on the token source behind a gh that may be hanging. The first fetch blocks until
+// its context is done and the second fails on the credential; the call must return
+// well inside the per-repo deadline that would otherwise be what releases the first.
+func TestBatchToolsCancelInFlightFetchesOnCredentialFailure(t *testing.T) {
+	const perRepoTimeout = 10 * time.Second
+	repos := []string{"acme/a", "acme/b"}
+	clock := func() time.Time { return fixedClock }
+	cases := []struct {
+		name string
+		run  func() error
+	}{
+		{"authored_activity_batch", func() error {
+			var calls atomic.Int64
+			fetcher := fakeFetcher{
+				authoredCalls: &calls,
+				authoredSeq: func(call int64) authoredCanned {
+					if call == 1 {
+						return authoredCanned{block: true}
+					}
+					return authoredCanned{err: github.ErrGHNotAuthed}
+				},
+			}
+			_, _, err := authoredActivityBatchHandler(fetcher, clock, 2, perRepoTimeout)(context.Background(), nil, authoredActivityBatchInput{Repos: repos, Author: "alice", Since: "2026-05-01T00:00:00Z"})
+			return err
+		}},
+		{"maintenance_activity_batch", func() error {
+			var calls atomic.Int64
+			fetcher := orderedEvents{
+				calls: &calls,
+				seq: func(call int64) eventsCanned {
+					if call == 1 {
+						return eventsCanned{block: true}
+					}
+					return eventsCanned{err: github.ErrGHNotAuthed}
+				},
+			}
+			_, _, err := maintenanceActivityBatchHandler(fetcher, clock, 2, perRepoTimeout)(context.Background(), nil, maintenanceActivityBatchInput{Repos: repos, Author: "alice", Since: "2026-05-01T00:00:00Z"})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+
+			err := tc.run()
+
+			if elapsed := time.Since(start); elapsed > perRepoTimeout/5 {
+				t.Errorf("batch returned after %s, want well inside the %s per-repo deadline", elapsed, perRepoTimeout)
+			}
+			if !errors.Is(err, github.ErrGHNotAuthed) {
+				t.Errorf("error = %v, want ErrGHNotAuthed", err)
+			}
+		})
+	}
 }
 
 // TestBatchToolsFailTheCallOnCredentialFailureBesideFinishedEntries pins that a
