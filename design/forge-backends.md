@@ -33,7 +33,7 @@ The problem is recorded in #133.
 ## Where GitHub is built in today
 
 - **One data interface, one implementation.** Every tool fetches through `github.Fetcher`. `GraphQLFetcher` is its only implementation, and it also performs the REST issue-events fetch.
-- **One fetcher and one credential for every repository.** `server.New` constructs a single fetcher and hands it to every tool handler. That fetcher holds one `GHTokenSource`, which runs `gh auth token` once and caches the result for the life of the process.
+- **One fetcher and one credential for every repository.** `server.New` constructs a single fetcher and hands it to every tool handler. That fetcher holds one `GHTokenSource`, which caches the token it gets from `gh auth token` until GitHub rejects it.
 - **Hardcoded endpoints.** `defaultEndpoint` and `defaultRESTEndpoint` name GitHub's API, and requests carry GitHub-specific headers.
 - **No host in identity.**
   - Single-repository tools take `owner` and `repo`.
@@ -47,9 +47,9 @@ The problem is recorded in #133.
   ```
 
   and spans `authored`, `backlog`, `criticalpath`, `dependency`, `maintenance`, `reduce`, `server` and `summary`.
-- **Failures are worded for GitHub.** The sentinel errors name `gh` and GitHub (`ErrGHNotFound`, `ErrGHNotAuthed`, `ErrRateLimited`).
+- **Failures are worded for GitHub.** The sentinel errors name `gh` and GitHub (`ErrGHNotFound`, `ErrGHNotAuthed`, `ErrGHTimedOut`, `ErrRateLimited`).
   - Single-repository tools return a fetch failure as a tool error wrapping that text.
-  - Batch tools map failures onto per-repository unavailability markers such as `not_found`, `rate_limited` and `fetch_failed`.
+  - Batch tools map failures onto per-repository unavailability markers such as `not_found`, `rate_limited` and `fetch_failed`, except a credential failure, which fails the whole batch with that text.
 - **Manifest resolution is per tool.** `backlog_review`, `project_summary` and `milestone_tracks` resolve a manifest entry. The activity tools and their batch forms never read the manifest.
 
 ## Repository identity
