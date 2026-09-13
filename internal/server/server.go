@@ -775,10 +775,11 @@ func authoredActivityBatchTool() *mcp.Tool {
 
 // authoredActivityBatchHandler validates the author, the repo list, and the
 // window, fans out the per-repo fetches, and reduces them to batch facts. It reads
-// no manifest (the primitive is window/author-driven) so it takes no resolver. An
-// unresolvable author or a credential failure — each repo-independent, so it fails
-// every repo — surfaces as one whole-batch error; every other failure degrades only
-// its own repo's entry.
+// no manifest (the primitive is window/author-driven) so it takes no resolver. A
+// failure every repo shares — an unresolvable author or a credential failure —
+// surfaces as one whole-batch error, as does a cancelled request. Every other failure
+// degrades only its own repo's entry, though a throttle also stops the launch of the
+// repos not yet started, which report not_attempted.
 func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time, concurrency int, perRepoTimeout time.Duration) mcp.ToolHandlerFor[authoredActivityBatchInput, authored.BatchFacts] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in authoredActivityBatchInput) (*mcp.CallToolResult, authored.BatchFacts, error) {
 		author := strings.TrimSpace(in.Author)
@@ -795,25 +796,20 @@ func authoredActivityBatchHandler(fetcher github.Fetcher, now func() time.Time, 
 			return nil, authored.BatchFacts{}, werr
 		}
 
-		entries, credErr := fanOutAuthored(ctx, fetcher, repos, author, since, until, now, concurrency, perRepoTimeout)
+		entries, sharedErr := fanOutAuthored(ctx, fetcher, repos, author, since, until, now, concurrency, perRepoTimeout)
 		// A cancelled request must surface as an error, not a fabricated success: the
 		// fan-out stamps not-yet-started repos with a placeholder, so without this
 		// guard the handler would return a 200 result built from those placeholders.
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, authored.BatchFacts{}, fmt.Errorf("authored_activity_batch cancelled: %w", cerr)
 		}
-		// Checked ahead of the author: resolving the login needs a working token, so a
-		// credential failure is the one to fix first.
-		if credErr != nil {
-			return nil, authored.BatchFacts{}, credErr
+		// The fetch's own author error names the repository that met it; the login is
+		// repo-independent, so the batch error names only the login.
+		if errors.Is(sharedErr, github.ErrAuthorNotFound) {
+			return nil, authored.BatchFacts{}, fmt.Errorf("author %q is not a GitHub user", author)
 		}
-		// The author login is repo-independent, so an unresolvable login fails every
-		// repo identically — escalate it to one named whole-batch error rather than
-		// returning N silent author-not-found markers.
-		for _, e := range entries {
-			if e.Unavailable == authored.UnavailableAuthorNotFound {
-				return nil, authored.BatchFacts{}, fmt.Errorf("author %q is not a GitHub user", author)
-			}
+		if sharedErr != nil {
+			return nil, authored.BatchFacts{}, sharedErr
 		}
 
 		facts := authored.ReduceBatch(entries, author, since, until)
@@ -856,20 +852,21 @@ func validateRepos(in []string, maxRepos int) ([]string, error) {
 
 // fanOutAuthored fetches each repo's authored activity concurrently (bounded by
 // concurrency) and classifies every outcome into a BatchEntry, so one repo's failure
-// degrades only its own entry — except a credential failure, which every repo shares
-// and which is returned alongside the entries for the handler to fail the batch
-// with. Each goroutine writes its own index in a pre-sized slice (distinct indices,
-// read only after Wait), preserving input order without a mutex. The request ctx
-// threads to every fetch so a client cancellation aborts in-flight HTTP; a goroutine
-// blocked acquiring the semaphore abandons its slot when the batch is cancelled, and
-// one that acquires after cancellation skips its fetch (fetchAuthoredEntry's
-// fast-path ctx check). The per-entry markers a cancelled batch produces are
-// placeholders the handler discards wholesale once it observes ctx.Err().
+// degrades only its own entry — except a failure every repo shares (a credential
+// failure or an unresolvable author), which is returned alongside the entries for
+// the handler to fail the batch with. Each goroutine writes its own index in a
+// pre-sized slice (distinct indices, read only after Wait), preserving input order
+// without a mutex. The request ctx threads to every fetch so a client cancellation
+// aborts in-flight HTTP; a goroutine blocked acquiring the semaphore abandons its
+// slot when the batch is cancelled, and one that acquires after cancellation skips
+// its fetch (fetchAuthoredEntry's fast-path ctx check). The per-entry markers a
+// cancelled batch produces are placeholders the handler discards wholesale once it
+// observes ctx.Err().
 //
-// Two adverse-condition adaptations layer on top: a throttle or a credential failure
-// on any repo trips stopLaunch so not-yet-started repos are skipped as not_attempted,
-// and a credential failure also cancels the fetches still running (see below); and
-// each fetch carries a perRepoTimeout deadline so a hung repo degrades to its own
+// Two adverse-condition adaptations layer on top: a throttle or a shared failure on
+// any repo trips stopLaunch so not-yet-started repos are skipped as not_attempted,
+// and a shared failure also cancels the fetches still running (see below); and each
+// fetch carries a perRepoTimeout deadline so a hung repo degrades to its own
 // fetch_failed without stalling the rest.
 func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string, author string, since, until time.Time, now func() time.Time, concurrency int, perRepoTimeout time.Duration) ([]authored.BatchEntry, error) {
 	entries := make([]authored.BatchEntry, len(repos))
@@ -890,22 +887,27 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 	sem := make(chan struct{}, concurrency)
 	// stopLaunch is the batch's stop signal, tripped by either of two outcomes that make
 	// launching more fetches waste. A throttle: the batch stops feeding the very
-	// secondary-rate-limit it just hit. A credential failure: every remaining fetch
-	// shares the token source and would fail the same way. On a throttle it is an
-	// atomic flag, not context cancellation, deliberately: the fetches already running
-	// keep results the batch returns, and cancelling them would abort them into
-	// fetch_failed.
+	// secondary-rate-limit it just hit. A shared failure: every remaining fetch shares
+	// the token source and resolves the same login, so each would fail the same way. On
+	// a throttle it is an atomic flag, not context cancellation, deliberately: the
+	// fetches already running keep results the batch returns, and cancelling them would
+	// abort them into fetch_failed.
 	var stopLaunch atomic.Bool
-	// A credential failure also cancels fanCtx, which every fetch runs on. The handler
-	// fails the batch with that error and discards every entry, so aborting the fetches
-	// still running loses nothing, and waiting for them would only delay the error —
-	// each queued on the token source behind a gh that may be hanging. The request ctx
-	// the handler checks for a client cancellation is its parent, so it stays clear.
+	// A shared failure also cancels fanCtx, which every fetch runs on. The handler fails
+	// the batch with that error and discards every entry, so aborting the fetches still
+	// running loses nothing, and waiting for them would only delay the error — on a
+	// credential failure, each queued on the token source behind a gh that may be
+	// hanging. The request ctx the handler checks for a client cancellation is its
+	// parent, so it stays clear.
 	fanCtx, cancelFan := context.WithCancel(ctx)
 	defer cancelFan()
+	// sharedErr is the shared failure the handler reports. A credential failure replaces
+	// a recorded unresolvable author, never the reverse, so which one a batch reports
+	// doesn't depend on which fetch finished first: resolving the login needs a working
+	// token, so the credential is the one to fix first.
 	var (
-		credOnce sync.Once
-		credErr  error
+		sharedMu  sync.Mutex
+		sharedErr error
 	)
 	var wg sync.WaitGroup
 	for i, repo := range repos {
@@ -918,7 +920,7 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 				return
 			}
 			// Stop gate, checked after acquiring the slot: if an earlier repo already
-			// throttled or failed on the credential, skip this fetch entirely (no network
+			// throttled or met a shared failure, skip this fetch entirely (no network
 			// call, no per-repo timeout context) and record it as a deliberate
 			// not_attempted skip.
 			if stopLaunch.Load() {
@@ -927,11 +929,13 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 			}
 			entry, err := fetchAuthoredEntry(fanCtx, fetcher, repo, author, since, until, now, perRepoTimeout)
 			if err != nil {
-				credOnce.Do(func() {
-					credErr = err
-					cancelFan()
-				})
+				sharedMu.Lock()
+				if sharedErr == nil || (credentialFailure(err) && !credentialFailure(sharedErr)) {
+					sharedErr = err
+				}
+				sharedMu.Unlock()
 				stopLaunch.Store(true)
+				cancelFan()
 			}
 			if entry.Unavailable == authored.UnavailableRateLimited {
 				stopLaunch.Store(true)
@@ -940,7 +944,7 @@ func fanOutAuthored(ctx context.Context, fetcher github.Fetcher, repos []string,
 		})
 	}
 	wg.Wait()
-	return entries, credErr
+	return entries, sharedErr
 }
 
 // credentialFailure reports whether err is a failure to obtain the token rather than
@@ -956,13 +960,13 @@ func credentialFailure(err error) bool {
 
 // fetchAuthoredEntry fetches one repo under a perRepoTimeout deadline (derived from
 // ctx, so a hung repo can't hold its slot for the full transport timeout) and maps
-// the outcome to a BatchEntry: counts on success, else a per-repo marker. A
-// credential failure is also returned as the error, for the handler to fail the
-// batch with; its entry is a placeholder. An unresolvable author is flagged with the
-// internal author-not-found reason the handler escalates to a whole-batch error; a
-// throttle carries its resolved reset instant; any other failure — including a
-// deadline trip, which classifies as no sentinel — is fetch_failed, its cause logged
-// to stderr (never the caller channel), as the trajectory fetch degrade does.
+// the outcome to a BatchEntry: counts on success, else a per-repo marker. A failure
+// every repo shares — a credential failure or an unresolvable author — is also
+// returned as the error, for the handler to fail the batch with; its entry is a
+// placeholder. A throttle carries its resolved reset instant; any other failure —
+// including a deadline trip, which classifies as no sentinel — is fetch_failed, its
+// cause logged to stderr (never the caller channel), as the trajectory fetch degrade
+// does.
 func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, author string, since, until time.Time, now func() time.Time, perRepoTimeout time.Duration) (authored.BatchEntry, error) {
 	// On an already-cancelled batch, skip the network call: the handler discards
 	// the whole result on ctx.Err(), so this placeholder is never returned. This
@@ -982,13 +986,10 @@ func fetchAuthoredEntry(ctx context.Context, fetcher github.Fetcher, repo, autho
 	if err == nil {
 		return authored.BatchEntry{Repo: repo, Result: result}, nil
 	}
-	if credentialFailure(err) {
+	if credentialFailure(err) || errors.Is(err, github.ErrAuthorNotFound) {
 		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableFetchFailed}, err
 	}
-	switch {
-	case errors.Is(err, github.ErrAuthorNotFound):
-		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableAuthorNotFound}, nil
-	case errors.Is(err, github.ErrRepoNotFound):
+	if errors.Is(err, github.ErrRepoNotFound) {
 		return authored.BatchEntry{Repo: repo, Unavailable: authored.UnavailableNotFound}, nil
 	}
 	if rle, ok := errors.AsType[github.RateLimitedError](err); ok {
@@ -1176,8 +1177,8 @@ func maintenanceActivityBatchHandler(fetcher github.Fetcher, now func() time.Tim
 // failure degrades only its own entry — except a credential failure, which every
 // repo shares and which is returned alongside the entries for the handler to fail
 // the batch with. It is a deliberate parallel of fanOutAuthored rather than a shared
-// generic: the two differ in classification (authored threads an author-not-found
-// sentinel that maintenance has no analog for) and budget pool (GraphQL points vs
+// generic: the two differ in classification (authored also escalates an unresolvable
+// author, which maintenance has no analog for) and budget pool (GraphQL points vs
 // REST requests), and a premature generic would have to parameterize the
 // sentinel-to-marker mapping while risking the landed authored race tests' timing
 // assumptions. The actor is not passed here — it is a reduction-side filter, not a

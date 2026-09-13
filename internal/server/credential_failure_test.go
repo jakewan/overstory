@@ -159,27 +159,55 @@ func TestBatchToolsStopLaunchingAfterCredentialFailure(t *testing.T) {
 	})
 }
 
+// orderedAuthored is a fakeFetcher whose AuthoredActivity outcome is chosen by call
+// order and may wait on the fetch's context, so a test can fix the order in which two
+// running fetches finish without depending on which repository wins a slot.
+type orderedAuthored struct {
+	fakeFetcher
+	calls *atomic.Int64
+	seq   func(ctx context.Context, call int64) (github.AuthoredActivityResult, error)
+}
+
+func (f orderedAuthored) AuthoredActivity(ctx context.Context, _, _ string, _, _ time.Time) (github.AuthoredActivityResult, error) {
+	return f.seq(ctx, f.calls.Add(1))
+}
+
 // TestAuthoredActivityBatchCredentialFailureOutranksUnresolvableAuthor pins the order
 // of the two whole-batch errors: resolving the author needs a working token, so a
-// credential failure is reported even when another repository already reported the
-// author unresolvable.
+// credential failure is reported whichever of the two a batch meets first. Both
+// fetches are running before either finishes: the first waits for the second to
+// start, and the second returns only once the first has stopped the batch.
 func TestAuthoredActivityBatchCredentialFailureOutranksUnresolvableAuthor(t *testing.T) {
-	var calls atomic.Int64
-	fetcher := fakeFetcher{
-		authoredCalls: &calls,
-		authoredSeq: func(call int64) authoredCanned {
-			if call == 1 {
-				return authoredCanned{err: github.ErrAuthorNotFound}
+	for _, tc := range []struct {
+		name          string
+		first, second error
+	}{
+		{"author met first", github.ErrAuthorNotFound, github.ErrGHNotAuthed},
+		{"credential met first", github.ErrGHNotAuthed, github.ErrAuthorNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			secondStarted := make(chan struct{})
+			fetcher := orderedAuthored{
+				calls: &calls,
+				seq: func(ctx context.Context, call int64) (github.AuthoredActivityResult, error) {
+					if call == 1 {
+						<-secondStarted
+						return github.AuthoredActivityResult{}, tc.first
+					}
+					close(secondStarted)
+					<-ctx.Done()
+					return github.AuthoredActivityResult{}, tc.second
+				},
 			}
-			return authoredCanned{err: github.ErrGHNotAuthed}
-		},
-	}
-	handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 1, authoredBatchPerRepoTimeout)
+			handler := authoredActivityBatchHandler(fetcher, func() time.Time { return fixedClock }, 2, 2*time.Second)
 
-	_, _, err := handler(context.Background(), nil, authoredActivityBatchInput{Repos: []string{"acme/a", "acme/b"}, Author: "alice", Since: "2026-05-01T00:00:00Z"})
+			_, _, err := handler(context.Background(), nil, authoredActivityBatchInput{Repos: []string{"acme/a", "acme/b"}, Author: "alice", Since: "2026-05-01T00:00:00Z"})
 
-	if !errors.Is(err, github.ErrGHNotAuthed) {
-		t.Fatalf("error = %v, want ErrGHNotAuthed ahead of the unresolvable author", err)
+			if !errors.Is(err, github.ErrGHNotAuthed) {
+				t.Fatalf("error = %v, want ErrGHNotAuthed ahead of the unresolvable author", err)
+			}
+		})
 	}
 }
 
