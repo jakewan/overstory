@@ -4,7 +4,7 @@ A linear path from a cloned repository to a registered MCP server an agent can c
 
 ## Prerequisites
 
-- **The [`gh`](https://cli.github.com/) CLI, authenticated.** Overstory fetches issues and PRs from the GitHub GraphQL API in-process, using credentials it sources from `gh` for github.com (`gh auth token --hostname github.com`). It inherits your existing `gh` authentication — there is no separate token to configure. It always asks for github.com's token, whatever `gh`'s default host is, so a GitHub Enterprise Server login or a `GH_HOST` setting does not stand in for a github.com login. Run `gh auth status --hostname github.com` to confirm you're logged in.
+- **The [`gh`](https://cli.github.com/) CLI, authenticated.** Overstory fetches issues and PRs from the GitHub GraphQL API in-process, using credentials it sources from `gh` for github.com (`gh auth token --hostname github.com`). It inherits your existing `gh` authentication — there is no separate token to configure. It always asks for github.com's token, whatever `gh`'s default host is, so a GitHub Enterprise Server login or a `GH_HOST` setting does not stand in for a github.com login. A token in `GH_TOKEN` or `GITHUB_TOKEN` is the exception: `gh` applies either variable to github.com and `ghe.com` hosts alike, so it is used as set. Run `gh auth status --hostname github.com` to confirm you're logged in.
 - **A toolchain to build the binary** — [mise](https://mise.jdx.dev/) and [just](https://github.com/casey/just), per the repository's `CONTRIBUTING.md`. (Prebuilt binaries are not yet distributed; you build from source.)
 
 ## Install the binary
