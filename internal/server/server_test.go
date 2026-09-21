@@ -136,9 +136,10 @@ func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 }
 
 // TestToolDescriptionsFitClaudeCodeDisplayLimit holds every registered tool's
-// description to what Claude Code shows a model. A description past the limit reaches the
-// model cut short, and nothing in a test run or an ordinary tool call shows it; the part
-// cut is the contract a model reads before it calls the tool. Ranging over ListTools covers a tool added later without edits.
+// description to what Claude Code shows a model. A description past the limit reaches
+// the model cut short, and nothing in a test run or an ordinary tool call shows it; the
+// part cut is the contract a model reads before it calls the tool. Ranging over
+// ListTools covers a tool added later without edits.
 func TestToolDescriptionsFitClaudeCodeDisplayLimit(t *testing.T) {
 	cs := connect(t, New())
 	res, err := cs.ListTools(context.Background(), nil)
@@ -206,10 +207,13 @@ func TestReadinessToolDescriptionsStateRenderTimeRules(t *testing.T) {
 		"truncated edge list",
 		"unread seam",
 		"empty edge list is not evidence of readiness",
-		// the critical-path gate's own, distinct provisional state
-		"provisional under a truncated fetch",
-		// truncation and degradation
-		"flags mark a floor",
+		// the critical-path gate's own, distinct provisional state, and both its causes
+		"provisional under a truncated fetch or labelTruncatedCount",
+		// a truncated window floors what it derives, but each block's open total is exact
+		"every openIssueCount stays exact",
+		// listTruncated cuts a list, not a count
+		"listTruncated means a list was cut at limit",
+		// secondary fetches carry their own flags and degrade alone
 		"available:false",
 		"sizeBound",
 	}
@@ -224,8 +228,8 @@ func TestReadinessToolDescriptionsStateRenderTimeRules(t *testing.T) {
 		"project_summary": {
 			// a missing-area count with no area labels seen is not a defect list
 			"observation to investigate",
-			// a capped label list can hide an area or deferred label either way
-			"either direction",
+			// a capped label list errs one way per signal, not as a floor
+			"may read high",
 			"flagged when members are a floor",
 			"ranking stays with the caller",
 		},
