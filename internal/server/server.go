@@ -381,7 +381,8 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 		if facts.Dependencies != nil {
 			units = append(units,
 				trimUnit("dependencies:gates", &facts.Dependencies.Gates, &facts.Dependencies.GatesTruncated),
-				trimUnit("dependencies:blocked", &facts.Dependencies.Blocked, &facts.Dependencies.BlockedTruncated))
+				trimUnit("dependencies:blocked", &facts.Dependencies.Blocked, &facts.Dependencies.BlockedTruncated),
+				trimUnit("dependencies:provisional", &facts.Dependencies.Provisional, &facts.Dependencies.ProvisionalTruncated))
 		}
 		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
 			return nil, backlog.Facts{}, fmt.Errorf("bounding response for %s: %w", ownerRepo, err)
