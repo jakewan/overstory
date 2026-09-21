@@ -10,7 +10,7 @@
 // The graph-level classification is the block's reason to exist. The deferred
 // (backlog) and recommendation (summary) blocks already list per-issue edges; what
 // neither computes is the ready/blocked split and the gate set — the open issues
-// that block others but are themselves unblocked, the highest-leverage work to do
+// that block others but are themselves ready, the highest-leverage work to do
 // first. That classification is the new signal here. (The package is named for the
 // edge domain it reads, like the sibling block key "dependencies"; the signal it
 // derives is the gate-readiness classification.)

@@ -60,8 +60,8 @@ type RecommendationFacts struct {
 // dropped rather than carried separately: it lets a caller weigh how
 // much downstream work a candidate stands in front of, not just whether the
 // candidate is itself ready. It is a gate this issue contributes, not necessarily
-// the only one — a downstream issue several issues block stays blocked until they
-// all close. Non-nil even when empty; BlockingTruncated marks more native blocking
+// the only one — a downstream issue several issues block stays blocked at least
+// until they all close, and longer while it has a sub-issue gap. Non-nil even when empty; BlockingTruncated marks more native blocking
 // edges than the fetch window read.
 //
 // SubIssues are the ascending, distinct numbers of the candidate's still-open
