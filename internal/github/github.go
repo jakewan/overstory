@@ -45,21 +45,27 @@ import (
 // flag that a graph edge may be missing rather than report incomplete data as
 // complete.
 //
-// BlockedBy is GitHub's authoritative native blocked-by edges for this issue —
-// each a same-repository issue this one is declared to depend on, with its open/
-// closed state. Cross-repository blockers are dropped (same collision reasoning as
-// ReferencedBy: a foreign repo's issue number would otherwise read as a local one);
-// a blocker is always an issue, never a PR, because the edge type is an issue
-// connection. BlockedByTruncated is set when the issue had more native edges than
-// the fetch cap, so a consumer flags that absence past the window is not proof of
-// readiness. This is the trustworthy counterpart to the heuristic body-text
-// dependency proxy the reductions derive from BodyText.
+// BlockedBy is the native blocked-by edges this server read for this issue — each a
+// same-repository issue this one is declared to depend on, with its open/closed
+// state. A blocker is always an issue, never a PR, because the edge type is an issue
+// connection. BlockedByExternal carries the edges into other repositories, which
+// cannot join BlockedBy because a foreign issue number read as a local one would
+// address a different issue (the same collision reasoning as ReferencedBy). They are
+// separate fields rather than one qualified list so the common case stays a bare
+// number; both are read from the same connection, and both gate equally — an open
+// blocker gates wherever it lives. BlockedByTruncated is set when the issue had more
+// native edges than the fetch cap, so a consumer flags that absence past the window
+// is not proof of readiness; it bounds the two lists together, since the cap is over
+// the one connection that feeds both. This is the trustworthy counterpart to the
+// heuristic body-text dependency proxy the reductions derive from BodyText.
 //
 // Blocking is the reverse direction: the native edges to same-repository issues
 // this one is declared to block, with each downstream issue's open/closed state.
-// Same shape and same cross-repository drop as BlockedBy — a blocked issue is
-// always an issue, never a PR — but the directional meaning is mirrored: Open here
-// means the *downstream* issue is still open, so this issue is one of the gates
+// A cross-repository edge is dropped here rather than carried as BlockedBy's is: a
+// foreign downstream issue changes how much work this one gates, never whether this
+// one is startable, so it stays dropped until something needs to name it. A blocked
+// issue is always an issue, never a PR, and the directional meaning is mirrored: Open
+// here means the *downstream* issue is still open, so this issue is one of the gates
 // standing in front of it. It is a gate this issue contributes, not necessarily the
 // sole one — a downstream issue several issues block stays blocked until all of them
 // close, so closing this issue is necessary but not always sufficient to free it.
@@ -67,11 +73,13 @@ import (
 // fetch cap.
 //
 // SubIssues is the third native dependency relationship: the same-repository child
-// issues of this parent, each with its open/closed state — same shape and same
-// cross-repository drop as the dependency edges (a sub-issue is always an issue,
-// never a PR). A parent with open children is gated on them, so this is the
-// hierarchy form of the same false-ready gate. SubIssuesTruncated marks more native
-// children than the fetch cap read.
+// issues of this parent, each with its open/closed state (a sub-issue is always an
+// issue, never a PR). A cross-repository child is dropped, as a Blocking edge is:
+// the verdict does not rest on this list, because the summary pair below counts
+// every child wherever it lives. A parent with open children is gated on them, so
+// this is the hierarchy form of the same false-ready gate — what a dropped child
+// costs is the ability to name it, not the gate itself. SubIssuesTruncated marks
+// more native children than the fetch cap read.
 //
 // SubIssuesTotal and SubIssuesCompleted are GitHub's authoritative subIssuesSummary
 // pair — counted over *all* children (every repository, never capped), unlike the
@@ -92,33 +100,37 @@ import (
 // read at all", and an empty edge list means neither on its own. Without them an
 // unread seam and a genuinely clear one are the same zero — the false-ready the
 // truncation contract already refuses for a capped list. The GraphQL fetcher leaves
-// both at SeamAvailable, and the guard that makes that true is classifyGraphQLErrors
-// rejecting any partial payload, not the schema's non-null fields: an IssueConnection
-// node is itself nullable, so a field error nulls the whole node rather than the
-// field. Were that guard relaxed, a null node would decode to a zero-valued issue and
-// this pair is what keeps it from reading as ready.
+// SubIssueGapState at SeamAvailable, and raises BlockedByState to SeamUnavailable in
+// one case: a blocked-by edge whose repository the response did not identify, which
+// neither BlockedBy nor BlockedByExternal can carry without misrepresenting it. What
+// keeps that case rare is classifyGraphQLErrors rejecting any partial payload, not
+// the schema's non-null fields: an IssueConnection node is itself nullable, so a
+// field error nulls the whole node rather than the field. Were that guard relaxed, a
+// null node would decode to a zero-valued issue and this pair is what keeps it from
+// reading as ready.
 type Issue struct {
-	Number             int             `json:"number"`
-	Title              string          `json:"title"`
-	URL                string          `json:"url"`
-	CreatedAt          time.Time       `json:"createdAt"`
-	LastActivityAt     time.Time       `json:"lastActivityAt"`
-	Labels             []string        `json:"labels"`
-	LabelsTruncated    bool            `json:"labelsTruncated"`
-	BodyText           string          `json:"bodyText"`
-	ReferencedBy       []int           `json:"referencedBy"`
-	CrossRefsTruncated bool            `json:"crossRefsTruncated"`
-	BlockedBy          []DependencyRef `json:"blockedBy"`
-	BlockedByTruncated bool            `json:"blockedByTruncated"`
-	Blocking           []DependencyRef `json:"blocking"`
-	BlockingTruncated  bool            `json:"blockingTruncated"`
-	SubIssues          []DependencyRef `json:"subIssues"`
-	SubIssuesTruncated bool            `json:"subIssuesTruncated"`
-	SubIssuesTotal     int             `json:"subIssuesTotal"`
-	SubIssuesCompleted int             `json:"subIssuesCompleted"`
-	BlockedByState     SeamState       `json:"blockedByState"`
-	SubIssueGapState   SeamState       `json:"subIssueGapState"`
-	Milestone          *MilestoneRef   `json:"milestone,omitempty"`
+	Number             int                     `json:"number"`
+	Title              string                  `json:"title"`
+	URL                string                  `json:"url"`
+	CreatedAt          time.Time               `json:"createdAt"`
+	LastActivityAt     time.Time               `json:"lastActivityAt"`
+	Labels             []string                `json:"labels"`
+	LabelsTruncated    bool                    `json:"labelsTruncated"`
+	BodyText           string                  `json:"bodyText"`
+	ReferencedBy       []int                   `json:"referencedBy"`
+	CrossRefsTruncated bool                    `json:"crossRefsTruncated"`
+	BlockedBy          []DependencyRef         `json:"blockedBy"`
+	BlockedByExternal  []ExternalDependencyRef `json:"blockedByExternal"`
+	BlockedByTruncated bool                    `json:"blockedByTruncated"`
+	Blocking           []DependencyRef         `json:"blocking"`
+	BlockingTruncated  bool                    `json:"blockingTruncated"`
+	SubIssues          []DependencyRef         `json:"subIssues"`
+	SubIssuesTruncated bool                    `json:"subIssuesTruncated"`
+	SubIssuesTotal     int                     `json:"subIssuesTotal"`
+	SubIssuesCompleted int                     `json:"subIssuesCompleted"`
+	BlockedByState     SeamState               `json:"blockedByState"`
+	SubIssueGapState   SeamState               `json:"subIssueGapState"`
+	Milestone          *MilestoneRef           `json:"milestone,omitempty"`
 }
 
 // SeamState says whether a seam — an input a readiness verdict rests on — could be
@@ -269,6 +281,19 @@ func (s SeamState) String() string {
 type DependencyRef struct {
 	Number int  `json:"number"`
 	Open   bool `json:"open"`
+}
+
+// ExternalDependencyRef is one native dependency edge whose referenced issue lives
+// in another repository. It carries the same Number and Open state as DependencyRef
+// plus the repository that qualifies them, because a foreign number read alone would
+// address a different issue in the queried repository — the collision that made the
+// edge droppable in the first place. Repo is the edge's "owner/name" as the forge
+// reports it, so a caller can render the reference; identity is decided by the
+// repository's node id, which the projection compares and does not carry.
+type ExternalDependencyRef struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+	Open   bool   `json:"open"`
 }
 
 // MilestoneRef is an issue's milestone association: enough to group the issue and

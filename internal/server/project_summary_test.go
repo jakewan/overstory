@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -435,6 +436,46 @@ func TestProjectSummarySurfacesDependencyClassification(t *testing.T) {
 	}
 }
 
+// TestProjectSummaryCrossRepoBlockerGatesTheCandidate pins that an issue whose only
+// open blocker lives in another repository is not startable. The blocker's state is
+// read from the edge exactly as a same-repo one is, so the verdict is blocked rather
+// than provisional — and the candidate names it, since a caller told an issue is
+// gated needs to know by what. The number alone cannot say so (a foreign number would
+// read as a local issue), which is why the reference carries its repository.
+func TestProjectSummaryCrossRepoBlockerGatesTheCandidate(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	gated := issue(7, daysAgo(1))
+	gated.BlockedByExternal = []github.ExternalDependencyRef{
+		{Repo: "acme/gadgets", Number: 12, Open: true},
+		{Repo: "acme/gadgets", Number: 4, Open: false}, // closed blocker no longer gates
+	}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues: []github.Issue{gated}, TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	dep := facts.Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.BlockedCount != 1 || dep.ReadyCount != 0 {
+		t.Errorf("counts blocked=%d ready=%d, want 1/0 — an open blocker in another repo still gates", dep.BlockedCount, dep.ReadyCount)
+	}
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	c := facts.Recommendations.Candidates[0]
+	if c.Readiness != reduce.VerdictBlocked {
+		t.Errorf("Readiness = %q, want %q", c.Readiness, reduce.VerdictBlocked)
+	}
+	want := []reduce.ExternalRef{{Repo: "acme/gadgets", Number: 12}}
+	if !reflect.DeepEqual(c.BlockedByExternal, want) {
+		t.Errorf("BlockedByExternal = %v, want %v (open only)", c.BlockedByExternal, want)
+	}
+}
+
 // TestProjectSummaryDependencySeamNotCarriedByRepo mirrors backlog_review's case on
 // the classification projection: a ready count means something different where a seam
 // has no carrier, and a caller reading only this projection has no per-issue edges to
@@ -590,6 +631,9 @@ func TestProjectSummaryRecommendationBlockedByEmptySerializesAsArray(t *testing.
 	}
 	if facts.Recommendations.Candidates[0].BlockedBy == nil {
 		t.Error("BlockedBy = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+	if facts.Recommendations.Candidates[0].BlockedByExternal == nil {
+		t.Error("BlockedByExternal = nil (serialized as null), want non-nil empty slice (serialized as [])")
 	}
 }
 
