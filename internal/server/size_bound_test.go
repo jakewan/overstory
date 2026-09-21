@@ -86,6 +86,58 @@ func TestBacklogReviewBoundsResponseSize(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewBoundsProvisionalList pins the dependency block's provisional list
+// as a trim unit: on a window where every issue is provisional — the shape a
+// repository-wide unread seam produces — the list is what dominates the response, so
+// it must be trimmable and attributed like the other detail lists, with its count
+// intact.
+func TestBacklogReviewBoundsProvisionalList(t *testing.T) {
+	const maxBytes = 6000
+	// Overlap is disabled so the near-identical fixture titles do not form a group
+	// that competes with the list under test.
+	root := writeManifestDir(t, fmt.Sprintf(
+		"acme/widgets:\n  overlap:\n    titleSimilarityThreshold: 0\n  response:\n    maxBytes: %d\n", maxBytes))
+	issues := make([]github.Issue, 0, 60)
+	for i := 1; i <= 60; i++ {
+		is := labeledIssue(i, "area/simulation")
+		is.Title = fmt.Sprintf("a reasonably descriptive issue title number %d that adds bytes", i)
+		is.BodyText = "a body, so the quality block does not flag the issue"
+		is.BlockedByState = github.SeamUnavailable
+		issues = append(issues, is)
+	}
+	fetcher := fakeFetcher{result: github.IssueListResult{Issues: issues, TotalOpen: 60}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 100})
+	facts := decodeFacts(t, res)
+
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a marker on an over-budget response")
+	}
+	if got := structuredLen(t, res); got > maxBytes {
+		t.Errorf("structured size = %d bytes, want <= %d", got, maxBytes)
+	}
+	dep := facts.Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.ProvisionalCount != 60 {
+		t.Errorf("ProvisionalCount = %d, want 60 (counts are never trimmed)", dep.ProvisionalCount)
+	}
+	if !dep.ProvisionalTruncated || len(dep.Provisional) >= 60 {
+		t.Errorf("provisional list not trimmed: truncated=%v len=%d", dep.ProvisionalTruncated, len(dep.Provisional))
+	}
+	var attributed bool
+	for _, tb := range facts.SizeBound.TrimmedBlocks {
+		if tb.Block == "dependencies:provisional" && tb.Dropped > 0 {
+			attributed = true
+		}
+	}
+	if !attributed {
+		t.Errorf("TrimmedBlocks = %+v, want a dependencies:provisional entry", facts.SizeBound.TrimmedBlocks)
+	}
+}
+
 // TestBacklogReviewWitnessesWireDuplication documents the SDK behavior the size
 // budget calibrates for: the facts cross the wire twice — once in
 // StructuredContent, once in a back-compat TextContent block.

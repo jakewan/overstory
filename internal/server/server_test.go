@@ -224,6 +224,8 @@ func TestReadinessToolDescriptionsStateRenderTimeRules(t *testing.T) {
 			"deferred ones excluded",
 			// native edges outrank the mention graph's direction
 			"crossRef mention graph can invert",
+			// the dependencies block lists provisional issues with their per-issue cause
+			"provisional issues with the states and flag behind each",
 		},
 		"project_summary": {
 			// a missing-area count with no area labels seen is not a defect list

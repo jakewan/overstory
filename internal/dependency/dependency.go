@@ -49,8 +49,10 @@ import (
 // The two differ in blast radius rather than in kind — a capped list is per-issue and
 // rare, while an unread seam usually fires across the whole window — which is why
 // Seams reports the forge-level state separately rather than leaving a caller to
-// infer it from the size of the count. Gates and Blocked are the two actionable lists
-// (capped at Limit, counts never capped).
+// infer it from the size of the count. Gates and Blocked are the actionable lists, and
+// Provisional lists the unconfirmed issues with the per-issue state and flag behind each
+// verdict — the cause Seams cannot give once any issue was read. Every list is capped
+// at Limit; the counts never are.
 type Facts struct {
 	OpenIssueCount   int  `json:"openIssueCount"`
 	FetchedCount     int  `json:"fetchedCount"`
@@ -60,12 +62,14 @@ type Facts struct {
 	ProvisionalCount int  `json:"provisionalCount"`
 	// GateCount is the total number of gates before the Gates list is capped, so a
 	// caller can tell how many do-first roots exist when GatesTruncated is set.
-	GateCount        int     `json:"gateCount"`
-	Gates            []Issue `json:"gates"`
-	GatesTruncated   bool    `json:"gatesTruncated"`
-	Blocked          []Issue `json:"blocked"`
-	BlockedTruncated bool    `json:"blockedTruncated"`
-	Limit            int     `json:"limit"`
+	GateCount            int     `json:"gateCount"`
+	Gates                []Issue `json:"gates"`
+	GatesTruncated       bool    `json:"gatesTruncated"`
+	Blocked              []Issue `json:"blocked"`
+	BlockedTruncated     bool    `json:"blockedTruncated"`
+	Provisional          []Issue `json:"provisional"`
+	ProvisionalTruncated bool    `json:"provisionalTruncated"`
+	Limit                int     `json:"limit"`
 	// Seams says which inputs the readiness verdict rests on and whether this forge
 	// carries each, so a caller renders "readiness here rests on blocked-by edges
 	// alone" from a stated fact rather than inferring it from a population of zeros.
@@ -108,9 +112,9 @@ type SeamReport struct {
 // distinctions are dropped.
 //
 // It carries no readiness field, unlike the recommendation and deferred projections of
-// the same edge fields, because the lists it appears in are already partitioned by
-// verdict: an issue in Gates is ready and one in Blocked is blocked, and neither list
-// ever holds a provisional issue. The rule for a future projection is that one, not an
+// the same edge fields, because every list it appears in is already partitioned by
+// verdict: an issue in Gates is ready, one in Blocked is blocked, and one in
+// Provisional is provisional. The rule for a future projection is that one, not an
 // exemption — a projection not partitioned by verdict carries the field.
 type Issue struct {
 	Number             int                  `json:"number"`
@@ -127,9 +131,9 @@ type Issue struct {
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
-// totalOpen keeps OpenIssueCount exact when the window is truncated; the Gates and
-// Blocked lists are each capped at listLimit (counts are not). The reduction is
-// time-independent, so it takes no clock.
+// totalOpen keeps OpenIssueCount exact when the window is truncated; every list is
+// capped at listLimit (counts are not). The reduction is time-independent, so it
+// takes no clock.
 //
 // An issue is blocked when it has an open blocked-by edge — in this repository or
 // another, since a blocker gates wherever it lives — or an open sub-issue gate
@@ -157,6 +161,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		FetchTruncated: len(issues) < totalOpen,
 		Gates:          make([]Issue, 0),
 		Blocked:        make([]Issue, 0),
+		Provisional:    make([]Issue, 0),
 		Limit:          listLimit,
 		Seams: SeamReport{
 			BlockedBy: blockSeam(caps.CarriesBlockedByEdges(), issues,
@@ -198,10 +203,14 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 			if len(blocking) > 0 {
 				facts.Gates = append(facts.Gates, item)
 			}
+		case reduce.VerdictProvisional:
+			facts.ProvisionalCount++
+			facts.Provisional = append(facts.Provisional, item)
 		default:
-			// Provisional, and whatever a later Verdict adds: the three counts must still
-			// sum to the fetched window, and an unrecognized verdict must not read as
-			// ready.
+			// Whatever a later Verdict adds: the three counts must still sum to the
+			// fetched window, and an unrecognized verdict must not read as ready. It is
+			// counted without being listed, so the Provisional list never holds an issue
+			// whose verdict is something else.
 			facts.ProvisionalCount++
 		}
 	}
@@ -225,18 +234,28 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		return facts.Blocked[i].Number < facts.Blocked[j].Number
 	})
 
+	// Provisional: by number. No gate was observed on these issues, and ranking them by
+	// the work they block would rank on readiness that is unconfirmed.
+	sort.Slice(facts.Provisional, func(i, j int) bool {
+		return facts.Provisional[i].Number < facts.Provisional[j].Number
+	})
+
 	// Counts are taken before the list caps, so they stay authoritative.
 	facts.GateCount = len(facts.Gates)
 	facts.Gates, facts.GatesTruncated = capList(facts.Gates, listLimit)
 	facts.Blocked, facts.BlockedTruncated = capList(facts.Blocked, listLimit)
+	facts.Provisional, facts.ProvisionalTruncated = capList(facts.Provisional, listLimit)
 	return facts
 }
 
 // Classification is the summary-side projection of Facts: the ready/blocked/gate
 // classification without the per-issue blocked-by/blocking edge lists and without
-// the blocked list — both derivable from the recommendation block, which already
-// ships every open issue's edges. It is the signal project_summary adds over
-// recommendations: the graph-level split and the gate set.
+// the blocked and provisional lists. The orientation read names a blocker or a
+// provisional cause per candidate, from the recommendation block's edges, seam
+// states, and readiness verdict. That block is capped at the list limit and can be
+// size-trimmed, so it does not cover the fetched window; the counts here do (the
+// window itself is a floor under FetchTruncated). It is the signal project_summary adds
+// over recommendations: the graph-level split and the gate set.
 type Classification struct {
 	OpenIssueCount   int    `json:"openIssueCount"`
 	FetchedCount     int    `json:"fetchedCount"`
@@ -270,7 +289,7 @@ type Gate struct {
 
 // Classification projects the full facts to the summary-side view: it keeps the
 // counts and the gate set (inheriting Facts' cap and order) and drops the per-issue
-// edge lists and the blocked list.
+// edge lists and the blocked and provisional lists.
 func (f Facts) Classification() Classification {
 	gates := make([]Gate, 0, len(f.Gates))
 	for _, g := range f.Gates {
