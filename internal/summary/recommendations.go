@@ -56,7 +56,7 @@ type RecommendationFacts struct {
 //
 // Blocking is the reverse direction: the ascending, distinct numbers of the
 // still-open downstream issues this candidate gates — what picking it up would help
-// unblock. Same authoritative-edge semantics, mirrored: it lets a caller weigh how
+// unblock. Reduced the same way, mirrored: it lets a caller weigh how
 // much downstream work a candidate stands in front of, not just whether the
 // candidate is itself ready. It is a gate this issue contributes, not necessarily
 // the only one — a downstream issue several issues block stays blocked until they
@@ -66,8 +66,8 @@ type RecommendationFacts struct {
 // SubIssues are the ascending, distinct numbers of the candidate's still-open
 // same-repository child issues — the hierarchy form of the same readiness gate: a
 // parent with open children is not startable, however old or quiet it looks, so a
-// caller demotes it rather than floating it to the top. Same authoritative-edge
-// semantics (closed children omitted, never a PR, cross-repository children dropped).
+// caller demotes it rather than floating it to the top. Reduced the same
+// way (closed children omitted, never a PR, cross-repository children dropped).
 // Non-nil even when empty; SubIssuesTruncated marks more native children than the
 // fetch window read.
 //

@@ -96,7 +96,7 @@ type DeferredFacts struct {
 //
 // Blocking is the reverse direction: the ascending, distinct numbers of the
 // still-open downstream issues this one gates — what closing it would help unblock.
-// Same authoritative-edge semantics as BlockedBy, mirrored: it tells a maintainer
+// Reduced the same way as BlockedBy, mirrored: it tells a maintainer
 // how much downstream work a parked issue stands in front of, not just whether the
 // parked issue is itself blocked. It is a gate this issue contributes, not
 // necessarily the only one, so a downstream issue stays blocked until every issue
@@ -105,8 +105,8 @@ type DeferredFacts struct {
 //
 // SubIssues are the ascending, distinct numbers of the parked issue's still-open
 // same-repository child issues — the hierarchy form of the same gate: a parent with
-// open children is not startable, however quiet it looks. Same authoritative-edge
-// semantics (closed children omitted, a PR can never appear, cross-repository
+// open children is not startable, however quiet it looks. Reduced the same way
+// (closed children omitted, a PR can never appear, cross-repository
 // children dropped). Non-nil even when empty; SubIssuesTruncated marks more native
 // children than the fetch window read.
 //
