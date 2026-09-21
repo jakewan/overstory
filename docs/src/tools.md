@@ -4,6 +4,8 @@ Overstory exposes a set of read-only tools. Each returns a composite of **struct
 
 This page documents the *shape and semantics* of what the tools return — the top-level composite, what each block is for, and the cross-cutting conventions. For the exhaustive field-by-field listing, read the Go structs named below: their `json:"..."` tags **are** the wire contract, so pointing at them keeps this reference from drifting as fields are added.
 
+The server also sends MCP instructions when a session starts. They state what the server does to the dependency fields that `backlog_review` and `project_summary` return: the fields are reductions rather than GitHub's own lists, and the sub-issue gap is an upper bound on open children rather than a count. They are sent once per session rather than in either tool's description because some clients show a model only the start of a long description. The text is `serverInstructions` in `internal/server/server.go`.
+
 ## Common parameters
 
 The manifest-driven reads — `backlog_review`, `project_summary`, and `milestone_tracks` — share the `owner`, `repo`, and `limit` inputs below. The `blocks` projection parameter is accepted only by the two composite reads (`backlog_review` and `project_summary`); `milestone_tracks` has no projectable blocks and ignores it. (The author- and window-driven reads document their parameters in their own sections — [`authored_activity`](#authored_activity), [`authored_activity_batch`](#authored_activity_batch), [`maintenance_activity`](#maintenance_activity), and [`maintenance_activity_batch`](#maintenance_activity_batch).)

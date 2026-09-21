@@ -82,14 +82,14 @@ type SeamReport struct {
 	SubIssueGap github.SeamState `json:"subIssueGap"`
 }
 
-// Issue is one open issue reduced to its identifying facts and its authoritative
-// native edges. BlockedBy is what still gates it from this repository (open
+// Issue is one open issue reduced to its identifying facts and its native edges as
+// the server reduces them. BlockedBy is what still gates it from this repository (open
 // blocked-by edges) and BlockedByExternal what gates it from another, each of those
 // qualified by its repository because a bare foreign number would address a local
 // issue; the two are read together, since a blocker gates wherever it lives. Blocking
 // is what it still gates (open downstream). SubIssueGate is true when the
-// authoritative sub-issue summary shows open children — a hidden gate the windowed
-// edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
+// sub-issue summary's gap is positive where the forge carries sub-issues — an upper
+// bound on open children, and a gate the windowed edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
 // its Blocking (the work it unblocks); a Blocked issue carries what it waits on
 // (BlockedBy and BlockedByExternal) — but all of them are populated on every listed
 // issue so a caller has the full recorded structure regardless of which list the
@@ -133,8 +133,8 @@ type Issue struct {
 //
 // An issue is blocked when it has an open blocked-by edge — in this repository or
 // another, since a blocker gates wherever it lives — or an open sub-issue gate
-// (the authoritative subIssuesTotal-minus-completed gap, which witnesses open
-// children even when they fall outside the window). An issue with no known gate is
+// (a positive subIssuesTotal-minus-completed gap, which counts children outside the
+// window too, and as an upper bound on open children can over-report). An issue with no known gate is
 // provisional rather than ready when its blocked-by list was capped or when a seam
 // the verdict rests on went unread — in both cases the emptiness is the absence of
 // evidence rather than evidence of absence. Everything else is ready, and a gate is a

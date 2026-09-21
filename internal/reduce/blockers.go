@@ -17,8 +17,8 @@ import (
 // null — matching the bodyRefs convention the dependency signals share.
 //
 // This is the single open-edge projection both the backlog and summary reductions
-// call for both directions, so the authoritative dependency signal reads identically
-// on both tools.
+// call for both directions, so the native dependency signal reads identically on
+// both tools.
 func OpenDependencyNumbers(refs []github.DependencyRef) []int {
 	seen := make(map[int]bool, len(refs))
 	out := make([]int, 0, len(refs))
