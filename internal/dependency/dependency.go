@@ -88,8 +88,8 @@ type SeamReport struct {
 // qualified by its repository because a bare foreign number would address a local
 // issue; the two are read together, since a blocker gates wherever it lives. Blocking
 // is what it still gates (open downstream). SubIssueGate is true when the
-// sub-issue summary's gap is positive — an upper bound on open children, and a gate
-// the windowed edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
+// sub-issue summary's gap is positive where the forge carries sub-issues — an upper
+// bound on open children, and a gate the windowed edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
 // its Blocking (the work it unblocks); a Blocked issue carries what it waits on
 // (BlockedBy and BlockedByExternal) — but all of them are populated on every listed
 // issue so a caller has the full recorded structure regardless of which list the
