@@ -17,8 +17,10 @@ const (
 	// VerdictReady means nothing open gates the issue and every input the verdict
 	// rests on was either read or does not exist here.
 	VerdictReady Verdict = "ready"
-	// VerdictBlocked means an open blocker was actually observed — a native
-	// blocked-by edge, or open sub-issue children.
+	// VerdictBlocked means a gate was found: an open native blocked-by edge, here or
+	// in another repository, or an open sub-issue gap. The edge arms observe a blocker
+	// directly; the gap arm is an upper bound that can over-report (see SubIssueGate),
+	// so this verdict is "gated as far as the inputs say", not "a blocker was seen".
 	VerdictBlocked Verdict = "blocked"
 	// VerdictProvisional means the issue presents no open blocker but readiness could
 	// not be confirmed, because an input the verdict rests on was capped or unread. An
@@ -85,7 +87,10 @@ func SubIssueGate(is github.Issue) bool {
 // through to ready.
 func Readiness(is github.Issue) Verdict {
 	switch {
-	case hasOpenDependency(is.BlockedBy) || SubIssueGate(is):
+	// A blocker in another repository gates exactly as a local one does: the edge
+	// carries its open state, so this is an observed gate rather than an unread input,
+	// and it belongs in this arm and not in provisional below.
+	case hasOpenDependency(is.BlockedBy) || hasOpenExternalDependency(is.BlockedByExternal) || SubIssueGate(is):
 		return VerdictBlocked
 	// Appears unblocked, but a capped edge list may hide an open blocker and an unread
 	// seam may hide anything at all, so readiness cannot be confirmed. A seam the forge

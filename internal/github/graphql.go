@@ -86,10 +86,19 @@ const (
 // blocking is the reverse, and subIssues is its children. Each is an
 // IssueConnection, so an edge is always an issue and never a PR, and they decode
 // through one shared edge node and one shared projection.
-// repository{ nameWithOwner } discriminates cross-repository edges, which toIssue
-// drops — a foreign repo's issue number would collide with a local one, the same
-// hazard referencedBy guards. state is read here so a reduction can surface only
-// the still-open edges without a second fetch.
+// repository{ id nameWithOwner } discriminates cross-repository edges, which toIssue
+// carries separately for blockedBy and drops for the other two directions — a foreign
+// repo's issue number would collide with a local one, the same hazard referencedBy
+// guards. The test compares each edge's repository id against the *issue's own*
+// repository id, both read from this response, rather than against the slug the caller
+// passed: that slug is an address, not an identity, and GitHub resolves a renamed or
+// transferred repository's old slug to its current one — so a name comparison would
+// call every edge foreign after a rename. Reading the issue's repository here costs no
+// node budget (a plain object, not a connection) and keeps the comparison local to one
+// decoded node. nameWithOwner travels alongside so a carried foreign edge can be
+// rendered, and so the comparison can fall back to names where an id is absent. state
+// is read here so a reduction can surface only the still-open edges without a second
+// fetch.
 var issuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -98,6 +107,7 @@ var issuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$first:Int!,$a
       pageInfo{ hasNextPage endCursor }
       nodes{
         number title url createdAt bodyText
+        repository{ id nameWithOwner }
         milestone{ number title }
         labels(first:%[1]d){ totalCount nodes{ name } }
         comments(last:%[2]d){ nodes{ createdAt author{ __typename login } } }
@@ -110,15 +120,15 @@ var issuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$first:Int!,$a
         }
         blockedBy(first:%[4]d){
           totalCount
-          nodes{ number state repository{ nameWithOwner } }
+          nodes{ number state repository{ id nameWithOwner } }
         }
         blocking(first:%[4]d){
           totalCount
-          nodes{ number state repository{ nameWithOwner } }
+          nodes{ number state repository{ id nameWithOwner } }
         }
         subIssues(first:%[4]d){
           totalCount
-          nodes{ number state repository{ nameWithOwner } }
+          nodes{ number state repository{ id nameWithOwner } }
         }
         subIssuesSummary{ total completed }
       }
@@ -328,7 +338,7 @@ func (f *GraphQLFetcher) ListOpenIssues(ctx context.Context, ownerRepo string, f
 		func(c issuesConnection) ([]issueNode, int, cursorState) {
 			return c.Nodes, c.TotalCount, cursorState{HasNextPage: c.PageInfo.HasNextPage, EndCursor: c.PageInfo.EndCursor}
 		},
-		func(n issueNode) Issue { return n.toIssue(owner + "/" + name) },
+		func(n issueNode) Issue { return n.toIssue() },
 	)
 	if err != nil {
 		return IssueListResult{}, err
@@ -1626,13 +1636,14 @@ func (n pullRequestNode) toPullRequest() PullRequest {
 }
 
 type issueNode struct {
-	Number    int               `json:"number"`
-	Title     string            `json:"title"`
-	URL       string            `json:"url"`
-	CreatedAt time.Time         `json:"createdAt"`
-	BodyText  string            `json:"bodyText"`
-	Milestone *milestoneRefNode `json:"milestone"`
-	Labels    struct {
+	Number     int               `json:"number"`
+	Title      string            `json:"title"`
+	URL        string            `json:"url"`
+	CreatedAt  time.Time         `json:"createdAt"`
+	BodyText   string            `json:"bodyText"`
+	Repository repositoryRefNode `json:"repository"`
+	Milestone  *milestoneRefNode `json:"milestone"`
+	Labels     struct {
 		TotalCount int `json:"totalCount"`
 		Nodes      []struct {
 			Name string `json:"name"`
@@ -1664,16 +1675,35 @@ type issueNode struct {
 }
 
 // dependencyEdgeNode decodes one native dependency edge in either direction
-// (blocked-by or blocking). The edge type is an issue connection, so the node is
-// always an Issue (no PR can appear); State is the IssueState enum (OPEN/CLOSED) and
-// Repository.NameWithOwner discriminates a cross-repository edge, which
-// dependencyEdges drops.
+// (blocked-by, blocking, or sub-issue). The edge type is an issue connection, so the
+// node is always an Issue (no PR can appear); State is the IssueState enum
+// (OPEN/CLOSED) and Repository discriminates a cross-repository edge — carried for
+// blocked-by, dropped for the other two.
 type dependencyEdgeNode struct {
-	Number     int    `json:"number"`
-	State      string `json:"state"`
-	Repository struct {
-		NameWithOwner string `json:"nameWithOwner"`
-	} `json:"repository"`
+	Number     int               `json:"number"`
+	State      string            `json:"state"`
+	Repository repositoryRefNode `json:"repository"`
+}
+
+// repositoryRefNode decodes the repository an issue or an edge belongs to. ID is the
+// identity the same-repository test compares; NameWithOwner is for display, and is
+// the fallback comparison where a response carries no id.
+type repositoryRefNode struct {
+	ID            string `json:"id"`
+	NameWithOwner string `json:"nameWithOwner"`
+}
+
+// sameRepository reports whether an edge belongs to the issue's own repository.
+// Identity is the node id: a repository keeps it across a rename or a transfer, which
+// its slug does not. The name comparison is the fallback for a response that carries
+// no id for either side — GitHub always does, but a decode of a partial or
+// hand-constructed payload need not, and falling back keeps such a case reading as
+// local rather than silently reclassifying every edge as foreign.
+func (r repositoryRefNode) sameRepository(other repositoryRefNode) bool {
+	if r.ID != "" && other.ID != "" {
+		return r.ID == other.ID
+	}
+	return strings.EqualFold(r.NameWithOwner, other.NameWithOwner)
 }
 
 type commentNode struct {
@@ -1697,12 +1727,12 @@ type crossRefEventNode struct {
 	} `json:"source"`
 }
 
-// toIssue converts a decoded node to the domain Issue. repoFullName is the queried
-// "owner/name", needed to drop cross-repository blocked-by edges — unlike the
-// cross-reference timeline, whose CrossReferencedEvent carries an isCrossRepository
-// flag, a blocked-by Issue node has no parent-relative flag, so the foreign-repo
-// test is a nameWithOwner comparison.
-func (n issueNode) toIssue(repoFullName string) Issue {
+// toIssue converts a decoded node to the domain Issue. Unlike the cross-reference
+// timeline, whose CrossReferencedEvent carries an isCrossRepository flag, a
+// dependency edge's Issue node has no parent-relative flag, so the foreign-repo test
+// compares the edge's repository against this node's own (repositoryRefNode.
+// sameRepository).
+func (n issueNode) toIssue() Issue {
 	labels := make([]string, 0, len(n.Labels.Nodes))
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
@@ -1722,11 +1752,12 @@ func (n issueNode) toIssue(repoFullName string) Issue {
 		BodyText:           n.BodyText,
 		ReferencedBy:       n.referencedBy(),
 		CrossRefsTruncated: n.TimelineItems.TotalCount > len(n.TimelineItems.Nodes),
-		BlockedBy:          dependencyEdges(n.BlockedBy.Nodes, repoFullName),
+		BlockedBy:          dependencyEdges(n.BlockedBy.Nodes, n.Repository),
+		BlockedByExternal:  externalDependencyEdges(n.BlockedBy.Nodes, n.Repository),
 		BlockedByTruncated: n.BlockedBy.TotalCount > len(n.BlockedBy.Nodes),
-		Blocking:           dependencyEdges(n.Blocking.Nodes, repoFullName),
+		Blocking:           dependencyEdges(n.Blocking.Nodes, n.Repository),
 		BlockingTruncated:  n.Blocking.TotalCount > len(n.Blocking.Nodes),
-		SubIssues:          dependencyEdges(n.SubIssues.Nodes, repoFullName),
+		SubIssues:          dependencyEdges(n.SubIssues.Nodes, n.Repository),
 		SubIssuesTruncated: n.SubIssues.TotalCount > len(n.SubIssues.Nodes),
 		SubIssuesTotal:     n.SubIssuesSummary.Total,
 		SubIssuesCompleted: n.SubIssuesSummary.Completed,
@@ -1734,22 +1765,47 @@ func (n issueNode) toIssue(repoFullName string) Issue {
 	}
 }
 
-// dependencyEdges projects a native dependency connection — blocked-by or blocking —
-// to same-repository edges with their open state. A cross-repository edge is dropped:
-// its foreign issue number would collide with a local one, the same hazard
-// referencedBy guards. The edge type guarantees every node is an issue, so no PR can
-// appear. repoFullName ("owner/name") is compared case-insensitively against each
-// edge's nameWithOwner. Order is GitHub's; the reduction sorts and dedups when it
-// projects to the open numbers. Returns nil when empty (the reduction's projection is
-// the non-nil-serialization point). It takes the connection's nodes as an argument so
-// both directions share one projection.
-func dependencyEdges(nodes []dependencyEdgeNode, repoFullName string) []DependencyRef {
+// dependencyEdges projects a native dependency connection — blocked-by, blocking, or
+// sub-issue — to the same-repository edges with their open state. A cross-repository
+// edge is left out: its foreign issue number would collide with a local one, the same
+// hazard referencedBy guards. For blocked-by those edges are not lost, since
+// externalDependencyEdges projects them over the same nodes; for the other two
+// directions they are dropped outright. The edge type guarantees every node is an
+// issue, so no PR can appear. Order is GitHub's; the reduction sorts and dedups when
+// it projects to the open numbers. Returns nil when empty (the reduction's projection
+// is the non-nil-serialization point). It takes the connection's nodes as an argument
+// so all three directions share one projection.
+func dependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []DependencyRef {
 	out := make([]DependencyRef, 0, len(nodes))
 	for _, b := range nodes {
-		if !strings.EqualFold(b.Repository.NameWithOwner, repoFullName) {
+		if !repo.sameRepository(b.Repository) {
 			continue // cross-repository edge — its number would collide locally
 		}
 		out = append(out, DependencyRef{Number: b.Number, Open: b.State == "OPEN"})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// externalDependencyEdges is dependencyEdges' complement: the edges into *other*
+// repositories, qualified by the repository that disambiguates their numbers. It
+// exists for blocked-by alone, where the edge decides whether an issue is startable —
+// dropping it silently was a false-ready, since an issue gated only from another
+// repository reported ready. Order and open-state handling match dependencyEdges, and
+// it reads the same nodes, so the two partition one connection.
+func externalDependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []ExternalDependencyRef {
+	out := make([]ExternalDependencyRef, 0, len(nodes))
+	for _, b := range nodes {
+		if repo.sameRepository(b.Repository) {
+			continue
+		}
+		out = append(out, ExternalDependencyRef{
+			Repo:   b.Repository.NameWithOwner,
+			Number: b.Number,
+			Open:   b.State == "OPEN",
+		})
 	}
 	if len(out) == 0 {
 		return nil

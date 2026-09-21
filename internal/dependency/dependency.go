@@ -83,7 +83,10 @@ type SeamReport struct {
 }
 
 // Issue is one open issue reduced to its identifying facts and its authoritative
-// native edges. BlockedBy is what still gates it (open blocked-by edges); Blocking
+// native edges. BlockedBy is what still gates it from this repository (open
+// blocked-by edges) and BlockedByExternal what gates it from another, each of those
+// qualified by its repository because a bare foreign number would address a local
+// issue; the two are read together, since a blocker gates wherever it lives. Blocking
 // is what it still gates (open downstream). SubIssueGate is true when the
 // authoritative sub-issue summary shows open children — a hidden gate the windowed
 // edge lists can miss. Both edge slices are non-nil even when empty. A Gate carries
@@ -109,16 +112,17 @@ type SeamReport struct {
 // ever holds a provisional issue. The rule for a future projection is that one, not an
 // exemption — a projection not partitioned by verdict carries the field.
 type Issue struct {
-	Number             int              `json:"number"`
-	Title              string           `json:"title"`
-	URL                string           `json:"url"`
-	BlockedBy          []int            `json:"blockedBy"`
-	BlockedByTruncated bool             `json:"blockedByTruncated"`
-	Blocking           []int            `json:"blocking"`
-	BlockingTruncated  bool             `json:"blockingTruncated"`
-	SubIssueGate       bool             `json:"subIssueGate"`
-	BlockedByState     github.SeamState `json:"blockedByState"`
-	SubIssueGapState   github.SeamState `json:"subIssueGapState"`
+	Number             int                  `json:"number"`
+	Title              string               `json:"title"`
+	URL                string               `json:"url"`
+	BlockedBy          []int                `json:"blockedBy"`
+	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
+	BlockedByTruncated bool                 `json:"blockedByTruncated"`
+	Blocking           []int                `json:"blocking"`
+	BlockingTruncated  bool                 `json:"blockingTruncated"`
+	SubIssueGate       bool                 `json:"subIssueGate"`
+	BlockedByState     github.SeamState     `json:"blockedByState"`
+	SubIssueGapState   github.SeamState     `json:"subIssueGapState"`
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
@@ -162,6 +166,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 
 	for _, is := range issues {
 		blockedBy := reduce.OpenDependencyNumbers(is.BlockedBy)
+		blockedByExternal := reduce.OpenExternalDependencies(is.BlockedByExternal)
 		blocking := reduce.OpenDependencyNumbers(is.Blocking)
 
 		item := Issue{
@@ -169,6 +174,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 			Title:              is.Title,
 			URL:                is.URL,
 			BlockedBy:          blockedBy,
+			BlockedByExternal:  blockedByExternal,
 			BlockedByTruncated: is.BlockedByTruncated,
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
@@ -205,10 +211,12 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		}
 		return facts.Gates[i].Number < facts.Gates[j].Number
 	})
-	// Blocked: most-gated first, then by number.
+	// Blocked: most-gated first, then by number. Both edge lists count toward "most
+	// gated" — an issue waiting on three repositories is not less blocked than one
+	// waiting on three local issues.
 	sort.Slice(facts.Blocked, func(i, j int) bool {
-		gi := len(facts.Blocked[i].BlockedBy)
-		gj := len(facts.Blocked[j].BlockedBy)
+		gi := len(facts.Blocked[i].BlockedBy) + len(facts.Blocked[i].BlockedByExternal)
+		gj := len(facts.Blocked[j].BlockedBy) + len(facts.Blocked[j].BlockedByExternal)
 		if gi != gj {
 			return gi > gj
 		}

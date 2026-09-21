@@ -613,12 +613,13 @@ func TestListOpenIssuesParsesCrossReferences(t *testing.T) {
 func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
 	// The fake-injected reduction specs set Issue.BlockedBy directly, so they never
 	// exercise toIssue's wire→domain mapping — the enum-casing (state=="OPEN"), the
-	// cross-repository drop, and the totalCount>nodes truncation arithmetic. This
+	// cross-repository split, and the totalCount>nodes truncation arithmetic. This
 	// drives that mapping against a fake GraphQL server: (a) the query must request
 	// the blockedBy connection — a selection typo would silently ship and the
 	// dependency signal would see no edges; (b) the edges decode onto
-	// Issue.BlockedBy with the same-repo filter and open-state mapping applied,
-	// preserving closed blockers (the open-only projection is the reduction's job).
+	// Issue.BlockedBy and Issue.BlockedByExternal with the same-repo split and
+	// open-state mapping applied, preserving closed blockers in both (the open-only
+	// projection is the reduction's job).
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -629,22 +630,26 @@ func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
 		}
 		gotQuery = req.Query
 		// Issue 1: totalCount 4 but only 3 nodes returned → truncated. Same-repo #11
-		// OPEN and #9 CLOSED are kept (closed retained at this layer); cross-repo #7
-		// (other/repo) is dropped even though OPEN — its number would collide locally.
+		// OPEN and #9 CLOSED land in BlockedBy (closed retained at this layer);
+		// cross-repo #7 (other/repo) lands in BlockedByExternal, qualified by its
+		// repository — its bare number would collide locally.
 		// Issue 2: blockedBy is null. Issue 3: the field is absent entirely.
 		body := `{"data":{"repository":{"issues":{
 			"totalCount":3,
 			"pageInfo":{"hasNextPage":false,"endCursor":""},
 			"nodes":[
 				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "blockedBy":{"totalCount":4,"nodes":[
-					{"number":11,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":9,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":7,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+					{"number":11,"state":"OPEN","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":9,"state":"CLOSED","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":7,"state":"OPEN","repository":{"id":"R_other","nameWithOwner":"other/repo"}}
 				 ]}},
 				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "blockedBy":null},
-				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}}
 			]
 		}}}}`
 		if _, err := io.WriteString(w, body); err != nil {
@@ -664,23 +669,129 @@ func TestListOpenIssuesParsesNativeBlockedBy(t *testing.T) {
 		t.Fatalf("got %d issues, want 3", len(res.Issues))
 	}
 
-	// Issue 1: cross-repo #7 dropped; same-repo #11 (open) and #9 (closed) kept,
-	// order preserved, open state mapped from the enum.
+	// Issue 1: same-repo #11 (open) and #9 (closed) kept, order preserved, open state
+	// mapped from the enum; cross-repo #7 carried separately with its repository.
 	want := []DependencyRef{{Number: 11, Open: true}, {Number: 9, Open: false}}
 	if got := res.Issues[0].BlockedBy; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("issue 1 BlockedBy = %v, want %v", got, want)
 	}
+	wantExternal := []ExternalDependencyRef{{Repo: "other/repo", Number: 7, Open: true}}
+	if got := res.Issues[0].BlockedByExternal; len(got) != 1 || got[0] != wantExternal[0] {
+		t.Errorf("issue 1 BlockedByExternal = %v, want %v", got, wantExternal)
+	}
 	if !res.Issues[0].BlockedByTruncated {
 		t.Error("issue 1 BlockedByTruncated = false, want true (totalCount 4 > 3 nodes)")
 	}
-	// Issues 2 (null) and 3 (absent): no blockers, not truncated, no panic.
+	// Issues 2 (null) and 3 (absent): no blockers in either list, not truncated, no panic.
 	for _, i := range []int{1, 2} {
 		if got := res.Issues[i].BlockedBy; len(got) != 0 {
 			t.Errorf("issue %d BlockedBy = %v, want empty", res.Issues[i].Number, got)
 		}
+		if got := res.Issues[i].BlockedByExternal; len(got) != 0 {
+			t.Errorf("issue %d BlockedByExternal = %v, want empty", res.Issues[i].Number, got)
+		}
 		if res.Issues[i].BlockedByTruncated {
 			t.Errorf("issue %d BlockedByTruncated = true, want false", res.Issues[i].Number)
 		}
+	}
+}
+
+// TestListOpenIssuesIdentifiesRepositoryByID pins that the same-repository test is an
+// identity comparison and not a name one. GitHub resolves a renamed or transferred
+// repository's old slug to its current one, so the slug a caller passes can differ
+// from what every edge reports while all of them are in fact local. Comparing names
+// would call each of those foreign — after which a local blocker would surface as an
+// external reference into a repository that no longer answers to that name.
+//
+// The second issue is the converse guard: a foreign edge whose repository merely
+// shares the requested *slug* is still foreign, so the ids decide both directions.
+func TestListOpenIssuesIdentifiesRepositoryByID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Both issues were fetched as acme/widgets. Issue 1 comes back under the new
+		// name, with its blocker in the same repository; issue 2's blocker reports the
+		// requested name under a different id.
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":2,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/gizmos"},
+				 "blockedBy":{"totalCount":1,"nodes":[
+					{"number":11,"state":"OPEN","repository":{"id":"R_widgets","nameWithOwner":"acme/gizmos"}}
+				 ]}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/gizmos"},
+				 "blockedBy":{"totalCount":1,"nodes":[
+					{"number":12,"state":"OPEN","repository":{"id":"R_impostor","nameWithOwner":"acme/gizmos"}}
+				 ]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 2 {
+		t.Fatalf("got %d issues, want 2", len(res.Issues))
+	}
+	if got := res.Issues[0].BlockedBy; len(got) != 1 || got[0].Number != 11 {
+		t.Errorf("issue 1 BlockedBy = %v, want [{11 true}] — same repository id, renamed slug", got)
+	}
+	if got := res.Issues[0].BlockedByExternal; len(got) != 0 {
+		t.Errorf("issue 1 BlockedByExternal = %v, want empty — the edge is local", got)
+	}
+	if got := res.Issues[1].BlockedBy; len(got) != 0 {
+		t.Errorf("issue 2 BlockedBy = %v, want empty — a shared name is not a shared identity", got)
+	}
+	if got := res.Issues[1].BlockedByExternal; len(got) != 1 || got[0].Number != 12 {
+		t.Errorf("issue 2 BlockedByExternal = %v, want [{acme/gizmos 12 true}]", got)
+	}
+}
+
+// TestListOpenIssuesTruncatedConnectionBoundsBothBlockedByLists pins that
+// BlockedByTruncated bounds the external list too. The two lists partition one
+// capped connection, so a window that returned only foreign edges leaves the local
+// list empty *and* a floor — reading that empty list as complete is the same
+// false-ready the flag exists to refuse.
+func TestListOpenIssuesTruncatedConnectionBoundsBothBlockedByLists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
+				 "blockedBy":{"totalCount":3,"nodes":[
+					{"number":7,"state":"OPEN","repository":{"id":"R_other","nameWithOwner":"other/repo"}}
+				 ]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1", len(res.Issues))
+	}
+	if got := res.Issues[0].BlockedBy; len(got) != 0 {
+		t.Errorf("BlockedBy = %v, want empty (every returned edge was foreign)", got)
+	}
+	if got := res.Issues[0].BlockedByExternal; len(got) != 1 {
+		t.Errorf("BlockedByExternal = %v, want the one foreign edge", got)
+	}
+	if !res.Issues[0].BlockedByTruncated {
+		t.Error("BlockedByTruncated = false, want true — the cap is over the connection both lists come from")
 	}
 }
 
@@ -712,14 +823,17 @@ func TestListOpenIssuesParsesNativeBlocking(t *testing.T) {
 			"pageInfo":{"hasNextPage":false,"endCursor":""},
 			"nodes":[
 				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "blocking":{"totalCount":4,"nodes":[
-					{"number":21,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":19,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":17,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+					{"number":21,"state":"OPEN","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":19,"state":"CLOSED","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":17,"state":"OPEN","repository":{"id":"R_other","nameWithOwner":"other/repo"}}
 				 ]}},
 				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "blocking":null},
-				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}}
 			]
 		}}}}`
 		if _, err := io.WriteString(w, body); err != nil {
@@ -790,15 +904,18 @@ func TestListOpenIssuesParsesNativeSubIssues(t *testing.T) {
 			"pageInfo":{"hasNextPage":false,"endCursor":""},
 			"nodes":[
 				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "subIssues":{"totalCount":4,"nodes":[
-					{"number":21,"state":"OPEN","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":19,"state":"CLOSED","repository":{"nameWithOwner":"acme/widgets"}},
-					{"number":17,"state":"OPEN","repository":{"nameWithOwner":"other/repo"}}
+					{"number":21,"state":"OPEN","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":19,"state":"CLOSED","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}},
+					{"number":17,"state":"OPEN","repository":{"id":"R_other","nameWithOwner":"other/repo"}}
 				 ]},
 				 "subIssuesSummary":{"total":5,"completed":2}},
 				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
 				 "subIssues":null,"subIssuesSummary":null},
-				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]}}
+				{"number":3,"title":"c","url":"uc","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}}
 			]
 		}}}}`
 		if _, err := io.WriteString(w, body); err != nil {

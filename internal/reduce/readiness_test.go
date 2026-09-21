@@ -51,6 +51,23 @@ func TestReadiness(t *testing.T) {
 			want: VerdictReady,
 		},
 		{
+			// The edge carries the blocker's state, so this is an observed gate and not
+			// an unread input: a blocker gates wherever it lives, and reporting ready
+			// here was the false-ready the external field exists to close.
+			name: "an open blocked-by edge in another repository blocks",
+			is: github.Issue{BlockedByExternal: []github.ExternalDependencyRef{
+				{Repo: "other/repo", Number: 7, Open: true},
+			}},
+			want: VerdictBlocked,
+		},
+		{
+			name: "a closed blocked-by edge in another repository no longer gates",
+			is: github.Issue{BlockedByExternal: []github.ExternalDependencyRef{
+				{Repo: "other/repo", Number: 7, Open: false},
+			}},
+			want: VerdictReady,
+		},
+		{
 			name: "an open sub-issue gap blocks",
 			is:   github.Issue{SubIssuesTotal: 3, SubIssuesCompleted: 1},
 			want: VerdictBlocked,
