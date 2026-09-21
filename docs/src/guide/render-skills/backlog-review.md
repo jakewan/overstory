@@ -172,7 +172,7 @@ If `gatesTruncated`, render `gateCount` as the authoritative total ("12 gates, s
 
 ```markdown
 - #61 - Title — blocked by open #42, #43
-- #70 - Title — blocked by open sub-issue children
+- #70 - Title — gated by incomplete sub-issues
 - #72 - Title — blocked by open other/repo#8
 ```
 
