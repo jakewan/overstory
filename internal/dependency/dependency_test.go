@@ -1,6 +1,7 @@
 package dependency
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
@@ -341,8 +342,8 @@ func TestReduceFetchTruncationAndNonNilSlices(t *testing.T) {
 	if facts.OpenIssueCount != 500 || !facts.FetchTruncated {
 		t.Errorf("OpenIssueCount=%d FetchTruncated=%v, want 500/true", facts.OpenIssueCount, facts.FetchTruncated)
 	}
-	if facts.Gates == nil || facts.Blocked == nil {
-		t.Error("Gates/Blocked are nil; want non-nil empty slices")
+	if facts.Gates == nil || facts.Blocked == nil || facts.Provisional == nil {
+		t.Error("Gates/Blocked/Provisional are nil; want non-nil empty slices")
 	}
 }
 
@@ -365,5 +366,58 @@ func TestReduceListTruncation(t *testing.T) {
 	}
 	if facts.ReadyCount != 3 {
 		t.Errorf("ReadyCount = %d, want 3 (count not capped)", facts.ReadyCount)
+	}
+}
+
+// TestReduceListsProvisionalIssues: each provisional issue is listed, ascending by
+// number, carrying the per-issue state and flag behind its verdict — the cause the
+// block-level seam cannot give once any issue was read. The list caps at the limit
+// while the count does not, and the three counts still partition the window.
+func TestReduceListsProvisionalIssues(t *testing.T) {
+	capped := issue(9)
+	capped.BlockedByTruncated = true
+	unread := issue(4)
+	unread.BlockedByState = github.SeamUnavailable
+	gapUnread := issue(6)
+	gapUnread.SubIssueGapState = github.SeamUnavailable
+	blocked := issue(2)
+	blocked.BlockedBy = edges(50)
+	issues := []github.Issue{capped, unread, blocked, gapUnread, issue(1)}
+
+	facts := Reduce(issues, len(issues), 20, bothSeams)
+	var got []int
+	for _, p := range facts.Provisional {
+		got = append(got, p.Number)
+	}
+	if !slices.Equal(got, []int{4, 6, 9}) {
+		t.Errorf("Provisional = %v, want [4 6 9] (ascending, provisional issues only)", got)
+	}
+	if facts.ReadyCount+facts.BlockedCount+facts.ProvisionalCount != facts.FetchedCount {
+		t.Errorf("counts %d+%d+%d do not partition the %d fetched issues",
+			facts.ReadyCount, facts.BlockedCount, facts.ProvisionalCount, facts.FetchedCount)
+	}
+	for _, p := range facts.Provisional {
+		switch p.Number {
+		case 4:
+			if p.BlockedByState != github.SeamUnavailable {
+				t.Errorf("#4 BlockedByState = %v, want unavailable", p.BlockedByState)
+			}
+		case 6:
+			if p.SubIssueGapState != github.SeamUnavailable {
+				t.Errorf("#6 SubIssueGapState = %v, want unavailable", p.SubIssueGapState)
+			}
+		case 9:
+			if !p.BlockedByTruncated {
+				t.Error("#9 BlockedByTruncated = false, want true")
+			}
+		}
+	}
+
+	capped2 := Reduce(issues, len(issues), 2, bothSeams)
+	if len(capped2.Provisional) != 2 || !capped2.ProvisionalTruncated {
+		t.Errorf("Provisional listed=%d truncated=%v, want 2/true", len(capped2.Provisional), capped2.ProvisionalTruncated)
+	}
+	if capped2.ProvisionalCount != 3 {
+		t.Errorf("ProvisionalCount = %d, want 3 (count not capped)", capped2.ProvisionalCount)
 	}
 }

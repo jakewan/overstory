@@ -476,6 +476,70 @@ func TestBacklogReviewDependencyUnavailableSeamIsProvisionalNotReady(t *testing.
 	}
 }
 
+// TestBacklogReviewDependencyListsProvisionalIssuesWithTheirCause pins the per-issue
+// cause of a provisional verdict. The repository-level seam reads available as soon as
+// any fetched issue was read, so it cannot say why one issue is provisional: an issue
+// whose own blocked-by read failed would otherwise be indistinguishable from one whose
+// edge list was capped. Each provisional issue is listed carrying the state and flag
+// behind its verdict.
+func TestBacklogReviewDependencyListsProvisionalIssuesWithTheirCause(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+
+	unread := issue(1, daysAgo(1))
+	unread.BlockedByState = github.SeamUnavailable
+	capped := issue(3, daysAgo(1))
+	capped.BlockedByTruncated = true
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{capped, issue(2, daysAgo(1)), unread},
+		TotalOpen: 3,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	if dep.Seams.BlockedBy != github.SeamAvailable {
+		t.Errorf("Seams.BlockedBy = %v, want available (#2 and #3 were read)", dep.Seams.BlockedBy)
+	}
+	if len(dep.Provisional) != 2 {
+		t.Fatalf("Provisional lists %d issues, want 2 (#1 and #3): %+v", len(dep.Provisional), dep.Provisional)
+	}
+	first, second := dep.Provisional[0], dep.Provisional[1]
+	if first.Number != 1 || first.BlockedByState != github.SeamUnavailable || first.BlockedByTruncated {
+		t.Errorf("Provisional[0] = #%d state=%v truncated=%v, want #1 with an unread blocked-by seam and an uncapped list",
+			first.Number, first.BlockedByState, first.BlockedByTruncated)
+	}
+	if second.Number != 3 || second.BlockedByState != github.SeamAvailable || !second.BlockedByTruncated {
+		t.Errorf("Provisional[1] = #%d state=%v truncated=%v, want #3 with a read seam and a capped list",
+			second.Number, second.BlockedByState, second.BlockedByTruncated)
+	}
+	if dep.ProvisionalTruncated {
+		t.Error("ProvisionalTruncated = true, want false (both provisional issues listed)")
+	}
+}
+
+// TestBacklogReviewDependencyProvisionalListIsEmptyNotNull pins the non-nil contract
+// the other dependency lists carry: a window with no provisional issue serializes the
+// list as [], so a caller never reads a missing list as an unknown one.
+func TestBacklogReviewDependencyProvisionalListIsEmptyNotNull(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{issue(1, daysAgo(1))},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	dep := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"})).Dependencies
+	if dep == nil {
+		t.Fatal("Dependencies block absent")
+	}
+	// After a JSON round-trip, `[]` decodes to a non-nil empty slice and `null` to nil.
+	if dep.Provisional == nil {
+		t.Error("Provisional = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
 // TestBacklogReviewDependencyNotApplicableSeamStaysReady pins the distinction the
 // three-state seam exists for: a seam with no carrier on this forge leaves the
 // verdict complete, so an otherwise-clear issue stays ready. Folding this into the
