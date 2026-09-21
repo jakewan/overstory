@@ -148,7 +148,7 @@ Every method has a source. The gaps sit at the level of individual fields, below
 
   Which sources are authoritative is to be settled on a dev instance.
 - **Dependency edges.**
-  - The dependency and blocks responses return `Issue` objects carrying `repository.full_name`, so cross-repository edges can be dropped as they are today.
+  - The dependency and blocks responses return `Issue` objects carrying `repository.full_name`, so cross-repository edges can be told apart as they are today — though only by name: no repository id travels on those edges, so the rename-proof identity comparison the GitHub backend makes has no equivalent here.
   - Those responses are declared without paging headers, so how a capped edge list is detected is open.
   - `internal_tracker.enable_issue_dependencies` decides `NoBlockedByEdges` per repository.
   - There is no sub-issue hierarchy, so `SubIssuesTotal` and `SubIssuesCompleted` carry no weight.

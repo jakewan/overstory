@@ -6,8 +6,9 @@ import (
 	"github.com/jakewan/overstory/internal/github"
 )
 
-// edges builds a slice of open native dependency edges. The fetch layer already
-// drops closed and cross-repo edges, so a fetched open edge is what these mirror.
+// edges builds a slice of open native dependency edges. The fetch layer keeps closed
+// edges and separates the cross-repository ones, so a same-repo open edge is what
+// these mirror.
 func edges(nums ...int) []github.DependencyRef {
 	refs := make([]github.DependencyRef, 0, len(nums))
 	for _, n := range nums {

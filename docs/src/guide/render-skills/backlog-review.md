@@ -62,7 +62,7 @@ The tool returns a composite object: `repo`, `generatedAt`, one block per sectio
 
 Header: `## Deferred Issue Review`
 
-From the `deferred` block. If `configured` is false, the repo declares no deferred labels — render "No deferred-label convention configured for this repo" and move on. Otherwise list the `deferredIssues`, each with its `number`, `title`, `matchedLabels` (with `labelsTruncated` flagging that this list may be missing a tail label — see below), `inactiveDays`, `ageDays`, its `readiness` verdict (`ready`/`blocked`/`provisional`), and the dependency signals it rests on when present — native `blockedBy` (open blockers gating this issue), `blocking` (open issues it gates), the open sub-issue gap (`subIssuesTotal − subIssuesCompleted`, which gates even when `subIssues[]` is empty), and `bodyRefs` (stated `#N` deps, resolved against `openIssueSet.numbers`):
+From the `deferred` block. If `configured` is false, the repo declares no deferred labels — render "No deferred-label convention configured for this repo" and move on. Otherwise list the `deferredIssues`, each with its `number`, `title`, `matchedLabels` (with `labelsTruncated` flagging that this list may be missing a tail label — see below), `inactiveDays`, `ageDays`, its `readiness` verdict (`ready`/`blocked`/`provisional`), and the dependency signals it rests on when present — native `blockedBy` (open blockers gating this issue) and `blockedByExternal` (the same, in other repositories — render each as `repo#number`, never as a bare number), `blocking` (open issues it gates), the open sub-issue gap (`subIssuesTotal − subIssuesCompleted`, which gates even when `subIssues[]` is empty), and `bodyRefs` (stated `#N` deps, resolved against `openIssueSet.numbers`):
 
 ```markdown
 - #42 - Title — labels: `deferred`; inactive 71d, age 120d; readiness: blocked — by open #30; stated deps: #31 (open), #33 (unresolved)
@@ -167,14 +167,15 @@ When `fetchTruncated`, the split covers only the fetched window — the remainin
 
 If `gatesTruncated`, render `gateCount` as the authoritative total ("12 gates, showing 10") — not a bare "more exist." Honor per-issue `blockingTruncated` (a gate's `blocking` list, hence its "unblocks N," is then a floor).
 
-**Blocked** — most-gated-first (`blocked`, each `number`, `title`, `blockedBy`, `subIssueGate`):
+**Blocked** — most-gated-first (`blocked`, each `number`, `title`, `blockedBy`, `blockedByExternal`, `subIssueGate`):
 
 ```markdown
 - #61 - Title — blocked by open #42, #43
 - #70 - Title — blocked by open sub-issue children
+- #72 - Title — blocked by open other/repo#8
 ```
 
-Render each blocked issue's open `blockedBy` numbers. When `blockedBy` is empty and `subIssueGate` is true, the issue is blocked purely by open sub-issue children — render "blocked by open sub-issue children," not an empty "blocked by open" clause; when both are present, note the sub-issue gate alongside the edges. If `blockedTruncated`, render `blockedCount` as the total; honor per-issue `blockedByTruncated` (a short `blockedBy` under the flag is a floor, not a confirmed "none").
+Render each blocked issue's open `blockedBy` numbers, and each `blockedByExternal` entry as `repo#number` — those are blockers in other repositories, and they gate exactly as local ones do, so an issue with an empty `blockedBy` and a non-empty `blockedByExternal` is blocked, not ready. Never render an external blocker's bare number: it addresses a different issue in this repository. When both lists are empty and `subIssueGate` is true, the issue is blocked purely by open sub-issue children — render "blocked by open sub-issue children," not an empty "blocked by open" clause; when several are present, note each alongside the others. If `blockedTruncated`, render `blockedCount` as the total; honor per-issue `blockedByTruncated`, which bounds both edge lists (a short `blockedBy` or `blockedByExternal` under the flag is a floor, not a confirmed "none").
 
 **Provisional** is the unconfirmed-readiness class: an issue presenting no open blocker whose readiness the reduction could not confirm, so it is neither counted ready nor listed as a gate. Surface the count when non-zero. Two things land an issue here, and `seams` says which. When a seam reads `unavailable`, no fetched issue yielded it — a backend that could not see the dependency data, not a backlog that is entirely gated; name the seam. When every seam reads `available`, the cause is a capped edge list (`blockedByTruncated`), which is per-issue and usually rare — "readiness unconfirmed, edge list capped". Say which rather than reporting a bare count.
 
