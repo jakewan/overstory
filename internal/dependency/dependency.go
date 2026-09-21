@@ -90,7 +90,7 @@ type SeamReport struct {
 // is what it still gates (open downstream). SubIssueGate is true when the
 // sub-issue summary's gap is positive where the forge carries sub-issues — an upper
 // bound on open children, and a gate the windowed edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
-// its Blocking (the work it unblocks); a Blocked issue carries what it waits on
+// its Blocking (the open work it blocks); a Blocked issue carries what it waits on
 // (BlockedBy and BlockedByExternal) — but all of them are populated on every listed
 // issue so a caller has the full recorded structure regardless of which list the
 // issue is in.
@@ -99,7 +99,7 @@ type SeamReport struct {
 // corresponding slice is a lower bound — the same per-issue honesty the deferred and
 // recommendation blocks carry. It matters for a listed issue: a blocked issue's
 // BlockedBy may omit further blockers, and a gate's Blocking (hence its ordering and
-// the summary blockingCount) may understate how much it unblocks.
+// the summary blockingCount) may understate how much it blocks.
 // BlockedByState and SubIssueGapState carry the same honesty one step further, for
 // the same reason the truncation flags are here: a listed blocked issue's BlockedBy
 // may be not merely capped but unread, and SubIssueGate reads false both where a
@@ -206,7 +206,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		}
 	}
 
-	// Gates: most downstream work unblocked first, then by number for a total order.
+	// Gates: most open downstream work blocked first, then by number for a total order.
 	sort.Slice(facts.Gates, func(i, j int) bool {
 		if len(facts.Gates[i].Blocking) != len(facts.Gates[j].Blocking) {
 			return len(facts.Gates[i].Blocking) > len(facts.Gates[j].Blocking)
@@ -255,11 +255,12 @@ type Classification struct {
 }
 
 // Gate is one do-first root in the summary projection: an issue that is itself
-// ready and unblocks open downstream work. BlockingCount is how many open
-// downstream issues it unblocks — the classification metadata a caller ranks by,
-// not the raw edge list (that lives in the recommendation block). BlockingTruncated
-// marks a capped blocking-edge list, so BlockingCount (and the gate's ordering) is a
-// lower bound.
+// ready and blocks open downstream work. BlockingCount is how many open
+// same-repository issues it blocks — the classification metadata a caller ranks by,
+// not the raw edge list (that lives in the recommendation block). It counts what the
+// gate blocks rather than what closing it frees: it may not be their only blocker.
+// BlockingTruncated marks a capped blocking-edge list, so BlockingCount (and the
+// gate's ordering) is a lower bound.
 type Gate struct {
 	Number            int    `json:"number"`
 	Title             string `json:"title"`

@@ -163,10 +163,10 @@ When `fetchTruncated`, the split covers only the fetched window — the remainin
 **Gates** — the do-first roots, most-downstream-first (`gates`, each `number`, `title`, `blocking`):
 
 ```markdown
-- #42 - Title — unblocks 4 open (blocking #51, #52, #58, #61)
+- #42 - Title — blocks 4 open (#51, #52, #58, #61)
 ```
 
-If `gatesTruncated`, render `gateCount` as the authoritative total ("12 gates, showing 10") — not a bare "more exist." Honor per-issue `blockingTruncated` (a gate's `blocking` list, hence its "unblocks N," is then a floor).
+A gate's `blocking` list is the open issues **in this repository** it blocks — cross-repository blocking edges are dropped — and it may not be their only blocker: some can stay blocked after the gate closes, by another blocker, a sub-issue gap, or a blocker in another repository. Render it as what the gate blocks, never as work that clearing it frees; its length is a leverage signal, not a count of freed issues. If `gatesTruncated`, render `gateCount` as the authoritative total ("12 gates, showing 10") — not a bare "more exist." Honor per-issue `blockingTruncated` (a gate's `blocking` list, hence its "blocks N," is then a floor).
 
 **Blocked** — most-gated-first (`blocked`, each `number`, `title`, `blockedBy`, `blockedByExternal`, `subIssueGate`):
 
@@ -241,7 +241,7 @@ Synthesize 3–5 prioritized, action-oriented findings from the sections above �
 
 1. Stale issues with no engagement (potential backlog rot)
 2. Quality gaps — issues with no body or no labels that block triage
-3. Gate roots — ready issues that unblock the most open downstream work (high-leverage do-first candidates, from Dependency Structure)
+3. Gate roots — ready issues that block the most open downstream work (high-leverage do-first candidates, from Dependency Structure; leverage, not a count of work freed)
 4. Premise/scope questions raised by overlap or cross-reference clusters
 5. Area imbalance suggesting misallocated effort
 6. Trajectory signal (sustained growth worth watching)

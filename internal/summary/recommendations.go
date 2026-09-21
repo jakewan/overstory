@@ -83,7 +83,7 @@ type RecommendationFacts struct {
 //
 // GatesPrioritized is the subset of Blocking whose target issue is milestoned or
 // bug-labeled within the fetched window — the prioritized downstream work this
-// candidate unblocks. It is the join a caller cannot compute itself: the target may
+// candidate blocks. It is the join a caller cannot compute itself: the target may
 // sit past the list cap, and the open-issue-set block carries only numbers, not each
 // issue's milestone or labels. A ready candidate with a non-empty GatesPrioritized is
 // a do-first gate root of prioritized work — the most actionable next step toward that
@@ -166,7 +166,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 	bugMatcher := reduce.NewLabelMatcher(bugLabels, nil)
 
 	// The prioritized set: fetched open issues that are milestoned or bug-labeled —
-	// the downstream work a gate root unblocking it is do-first toward. Built once
+	// the downstream work a gate root blocking it is do-first toward. Built once
 	// over the window, since a candidate's blocking target may itself be any fetched
 	// issue, not only another candidate.
 	prioritized := make(map[int]bool, len(issues))
@@ -237,7 +237,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 }
 
 // isReadyGate reports whether a candidate is a ready gate of prioritized work: it
-// unblocks prioritized downstream work and is itself actionable now. Readiness is
+// blocks prioritized downstream work and is itself actionable now. Readiness is
 // load-bearing — an itself-blocked blocker is not do-first now and would surface
 // transitively through its own gate root, so it is not reserved, and an unconfirmed
 // one must not take a reserved slot from a confirmed one.
@@ -257,7 +257,7 @@ func isReadyGate(c RecommendationCandidate) bool {
 // the neutral pre-sort (which weighs neither leverage nor milestone). The reserve is
 // bounded by gateReserve and by half the limit, so the bugs-first band always keeps
 // at least half the slots; within the reserve, gates are ordered by leverage (how
-// much prioritized work they unblock), then newest, then number, so a freshly-filed
+// much prioritized work they block), then newest, then number, so a freshly-filed
 // high-leverage gate wins rather than being evicted oldest-first. The reserve leads
 // the list — a survival ordering, not a ranking, since the caller owns ranking.
 func selectWithReserve(preSorted []RecommendationCandidate, limit int) []RecommendationCandidate {
@@ -275,7 +275,7 @@ func selectWithReserve(preSorted []RecommendationCandidate, limit int) []Recomme
 		}
 		sort.SliceStable(gates, func(i, j int) bool {
 			if li, lj := len(gates[i].GatesPrioritized), len(gates[j].GatesPrioritized); li != lj {
-				return li > lj // more prioritized work unblocked first
+				return li > lj // more prioritized work blocked first
 			}
 			if gates[i].AgeDays != gates[j].AgeDays {
 				return gates[i].AgeDays < gates[j].AgeDays // newest first, so a fresh gate is not evicted

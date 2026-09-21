@@ -92,13 +92,13 @@ func TestReduceSurfacesPerIssueEdgeTruncation(t *testing.T) {
 }
 
 // TestClassificationDropsPerIssueEdges pins the summary-side projection: it carries
-// the counts and the gate set (with how many each gate unblocks) but not the raw
+// the counts and the gate set (with how many each gate blocks) but not the raw
 // per-issue edge lists — the recommendation block already ships those.
 func TestClassificationDropsPerIssueEdges(t *testing.T) {
 	capstone := issue(7)
 	capstone.BlockedBy = edges(42, 43)
 	g := issue(42)
-	g.Blocking = edges(7, 8) // ready, unblocks two
+	g.Blocking = edges(7, 8) // ready, blocks two
 	facts := Reduce([]github.Issue{capstone, g, issue(8)}, 3, 20, bothSeams)
 
 	c := facts.Classification()
@@ -110,7 +110,7 @@ func TestClassificationDropsPerIssueEdges(t *testing.T) {
 		t.Fatalf("Gates = %+v, want [#42]", c.Gates)
 	}
 	if c.Gates[0].BlockingCount != 2 {
-		t.Errorf("BlockingCount = %d, want 2 (unblocks #7 and #8)", c.Gates[0].BlockingCount)
+		t.Errorf("BlockingCount = %d, want 2 (blocks #7 and #8)", c.Gates[0].BlockingCount)
 	}
 	if c.Gates == nil {
 		t.Error("Gates nil; want non-nil empty slice")
