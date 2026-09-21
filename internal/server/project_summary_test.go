@@ -426,7 +426,7 @@ func TestProjectSummarySurfacesDependencyClassification(t *testing.T) {
 	}
 	for _, g := range dep.Gates {
 		if g.BlockingCount != 1 {
-			t.Errorf("gate #%d BlockingCount = %d, want 1 (unblocks #7)", g.Number, g.BlockingCount)
+			t.Errorf("gate #%d BlockingCount = %d, want 1 (blocks #7)", g.Number, g.BlockingCount)
 		}
 	}
 	// The classification projection drops the per-issue edges, so the seams report is
@@ -696,7 +696,7 @@ func TestProjectSummaryRecommendationBlockingEmptySerializesAsArray(t *testing.T
 // acceptance: a ready issue that gates a milestoned issue — but is not itself a
 // bug, aged, or low-numbered — still reaches the caller. It survives the candidate
 // cap (the reserve) and carries gatesPrioritized naming the prioritized work it
-// unblocks, so orientation can point at the do-first ready work rather than only
+// blocks, so orientation can point at the do-first ready work rather than only
 // naming the blocked priority.
 func TestProjectSummaryRecommendationSurfacesReadyBlockerOfPrioritized(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
@@ -729,7 +729,7 @@ func TestProjectSummaryRecommendationSurfacesReadyBlockerOfPrioritized(t *testin
 		t.Fatalf("ready blocker #90 absent from candidates %+v — did not survive the cap", facts.Recommendations.Candidates)
 	}
 	if len(got.GatesPrioritized) != 1 || got.GatesPrioritized[0] != 1 {
-		t.Errorf("GatesPrioritized = %v, want [1] (the milestoned issue it unblocks)", got.GatesPrioritized)
+		t.Errorf("GatesPrioritized = %v, want [1] (the milestoned issue it blocks)", got.GatesPrioritized)
 	}
 }
 

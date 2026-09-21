@@ -100,7 +100,7 @@ func byNum(cands []RecommendationCandidate) map[int]RecommendationCandidate {
 // TestReduceRecommendationsGatesPrioritized pins the join (#97): a candidate's
 // gatesPrioritized is the subset of its open blocking edges whose target is
 // milestoned or bug-labeled within the fetched window — the "which prioritized
-// work this candidate unblocks" signal a caller cannot derive itself (the target
+// work this candidate blocks" signal a caller cannot derive itself (the target
 // may be past the list cap, and openIssueSet carries no milestone/label). The
 // signal is emitted regardless of the candidate's own readiness.
 func TestReduceRecommendationsGatesPrioritized(t *testing.T) {
