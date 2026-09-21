@@ -2,9 +2,10 @@ package server
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
+	"unicode/utf16"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -69,13 +70,28 @@ func TestServerExposesTools(t *testing.T) {
 	}
 }
 
+// claudeCodeDisplayLimit is how much of a tool description, and of the server
+// instructions, Claude Code shows a model: text past it is cut and marked
+// "… [truncated]". The limit is undocumented. It was read from Claude Code's own
+// truncation code and is reported in anthropics/claude-code#87650. If it is lifted,
+// the tests holding text to it only leave room unused; if it is lowered, text these
+// tests pass will be cut again without any signal here.
+const claudeCodeDisplayLimit = 2048
+
+// claudeCodeLen measures text the way Claude Code applies claudeCodeDisplayLimit: as a
+// JavaScript string length, in UTF-16 code units. A character outside the Basic
+// Multilingual Plane counts twice, so a rune count would pass text Claude Code cuts.
+func claudeCodeLen(s string) int {
+	return len(utf16.Encode([]rune(s)))
+}
+
 // TestServerInstructionsStateDependencyReductions pins what the server tells a caller
 // about the dependency fields backlog_review and project_summary project. Those fields
 // are reductions rather than GitHub's own lists: told nothing, a caller describes the
 // filtering in its own words, or reads the sub-issue gap as an exact count of open
-// children. The statement lives in the server instructions rather than either tool
-// description because Claude Code shows a model only the first 2,048 characters of a
-// description, and both readiness descriptions run past that.
+// children. The statement lives in the server instructions because it is shared by
+// both tools and is sent once per session, leaving each description's budget for what
+// that tool alone needs.
 func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 	cs := connect(t, New())
 	instructions := cs.InitializeResult().Instructions
@@ -113,11 +129,112 @@ func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 		}
 	}
 
-	// The instructions' own display limit in Claude Code is undocumented. Holding them
-	// to the description cap, the one limit observed, keeps the statement deliverable
-	// if the two turn out to share it.
-	if n := utf8.RuneCountInString(instructions); n > 2048 {
-		t.Errorf("server instructions run %d characters, want at most 2048", n)
+	// Claude Code cuts the instructions at the same limit as a tool description.
+	if n := claudeCodeLen(instructions); n > claudeCodeDisplayLimit {
+		t.Errorf("server instructions run %d characters, want at most %d", n, claudeCodeDisplayLimit)
+	}
+}
+
+// TestToolDescriptionsFitClaudeCodeDisplayLimit holds every registered tool's
+// description to what Claude Code shows a model. A description past the limit is cut
+// with no warning to its author, and the part cut is the contract a model reads before
+// it calls the tool. Ranging over ListTools covers a tool added later without edits.
+func TestToolDescriptionsFitClaudeCodeDisplayLimit(t *testing.T) {
+	cs := connect(t, New())
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	for _, tool := range res.Tools {
+		if n := claudeCodeLen(tool.Description); n > claudeCodeDisplayLimit {
+			t.Errorf("%s description runs %d characters, want at most %d", tool.Name, n, claudeCodeDisplayLimit)
+		}
+	}
+}
+
+// readinessDescriptions returns the backlog_review and project_summary descriptions by
+// tool name, failing the test if either is missing.
+func readinessDescriptions(t *testing.T) map[string]string {
+	t.Helper()
+	cs := connect(t, New())
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	descs := make(map[string]string, 2)
+	for _, tool := range res.Tools {
+		if tool.Name == "backlog_review" || tool.Name == "project_summary" {
+			descs[tool.Name] = tool.Description
+		}
+	}
+	if len(descs) != 2 {
+		t.Fatalf("found %d readiness tools, want 2", len(descs))
+	}
+	return descs
+}
+
+// TestReadinessToolDescriptionsDescribeEveryBlock pins that each readiness description
+// gives every projectable block, and the always-returned openIssueSet, a clause of its
+// own. The blocks enum already lists the names; what it cannot say is what each block
+// means. A block is matched as a clause key, its name followed by " (", because a bare
+// name also turns up in prose ("deferred labels") and would pass with no clause at all.
+func TestReadinessToolDescriptionsDescribeEveryBlock(t *testing.T) {
+	descs := readinessDescriptions(t)
+	for tool, names := range map[string][]string{
+		"backlog_review":  backlogBlockNames,
+		"project_summary": summaryBlockNames,
+	} {
+		for _, name := range append(slices.Clone(names), "openIssueSet") {
+			if !strings.Contains(descs[tool], name+" (") {
+				t.Errorf("%s description has no %q clause", tool, name)
+			}
+		}
+	}
+}
+
+// TestReadinessToolDescriptionsStateRenderTimeRules pins the rules a model needs to read
+// each readiness response correctly, and which it can learn only from the description.
+// One token per rule, so a rewording that keeps the meaning keeps passing and dropping
+// any single rule fails.
+func TestReadinessToolDescriptionsStateRenderTimeRules(t *testing.T) {
+	shared := []string{
+		// an issue missing from openIssueSet is not thereby resolved
+		"not proof of resolution",
+		// readiness is one verdict, counted the same way in both places
+		"same verdict the dependencies block counts",
+		// what provisional means, and its two causes
+		"truncated edge list",
+		"unread seam",
+		"empty edge list is not evidence of readiness",
+		// the critical-path gate's own, distinct provisional state
+		"provisional under a truncated fetch",
+		// truncation and degradation
+		"flags mark a floor",
+		"available:false",
+		"sizeBound",
+	}
+	descs := readinessDescriptions(t)
+	for tool, own := range map[string][]string{
+		"backlog_review": {
+			// deferred issues are parked, not neglected
+			"deferred ones excluded",
+			// native edges outrank the mention graph's direction
+			"crossRef mention graph can invert",
+		},
+		"project_summary": {
+			// a missing-area count with no area labels seen is not a defect list
+			"observation to investigate",
+			// a capped label list can hide an area or deferred label either way
+			"either direction",
+			"flagged when members are a floor",
+			"ranking stays with the caller",
+		},
+	} {
+		for _, want := range append(slices.Clone(shared), own...) {
+			if !strings.Contains(descs[tool], want) {
+				t.Errorf("%s description lacks %q", tool, want)
+			}
+		}
 	}
 }
 
