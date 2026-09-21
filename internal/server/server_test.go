@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -64,5 +65,62 @@ func TestServerExposesTools(t *testing.T) {
 	}
 	if len(res.Tools) != 7 {
 		t.Errorf("ListTools returned %d tools, want 7", len(res.Tools))
+	}
+}
+
+// TestToolDescriptionsStateDependencyReductions pins what the two readiness tools tell
+// a caller about their dependency fields. The description is the one channel that
+// reaches the rendering model, and the fields are reductions rather than GitHub's own
+// lists: without these statements a caller describes the filtering in its own words,
+// or reads the sub-issue gap as an exact count of open children.
+func TestToolDescriptionsStateDependencyReductions(t *testing.T) {
+	ctx := context.Background()
+	cs := connect(t, New())
+
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	descriptions := make(map[string]string, len(res.Tools))
+	for _, tool := range res.Tools {
+		descriptions[tool.Name] = tool.Description
+	}
+
+	// The shared statement: which edges survive, in what order, how each list is
+	// capped, and what the gap bounds.
+	shared := []string{
+		"reduced server-side",
+		"blockedBy, blocking, and subIssues are the ascending, distinct numbers of same-repository issues still open",
+		"blockedByTruncated",
+		"blockingTruncated",
+		"subIssuesTruncated",
+		"blockedByTruncated bounds it too",
+		"upper bound on open children",
+		"over-report",
+	}
+	cases := []struct {
+		tool    string
+		derived []string
+	}{
+		{tool: "backlog_review", derived: []string{"subIssueGate"}},
+		{tool: "project_summary", derived: []string{"gatesPrioritized", "blockingCount"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			desc, ok := descriptions[tc.tool]
+			if !ok {
+				t.Fatalf("tool %q not registered", tc.tool)
+			}
+			for _, want := range append(append([]string{}, shared...), tc.derived...) {
+				if !strings.Contains(desc, want) {
+					t.Errorf("description lacks %q", want)
+				}
+			}
+			// The open filter and the same-repository split are the server's, so the
+			// description must not attribute the lists to GitHub.
+			if strings.Contains(desc, "authoritative native") {
+				t.Errorf("description still calls the reduced edges %q", "authoritative native")
+			}
+		})
 	}
 }
