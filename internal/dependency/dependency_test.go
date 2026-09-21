@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 )
 
-// edges builds a slice of open native dependency edges. The fetch layer already
-// drops closed and cross-repo edges, so a fetched open edge is what these mirror.
+// edges builds a slice of open native dependency edges. The fetch layer keeps closed
+// edges and separates the cross-repository ones, so a same-repo open edge is what
+// these mirror.
 func edges(nums ...int) []github.DependencyRef {
 	refs := make([]github.DependencyRef, 0, len(nums))
 	for _, n := range nums {
@@ -146,6 +148,43 @@ func TestReduceOpenSubIssueGateIsBlocked(t *testing.T) {
 	}
 	if facts.ReadyCount != 0 {
 		t.Errorf("ReadyCount = %d, want 0 (parent gated by children)", facts.ReadyCount)
+	}
+}
+
+// TestReduceCrossRepoBlockerBlocksAndOrdersByTotalGates pins both halves of the
+// external edge in this reduction: an issue gated only from another repository is
+// blocked and carries the reference that names its blocker, and the Blocked list's
+// most-gated-first order counts both lists — an issue waiting on two repositories
+// outranks one waiting on a single local issue.
+func TestReduceCrossRepoBlockerBlocksAndOrdersByTotalGates(t *testing.T) {
+	foreign := issue(1)
+	foreign.BlockedByExternal = []github.ExternalDependencyRef{
+		{Repo: "other/repo", Number: 8, Open: true},
+		{Repo: "acme/gadgets", Number: 3, Open: true},
+	}
+	local := issue(2)
+	local.BlockedBy = edges(9)
+
+	facts := Reduce([]github.Issue{local, foreign}, 2, 20, bothSeams)
+	if facts.BlockedCount != 2 || facts.ReadyCount != 0 {
+		t.Fatalf("counts blocked=%d ready=%d, want 2/0 — a blocker gates wherever it lives",
+			facts.BlockedCount, facts.ReadyCount)
+	}
+	if len(facts.Blocked) != 2 {
+		t.Fatalf("Blocked = %+v, want both issues", facts.Blocked)
+	}
+	if facts.Blocked[0].Number != 1 {
+		t.Errorf("Blocked[0] = #%d, want #1 — two external blockers outrank one local", facts.Blocked[0].Number)
+	}
+	want := []reduce.ExternalRef{{Repo: "acme/gadgets", Number: 3}, {Repo: "other/repo", Number: 8}}
+	got := facts.Blocked[0].BlockedByExternal
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("BlockedByExternal = %v, want %v", got, want)
+	}
+	// The non-nil contract holds on the issue that has none, so the field serializes
+	// as [] there rather than null.
+	if facts.Blocked[1].BlockedByExternal == nil {
+		t.Error("BlockedByExternal = nil on the locally-blocked issue, want non-nil empty slice")
 	}
 }
 

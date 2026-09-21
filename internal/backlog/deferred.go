@@ -82,16 +82,22 @@ type DeferredFacts struct {
 // stated cross-references, complementary to the authoritative BlockedBy below.
 //
 // BlockedBy are the ascending, distinct numbers of the issue's still-open native
-// GitHub blocked-by edges — the authoritative dependency signal for what gates this
-// issue: a closed blocker is omitted (it no longer gates), and a PR can never appear
+// GitHub blocked-by edges — the dependency signal recorded on the issue for what
+// gates it: a closed blocker is omitted (it no longer gates), and a PR can never appear
 // (the edge is issue-to-issue). Unlike BodyRefs, the open/closed determination needs
 // no open-issue-set resolution — the edge carries the state. Non-nil even when empty.
+// BlockedByExternal is the same signal for blockers in other repositories, each
+// carrying the repository that qualifies its number, since a bare foreign number
+// would read as a local issue. It gates identically — an open blocker gates wherever
+// it lives — and is a separate field only because the numbers are not interchangeable.
 // BlockedByTruncated is true when the issue has more native edges than the fetch
-// window read, so absence past the window is not proof the issue is unblocked.
+// window read, so absence past the window is not proof the issue is unblocked; it
+// bounds both lists, which come from one connection.
 //
 // Blocking is the reverse direction: the ascending, distinct numbers of the
 // still-open downstream issues this one gates — what closing it would help unblock.
-// Same authoritative-edge semantics as BlockedBy, mirrored: it tells a maintainer
+// Reduced like BlockedBy, mirrored, except that a cross-repository edge is dropped
+// rather than carried separately: it tells a maintainer
 // how much downstream work a parked issue stands in front of, not just whether the
 // parked issue is itself blocked. It is a gate this issue contributes, not
 // necessarily the only one, so a downstream issue stays blocked until every issue
@@ -100,8 +106,8 @@ type DeferredFacts struct {
 //
 // SubIssues are the ascending, distinct numbers of the parked issue's still-open
 // same-repository child issues — the hierarchy form of the same gate: a parent with
-// open children is not startable, however quiet it looks. Same authoritative-edge
-// semantics (closed children omitted, a PR can never appear, cross-repository
+// open children is not startable, however quiet it looks. Reduced like BlockedBy
+// except for the cross-repository case (closed children omitted, a PR can never appear, cross-repository
 // children dropped). Non-nil even when empty; SubIssuesTruncated marks more native
 // children than the fetch window read.
 //
@@ -114,20 +120,21 @@ type DeferredFacts struct {
 // an equality (a not-planned closure can leave the gap one high), but it errs only
 // toward over-reporting the gate, so it never reads a gated parent as ready.
 type DeferredIssue struct {
-	Number             int      `json:"number"`
-	Title              string   `json:"title"`
-	URL                string   `json:"url"`
-	MatchedLabels      []string `json:"matchedLabels"`
-	LabelsTruncated    bool     `json:"labelsTruncated"`
-	BodyRefs           []int    `json:"bodyRefs"`
-	BlockedBy          []int    `json:"blockedBy"`
-	BlockedByTruncated bool     `json:"blockedByTruncated"`
-	Blocking           []int    `json:"blocking"`
-	BlockingTruncated  bool     `json:"blockingTruncated"`
-	SubIssues          []int    `json:"subIssues"`
-	SubIssuesTruncated bool     `json:"subIssuesTruncated"`
-	SubIssuesTotal     int      `json:"subIssuesTotal"`
-	SubIssuesCompleted int      `json:"subIssuesCompleted"`
+	Number             int                  `json:"number"`
+	Title              string               `json:"title"`
+	URL                string               `json:"url"`
+	MatchedLabels      []string             `json:"matchedLabels"`
+	LabelsTruncated    bool                 `json:"labelsTruncated"`
+	BodyRefs           []int                `json:"bodyRefs"`
+	BlockedBy          []int                `json:"blockedBy"`
+	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
+	BlockedByTruncated bool                 `json:"blockedByTruncated"`
+	Blocking           []int                `json:"blocking"`
+	BlockingTruncated  bool                 `json:"blockingTruncated"`
+	SubIssues          []int                `json:"subIssues"`
+	SubIssuesTruncated bool                 `json:"subIssuesTruncated"`
+	SubIssuesTotal     int                  `json:"subIssuesTotal"`
+	SubIssuesCompleted int                  `json:"subIssuesCompleted"`
 	// BlockedByState and SubIssueGapState carry the seam availability of the edge
 	// fields above, for the same reason the truncation flags travel with them: this
 	// block projects the same source fields as the dependencies block, so the identical
@@ -196,6 +203,7 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 			LabelsTruncated:     is.LabelsTruncated,
 			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			BlockedBy:           reduce.OpenDependencyNumbers(is.BlockedBy),
+			BlockedByExternal:   reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated:  is.BlockedByTruncated,
 			Blocking:            reduce.OpenDependencyNumbers(is.Blocking),
 			BlockingTruncated:   is.BlockingTruncated,

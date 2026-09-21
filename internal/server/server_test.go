@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -64,5 +66,83 @@ func TestServerExposesTools(t *testing.T) {
 	}
 	if len(res.Tools) != 7 {
 		t.Errorf("ListTools returned %d tools, want 7", len(res.Tools))
+	}
+}
+
+// TestServerInstructionsStateDependencyReductions pins what the server tells a caller
+// about the dependency fields backlog_review and project_summary project. Those fields
+// are reductions rather than GitHub's own lists: told nothing, a caller describes the
+// filtering in its own words, or reads the sub-issue gap as an exact count of open
+// children. The statement lives in the server instructions rather than either tool
+// description because Claude Code shows a model only the first 2,048 characters of a
+// description, and both readiness descriptions run past that.
+func TestServerInstructionsStateDependencyReductions(t *testing.T) {
+	cs := connect(t, New())
+	instructions := cs.InitializeResult().Instructions
+
+	// One token per property, so a rewording that keeps the meaning keeps passing and
+	// dropping any single property fails.
+	for _, want := range []string{
+		// which edges survive, and in what shape
+		"not GitHub's lists",
+		"same-repository",
+		"still open",
+		"ascending",
+		"distinct",
+		"moves to blockedByExternal",
+		"cross-repository blocking and sub-issue edges are dropped",
+		"ordered by repository then number",
+		// how each list is capped
+		"blockedByTruncated",
+		"blockingTruncated",
+		"subIssuesTruncated",
+		"blockedByTruncated bounds blockedByExternal too",
+		// what the sub-issue gap is and is not
+		"upper bound on open children",
+		"not an exact count",
+		"over-report",
+		"not a measure of how many children subIssues omits",
+		// the derived fields, each with the tool that projects it
+		"subIssueGate",
+		"gatesPrioritized",
+		"blockingCount",
+		"may not be their only blocker",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("server instructions lack %q", want)
+		}
+	}
+
+	// The instructions' own display limit in Claude Code is undocumented. Holding them
+	// to the description cap, the one limit observed, keeps the statement deliverable
+	// if the two turn out to share it.
+	if n := utf8.RuneCountInString(instructions); n > 2048 {
+		t.Errorf("server instructions run %d characters, want at most 2048", n)
+	}
+}
+
+// TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub pins the other half of
+// the same contract: the open filter and the same-repository split are the server's,
+// so neither readiness tool's description may present the reduced lists as GitHub's.
+func TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub(t *testing.T) {
+	cs := connect(t, New())
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	checked := 0
+	for _, tool := range res.Tools {
+		if tool.Name != "backlog_review" && tool.Name != "project_summary" {
+			continue
+		}
+		checked++
+		for _, attribution := range []string{"authoritative native", "GitHub's authoritative"} {
+			if strings.Contains(tool.Description, attribution) {
+				t.Errorf("%s description calls the reduced edges %q", tool.Name, attribution)
+			}
+		}
+	}
+	if checked != 2 {
+		t.Errorf("checked %d readiness tools, want 2", checked)
 	}
 }

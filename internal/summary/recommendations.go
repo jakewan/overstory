@@ -41,17 +41,23 @@ type RecommendationFacts struct {
 // BlockedBy below. Non-nil even when empty, so it serializes as [] rather than null.
 //
 // BlockedBy are the ascending, distinct numbers of the candidate's still-open
-// native GitHub blocked-by edges — the authoritative dependency signal a caller
-// ranks readiness from. Closed blockers are omitted (they no longer gate), and a PR
+// native GitHub blocked-by edges — the dependency signal recorded on the issue, which
+// a caller ranks readiness from. Closed blockers are omitted (they no longer gate), and a PR
 // can never appear (the edge is issue-to-issue). Unlike BodyRefs, the open/closed
 // state is read straight from the edge, so it needs no open-issue-set resolution and
 // carries no "absence is a closed issue or PR" ambiguity. Non-nil even when empty.
+// BlockedByExternal is the same signal for blockers in other repositories, each
+// qualified by its repository because a bare foreign number would read as a local
+// issue. Such a blocker gates the candidate exactly as a local one does, so a caller
+// weighing readiness reads the two together.
 // BlockedByTruncated is true when the candidate has more native edges than the fetch
-// window read — there, an empty BlockedBy is not proof the candidate is ready.
+// window read — there, an empty BlockedBy is not proof the candidate is ready. It
+// bounds both lists, which are projected from one connection.
 //
 // Blocking is the reverse direction: the ascending, distinct numbers of the
 // still-open downstream issues this candidate gates — what picking it up would help
-// unblock. Same authoritative-edge semantics, mirrored: it lets a caller weigh how
+// unblock. Reduced like BlockedBy, mirrored, except that a cross-repository edge is
+// dropped rather than carried separately: it lets a caller weigh how
 // much downstream work a candidate stands in front of, not just whether the
 // candidate is itself ready. It is a gate this issue contributes, not necessarily
 // the only one — a downstream issue several issues block stays blocked until they
@@ -61,8 +67,8 @@ type RecommendationFacts struct {
 // SubIssues are the ascending, distinct numbers of the candidate's still-open
 // same-repository child issues — the hierarchy form of the same readiness gate: a
 // parent with open children is not startable, however old or quiet it looks, so a
-// caller demotes it rather than floating it to the top. Same authoritative-edge
-// semantics (closed children omitted, never a PR, cross-repository children dropped).
+// caller demotes it rather than floating it to the top. Reduced like BlockedBy
+// except for the cross-repository case (closed children omitted, never a PR, cross-repository children dropped).
 // Non-nil even when empty; SubIssuesTruncated marks more native children than the
 // fetch window read.
 //
@@ -89,21 +95,22 @@ type RecommendationFacts struct {
 // present) — so under fetchTruncated an empty GatesPrioritized is a floor, not a
 // confirmed "gates nothing prioritized."
 type RecommendationCandidate struct {
-	Number             int     `json:"number"`
-	Title              string  `json:"title"`
-	URL                string  `json:"url"`
-	IsBug              bool    `json:"isBug"`
-	Milestone          *string `json:"milestone,omitempty"`
-	BodyRefs           []int   `json:"bodyRefs"`
-	BlockedBy          []int   `json:"blockedBy"`
-	BlockedByTruncated bool    `json:"blockedByTruncated"`
-	Blocking           []int   `json:"blocking"`
-	BlockingTruncated  bool    `json:"blockingTruncated"`
-	GatesPrioritized   []int   `json:"gatesPrioritized"`
-	SubIssues          []int   `json:"subIssues"`
-	SubIssuesTruncated bool    `json:"subIssuesTruncated"`
-	SubIssuesTotal     int     `json:"subIssuesTotal"`
-	SubIssuesCompleted int     `json:"subIssuesCompleted"`
+	Number             int                  `json:"number"`
+	Title              string               `json:"title"`
+	URL                string               `json:"url"`
+	IsBug              bool                 `json:"isBug"`
+	Milestone          *string              `json:"milestone,omitempty"`
+	BodyRefs           []int                `json:"bodyRefs"`
+	BlockedBy          []int                `json:"blockedBy"`
+	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
+	BlockedByTruncated bool                 `json:"blockedByTruncated"`
+	Blocking           []int                `json:"blocking"`
+	BlockingTruncated  bool                 `json:"blockingTruncated"`
+	GatesPrioritized   []int                `json:"gatesPrioritized"`
+	SubIssues          []int                `json:"subIssues"`
+	SubIssuesTruncated bool                 `json:"subIssuesTruncated"`
+	SubIssuesTotal     int                  `json:"subIssuesTotal"`
+	SubIssuesCompleted int                  `json:"subIssuesCompleted"`
 	// BlockedByState and SubIssueGapState carry the seam availability of the fields
 	// above. This block projects the same source fields as the dependencies block, so
 	// it carries their companions for the same reason it carries the truncation flags:
@@ -192,6 +199,7 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 			Milestone:          milestone,
 			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
 			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),
+			BlockedByExternal:  reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated: is.BlockedByTruncated,
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,

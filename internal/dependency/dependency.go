@@ -82,14 +82,18 @@ type SeamReport struct {
 	SubIssueGap github.SeamState `json:"subIssueGap"`
 }
 
-// Issue is one open issue reduced to its identifying facts and its authoritative
-// native edges. BlockedBy is what still gates it (open blocked-by edges); Blocking
+// Issue is one open issue reduced to its identifying facts and its native edges as
+// the server reduces them. BlockedBy is what still gates it from this repository (open
+// blocked-by edges) and BlockedByExternal what gates it from another, each of those
+// qualified by its repository because a bare foreign number would address a local
+// issue; the two are read together, since a blocker gates wherever it lives. Blocking
 // is what it still gates (open downstream). SubIssueGate is true when the
-// authoritative sub-issue summary shows open children — a hidden gate the windowed
-// edge lists can miss. Both edge slices are non-nil even when empty. A Gate carries
-// its Blocking (the work it unblocks); a Blocked issue carries its BlockedBy (why
-// it waits) — but both slices are populated on every listed issue so a caller has
-// the full local structure regardless of which list the issue is in.
+// sub-issue summary's gap is positive where the forge carries sub-issues — an upper
+// bound on open children, and a gate the windowed edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
+// its Blocking (the work it unblocks); a Blocked issue carries what it waits on
+// (BlockedBy and BlockedByExternal) — but all of them are populated on every listed
+// issue so a caller has the full recorded structure regardless of which list the
+// issue is in.
 //
 // BlockedByTruncated / BlockingTruncated mark an edge list the fetch capped, so the
 // corresponding slice is a lower bound — the same per-issue honesty the deferred and
@@ -109,16 +113,17 @@ type SeamReport struct {
 // ever holds a provisional issue. The rule for a future projection is that one, not an
 // exemption — a projection not partitioned by verdict carries the field.
 type Issue struct {
-	Number             int              `json:"number"`
-	Title              string           `json:"title"`
-	URL                string           `json:"url"`
-	BlockedBy          []int            `json:"blockedBy"`
-	BlockedByTruncated bool             `json:"blockedByTruncated"`
-	Blocking           []int            `json:"blocking"`
-	BlockingTruncated  bool             `json:"blockingTruncated"`
-	SubIssueGate       bool             `json:"subIssueGate"`
-	BlockedByState     github.SeamState `json:"blockedByState"`
-	SubIssueGapState   github.SeamState `json:"subIssueGapState"`
+	Number             int                  `json:"number"`
+	Title              string               `json:"title"`
+	URL                string               `json:"url"`
+	BlockedBy          []int                `json:"blockedBy"`
+	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
+	BlockedByTruncated bool                 `json:"blockedByTruncated"`
+	Blocking           []int                `json:"blocking"`
+	BlockingTruncated  bool                 `json:"blockingTruncated"`
+	SubIssueGate       bool                 `json:"subIssueGate"`
+	BlockedByState     github.SeamState     `json:"blockedByState"`
+	SubIssueGapState   github.SeamState     `json:"subIssueGapState"`
 }
 
 // Reduce classifies the fetched open issues by their native dependency edges.
@@ -126,9 +131,10 @@ type Issue struct {
 // Blocked lists are each capped at listLimit (counts are not). The reduction is
 // time-independent, so it takes no clock.
 //
-// An issue is blocked when it has an open blocked-by edge or an open sub-issue gate
-// (the authoritative subIssuesTotal-minus-completed gap, which witnesses open
-// children even when they fall outside the window). An issue with no known gate is
+// An issue is blocked when it has an open blocked-by edge — in this repository or
+// another, since a blocker gates wherever it lives — or an open sub-issue gate
+// (a positive subIssuesTotal-minus-completed gap, which counts children outside the
+// window too, and as an upper bound on open children can over-report). An issue with no known gate is
 // provisional rather than ready when its blocked-by list was capped or when a seam
 // the verdict rests on went unread — in both cases the emptiness is the absence of
 // evidence rather than evidence of absence. Everything else is ready, and a gate is a
@@ -162,6 +168,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 
 	for _, is := range issues {
 		blockedBy := reduce.OpenDependencyNumbers(is.BlockedBy)
+		blockedByExternal := reduce.OpenExternalDependencies(is.BlockedByExternal)
 		blocking := reduce.OpenDependencyNumbers(is.Blocking)
 
 		item := Issue{
@@ -169,6 +176,7 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 			Title:              is.Title,
 			URL:                is.URL,
 			BlockedBy:          blockedBy,
+			BlockedByExternal:  blockedByExternal,
 			BlockedByTruncated: is.BlockedByTruncated,
 			Blocking:           blocking,
 			BlockingTruncated:  is.BlockingTruncated,
@@ -205,10 +213,12 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		}
 		return facts.Gates[i].Number < facts.Gates[j].Number
 	})
-	// Blocked: most-gated first, then by number.
+	// Blocked: most-gated first, then by number. Both edge lists count toward "most
+	// gated" — an issue waiting on three repositories is not less blocked than one
+	// waiting on three local issues.
 	sort.Slice(facts.Blocked, func(i, j int) bool {
-		gi := len(facts.Blocked[i].BlockedBy)
-		gj := len(facts.Blocked[j].BlockedBy)
+		gi := len(facts.Blocked[i].BlockedBy) + len(facts.Blocked[i].BlockedByExternal)
+		gj := len(facts.Blocked[j].BlockedBy) + len(facts.Blocked[j].BlockedByExternal)
 		if gi != gj {
 			return gi > gj
 		}
