@@ -136,9 +136,9 @@ func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 }
 
 // TestToolDescriptionsFitClaudeCodeDisplayLimit holds every registered tool's
-// description to what Claude Code shows a model. A description past the limit is cut
-// with no warning to its author, and the part cut is the contract a model reads before
-// it calls the tool. Ranging over ListTools covers a tool added later without edits.
+// description to what Claude Code shows a model. A description past the limit reaches the
+// model cut short, and nothing in a test run or an ordinary tool call shows it; the part
+// cut is the contract a model reads before it calls the tool. Ranging over ListTools covers a tool added later without edits.
 func TestToolDescriptionsFitClaudeCodeDisplayLimit(t *testing.T) {
 	cs := connect(t, New())
 	res, err := cs.ListTools(context.Background(), nil)
@@ -239,27 +239,15 @@ func TestReadinessToolDescriptionsStateRenderTimeRules(t *testing.T) {
 }
 
 // TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub pins the other half of
-// the same contract: the open filter and the same-repository split are the server's,
-// so neither readiness tool's description may present the reduced lists as GitHub's.
+// the contract TestServerInstructionsStateDependencyReductions states: the open filter
+// and the same-repository split are the server's, so neither readiness tool's
+// description may present the reduced lists as GitHub's.
 func TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub(t *testing.T) {
-	cs := connect(t, New())
-	res, err := cs.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("list tools: %v", err)
-	}
-	checked := 0
-	for _, tool := range res.Tools {
-		if tool.Name != "backlog_review" && tool.Name != "project_summary" {
-			continue
-		}
-		checked++
+	for tool, desc := range readinessDescriptions(t) {
 		for _, attribution := range []string{"authoritative native", "GitHub's authoritative"} {
-			if strings.Contains(tool.Description, attribution) {
-				t.Errorf("%s description calls the reduced edges %q", tool.Name, attribution)
+			if strings.Contains(desc, attribution) {
+				t.Errorf("%s description calls the reduced edges %q", tool, attribution)
 			}
 		}
-	}
-	if checked != 2 {
-		t.Errorf("checked %d readiness tools, want 2", checked)
 	}
 }
