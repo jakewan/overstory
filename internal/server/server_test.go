@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -68,59 +69,80 @@ func TestServerExposesTools(t *testing.T) {
 	}
 }
 
-// TestToolDescriptionsStateDependencyReductions pins what the two readiness tools tell
-// a caller about their dependency fields. The description is the one channel that
-// reaches the rendering model, and the fields are reductions rather than GitHub's own
-// lists: without these statements a caller describes the filtering in its own words,
-// or reads the sub-issue gap as an exact count of open children.
-func TestToolDescriptionsStateDependencyReductions(t *testing.T) {
-	ctx := context.Background()
+// TestServerInstructionsStateDependencyReductions pins what the server tells a caller
+// about the dependency fields backlog_review and project_summary project. Those fields
+// are reductions rather than GitHub's own lists: told nothing, a caller describes the
+// filtering in its own words, or reads the sub-issue gap as an exact count of open
+// children. The statement lives in the server instructions rather than either tool
+// description because Claude Code shows a model only the first 2,048 characters of a
+// description, and both readiness descriptions run past that.
+func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 	cs := connect(t, New())
+	instructions := cs.InitializeResult().Instructions
 
-	res, err := cs.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatalf("list tools: %v", err)
-	}
-	descriptions := make(map[string]string, len(res.Tools))
-	for _, tool := range res.Tools {
-		descriptions[tool.Name] = tool.Description
-	}
-
-	// The shared statement: which edges survive, in what order, how each list is
-	// capped, and what the gap bounds.
-	shared := []string{
-		"reduced server-side",
-		"blockedBy, blocking, and subIssues are the ascending, distinct numbers of same-repository issues still open",
+	// One token per property, so a rewording that keeps the meaning keeps passing and
+	// dropping any single property fails.
+	for _, want := range []string{
+		// which edges survive, and in what shape
+		"not GitHub's lists",
+		"same-repository",
+		"still open",
+		"ascending",
+		"distinct",
+		"moves to blockedByExternal",
+		"cross-repository blocking and sub-issue edges are dropped",
+		"ordered by repository then number",
+		// how each list is capped
 		"blockedByTruncated",
 		"blockingTruncated",
 		"subIssuesTruncated",
-		"blockedByTruncated bounds it too",
+		"blockedByTruncated bounds blockedByExternal too",
+		// what the sub-issue gap is and is not
 		"upper bound on open children",
+		"not an exact count",
 		"over-report",
+		"not a measure of how many children subIssues omits",
+		// the derived fields, each with the tool that projects it
+		"subIssueGate",
+		"gatesPrioritized",
+		"blockingCount",
+		"may not be their only blocker",
+	} {
+		if !strings.Contains(instructions, want) {
+			t.Errorf("server instructions lack %q", want)
+		}
 	}
-	cases := []struct {
-		tool    string
-		derived []string
-	}{
-		{tool: "backlog_review", derived: []string{"subIssueGate"}},
-		{tool: "project_summary", derived: []string{"gatesPrioritized", "blockingCount"}},
+
+	// The instructions' own display limit in Claude Code is undocumented. Holding them
+	// to the description cap, the one limit observed, keeps the statement deliverable
+	// if the two turn out to share it.
+	if n := utf8.RuneCountInString(instructions); n > 2048 {
+		t.Errorf("server instructions run %d characters, want at most 2048", n)
 	}
-	for _, tc := range cases {
-		t.Run(tc.tool, func(t *testing.T) {
-			desc, ok := descriptions[tc.tool]
-			if !ok {
-				t.Fatalf("tool %q not registered", tc.tool)
+}
+
+// TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub pins the other half of
+// the same contract: the open filter and the same-repository split are the server's,
+// so neither readiness tool's description may present the reduced lists as GitHub's.
+func TestReadinessToolDescriptionsDoNotAttributeReductionsToGitHub(t *testing.T) {
+	cs := connect(t, New())
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	checked := 0
+	for _, tool := range res.Tools {
+		if tool.Name != "backlog_review" && tool.Name != "project_summary" {
+			continue
+		}
+		checked++
+		for _, attribution := range []string{"authoritative native", "GitHub's authoritative"} {
+			if strings.Contains(tool.Description, attribution) {
+				t.Errorf("%s description calls the reduced edges %q", tool.Name, attribution)
 			}
-			for _, want := range append(append([]string{}, shared...), tc.derived...) {
-				if !strings.Contains(desc, want) {
-					t.Errorf("description lacks %q", want)
-				}
-			}
-			// The open filter and the same-repository split are the server's, so the
-			// description must not attribute the lists to GitHub.
-			if strings.Contains(desc, "authoritative native") {
-				t.Errorf("description still calls the reduced edges %q", "authoritative native")
-			}
-		})
+		}
+	}
+	if checked != 2 {
+		t.Errorf("checked %d readiness tools, want 2", checked)
 	}
 }
