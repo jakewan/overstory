@@ -63,10 +63,9 @@ import (
 // this one is declared to block, with each downstream issue's open/closed state.
 // A cross-repository edge is dropped here rather than carried as BlockedBy's is: a
 // foreign downstream issue changes how much work this one gates, never whether this
-// one is startable, so the collision has no reading that justifies the second field.
-// A blocked issue is always an issue, never a PR, and the directional meaning is
-// mirrored: Open here
-// means the *downstream* issue is still open, so this issue is one of the gates
+// one is startable, so it stays dropped until something needs to name it. A blocked
+// issue is always an issue, never a PR, and the directional meaning is mirrored: Open
+// here means the *downstream* issue is still open, so this issue is one of the gates
 // standing in front of it. It is a gate this issue contributes, not necessarily the
 // sole one — a downstream issue several issues block stays blocked until all of them
 // close, so closing this issue is necessary but not always sufficient to free it.
@@ -79,8 +78,8 @@ import (
 // the verdict does not rest on this list, because the summary pair below counts
 // every child wherever it lives. A parent with open children is gated on them, so
 // this is the hierarchy form of the same false-ready gate — what a dropped child
-// costs is the ability to name it, not the gate itself. SubIssuesTruncated marks more native
-// children than the fetch cap read.
+// costs is the ability to name it, not the gate itself. SubIssuesTruncated marks
+// more native children than the fetch cap read.
 //
 // SubIssuesTotal and SubIssuesCompleted are GitHub's authoritative subIssuesSummary
 // pair — counted over *all* children (every repository, never capped), unlike the

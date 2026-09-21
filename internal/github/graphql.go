@@ -91,14 +91,12 @@ const (
 // repo's issue number would collide with a local one, the same hazard referencedBy
 // guards. The test compares each edge's repository id against the *issue's own*
 // repository id, both read from this response, rather than against the slug the caller
-// passed: that slug is an address, not an identity, and GitHub resolves a renamed or
-// transferred repository's old slug to its current one — so a name comparison would
-// call every edge foreign after a rename. Reading the issue's repository here costs no
-// node budget (a plain object, not a connection) and keeps the comparison local to one
-// decoded node. nameWithOwner travels alongside so a carried foreign edge can be
-// rendered, and so the comparison can fall back to names where an id is absent. state
-// is read here so a reduction can surface only the still-open edges without a second
-// fetch.
+// passed — see repositoryRefNode.sameRepository for why a slug is not an identity.
+// Reading the issue's repository is a plain object rather than a connection, so it
+// scores nothing against the node cost TestPagedQueriesStayUnderNodeCostBudget
+// computes, and it keeps the comparison local to one decoded node. nameWithOwner
+// travels alongside so a carried foreign edge can be rendered. state is read here so a
+// reduction can surface only the still-open edges without a second fetch.
 var issuesQuery = fmt.Sprintf(`query($owner:String!,$name:String!,$first:Int!,$after:String){
   rateLimit{ remaining resetAt }
   repository(owner:$owner,name:$name){
@@ -1694,11 +1692,22 @@ type repositoryRefNode struct {
 }
 
 // sameRepository reports whether an edge belongs to the issue's own repository.
+//
 // Identity is the node id: a repository keeps it across a rename or a transfer, which
-// its slug does not. The name comparison is the fallback for a response that carries
-// no id for either side — GitHub always does, but a decode of a partial or
-// hand-constructed payload need not, and falling back keeps such a case reading as
-// local rather than silently reclassifying every edge as foreign.
+// its slug does not. Querying a transferred repository by its old slug returns the
+// repository under its *current* nameWithOwner (observed against GitHub's GraphQL API
+// on 2026-09-20, querying facebook/jest and receiving jestjs/jest), so comparing the
+// requested slug against an edge's name would call every edge in a renamed repository
+// foreign. Were that redirect ever to stop happening, the id comparison still holds —
+// it is the redirect that makes a name comparison wrong, not the ids that make it
+// right.
+//
+// Where either side carries no id the comparison falls back to names, which only a
+// payload GitHub does not produce can reach: every query selecting an edge's
+// repository selects its id, and classifyGraphQLErrors refuses a partial response. A
+// caller that reaches it with one side missing gets a foreign verdict, and
+// externalDependencyEdges drops an edge it cannot qualify rather than emitting an
+// unusable reference.
 func (r repositoryRefNode) sameRepository(other repositoryRefNode) bool {
 	if r.ID != "" && other.ID != "" {
 		return r.ID == other.ID
@@ -1799,6 +1808,14 @@ func externalDependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode)
 	out := make([]ExternalDependencyRef, 0, len(nodes))
 	for _, b := range nodes {
 		if repo.sameRepository(b.Repository) {
+			continue
+		}
+		if b.Repository.NameWithOwner == "" {
+			// An edge whose repository did not decode cannot be qualified, and an
+			// unqualified reference renders as a bare number that addresses a local
+			// issue — the collision this split exists to prevent. Dropping it leaves
+			// the edge exactly where it was before the split rather than emitting a
+			// reference a caller cannot follow.
 			continue
 		}
 		out = append(out, ExternalDependencyRef{

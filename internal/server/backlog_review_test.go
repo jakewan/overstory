@@ -13,6 +13,7 @@ import (
 
 	"github.com/jakewan/overstory/internal/backlog"
 	"github.com/jakewan/overstory/internal/github"
+	"github.com/jakewan/overstory/internal/reduce"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -1076,6 +1077,53 @@ func TestBacklogReviewDeferredBlockedByEmptySerializesAsArray(t *testing.T) {
 	}
 	if facts.Deferred.DeferredIssues[0].BlockedBy == nil {
 		t.Error("BlockedBy = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
+// TestBacklogReviewCrossRepoBlockerReachesBothBlocks pins the wire end of the
+// cross-repository blocker on the tool that lists it per issue in two places: the
+// deferred issue's own readiness, and the dependencies block's blocked list. An
+// issue gated only from another repository is blocked in both, and both name the
+// blocker with its repository — a bare number would address a different issue here.
+func TestBacklogReviewCrossRepoBlockerReachesBothBlocks(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	gated := deferredIssue(1, daysAgo(100), "deferred")
+	gated.BlockedByExternal = []github.ExternalDependencyRef{
+		{Repo: "other/repo", Number: 8, Open: true},
+		{Repo: "other/repo", Number: 4, Open: false}, // closed blocker no longer gates
+	}
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{gated},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	want := reduce.ExternalRef{Repo: "other/repo", Number: 8}
+
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	di := facts.Deferred.DeferredIssues[0]
+	if di.Readiness != reduce.VerdictBlocked {
+		t.Errorf("deferred readiness = %q, want %q", di.Readiness, reduce.VerdictBlocked)
+	}
+	if len(di.BlockedByExternal) != 1 || di.BlockedByExternal[0] != want {
+		t.Errorf("deferred BlockedByExternal = %v, want [%v] (open only)", di.BlockedByExternal, want)
+	}
+
+	dep := facts.Dependencies
+	if dep == nil {
+		t.Fatal("dependencies block absent")
+	}
+	if dep.BlockedCount != 1 || dep.ReadyCount != 0 {
+		t.Errorf("dependencies blocked=%d ready=%d, want 1/0", dep.BlockedCount, dep.ReadyCount)
+	}
+	if len(dep.Blocked) != 1 {
+		t.Fatalf("dependencies blocked list = %+v, want the one gated issue", dep.Blocked)
+	}
+	if got := dep.Blocked[0].BlockedByExternal; len(got) != 1 || got[0] != want {
+		t.Errorf("dependencies BlockedByExternal = %v, want [%v]", got, want)
 	}
 }
 

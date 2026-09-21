@@ -89,10 +89,11 @@ type SeamReport struct {
 // issue; the two are read together, since a blocker gates wherever it lives. Blocking
 // is what it still gates (open downstream). SubIssueGate is true when the
 // authoritative sub-issue summary shows open children — a hidden gate the windowed
-// edge lists can miss. Both edge slices are non-nil even when empty. A Gate carries
-// its Blocking (the work it unblocks); a Blocked issue carries its BlockedBy (why
-// it waits) — but both slices are populated on every listed issue so a caller has
-// the full local structure regardless of which list the issue is in.
+// edge lists can miss. Every edge slice is non-nil even when empty. A Gate carries
+// its Blocking (the work it unblocks); a Blocked issue carries what it waits on
+// (BlockedBy and BlockedByExternal) — but all of them are populated on every listed
+// issue so a caller has the full recorded structure regardless of which list the
+// issue is in.
 //
 // BlockedByTruncated / BlockingTruncated mark an edge list the fetch capped, so the
 // corresponding slice is a lower bound — the same per-issue honesty the deferred and
@@ -130,7 +131,8 @@ type Issue struct {
 // Blocked lists are each capped at listLimit (counts are not). The reduction is
 // time-independent, so it takes no clock.
 //
-// An issue is blocked when it has an open blocked-by edge or an open sub-issue gate
+// An issue is blocked when it has an open blocked-by edge — in this repository or
+// another, since a blocker gates wherever it lives — or an open sub-issue gate
 // (the authoritative subIssuesTotal-minus-completed gap, which witnesses open
 // children even when they fall outside the window). An issue with no known gate is
 // provisional rather than ready when its blocked-by list was capped or when a seam

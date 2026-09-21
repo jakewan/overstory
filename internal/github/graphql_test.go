@@ -753,6 +753,47 @@ func TestListOpenIssuesIdentifiesRepositoryByID(t *testing.T) {
 	}
 }
 
+// TestListOpenIssuesDropsUnqualifiedEdge pins that an edge whose repository decodes
+// to nothing is dropped rather than carried. An external reference is only usable
+// because its repository qualifies its number: emitted with an empty repository it
+// would render as a bare number, which addresses a different issue in this repository
+// — the collision the split exists to prevent, reintroduced through the field meant
+// to prevent it. Dropping it restores what this edge got before the split.
+func TestListOpenIssuesDropsUnqualifiedEdge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := `{"data":{"repository":{"issues":{
+			"totalCount":1,
+			"pageInfo":{"hasNextPage":false,"endCursor":""},
+			"nodes":[
+				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
+				 "blockedBy":{"totalCount":2,"nodes":[
+					{"number":7,"state":"OPEN","repository":null},
+					{"number":8,"state":"OPEN"}
+				 ]}}
+			]
+		}}}}`
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	res, err := fetcherTo(srv.URL, "tok").ListOpenIssues(context.Background(), "acme/widgets", 100)
+	if err != nil {
+		t.Fatalf("ListOpenIssues: %v", err)
+	}
+	if len(res.Issues) != 1 {
+		t.Fatalf("got %d issues, want 1", len(res.Issues))
+	}
+	if got := res.Issues[0].BlockedBy; len(got) != 0 {
+		t.Errorf("BlockedBy = %v, want empty — an edge with no repository is not known to be local", got)
+	}
+	if got := res.Issues[0].BlockedByExternal; len(got) != 0 {
+		t.Errorf("BlockedByExternal = %v, want empty — an unqualified reference cannot be rendered", got)
+	}
+}
+
 // TestListOpenIssuesTruncatedConnectionBoundsBothBlockedByLists pins that
 // BlockedByTruncated bounds the external list too. The two lists partition one
 // capped connection, so a window that returned only foreign edges leaves the local

@@ -171,6 +171,37 @@ func TestReduceDeferredProjectsLabelsTruncated(t *testing.T) {
 	}
 }
 
+// TestReduceDeferredCarriesCrossRepoBlockers is the same parity in the other
+// direction: a parked issue gated only from another repository reports blocked and
+// names that blocker, rather than reading as a parked issue nothing holds up. The
+// non-nil assertion is the serialization contract every edge field here carries.
+func TestReduceDeferredCarriesCrossRepoBlockers(t *testing.T) {
+	gated := labeledIssue(1, 50, "deferred")
+	gated.BlockedByExternal = []github.ExternalDependencyRef{
+		{Repo: "other/repo", Number: 8, Open: true},
+	}
+	clear := labeledIssue(2, 40, "deferred")
+
+	facts := ReduceDeferred([]github.Issue{gated, clear}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
+	if len(facts.DeferredIssues) != 2 {
+		t.Fatalf("DeferredIssues = %d, want 2", len(facts.DeferredIssues))
+	}
+	di := facts.DeferredIssues[0]
+	if di.Number != 1 {
+		t.Fatalf("DeferredIssues[0] = #%d, want #1 (most inactive first)", di.Number)
+	}
+	want := reduce.ExternalRef{Repo: "other/repo", Number: 8}
+	if len(di.BlockedByExternal) != 1 || di.BlockedByExternal[0] != want {
+		t.Errorf("BlockedByExternal = %v, want [%v]", di.BlockedByExternal, want)
+	}
+	if di.Readiness != reduce.VerdictBlocked {
+		t.Errorf("Readiness = %q, want %q", di.Readiness, reduce.VerdictBlocked)
+	}
+	if facts.DeferredIssues[1].BlockedByExternal == nil {
+		t.Error("BlockedByExternal = nil on the unblocked issue, want non-nil empty slice (serializes [])")
+	}
+}
+
 // TestReduceDeferredCarriesSeamCompanions pins sibling parity: this block projects
 // the same native edge fields the dependencies block does, so it carries their seam
 // companions too. Without them the dependencies block can report an issue provisional
