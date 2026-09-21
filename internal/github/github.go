@@ -100,11 +100,14 @@ import (
 // read at all", and an empty edge list means neither on its own. Without them an
 // unread seam and a genuinely clear one are the same zero — the false-ready the
 // truncation contract already refuses for a capped list. The GraphQL fetcher leaves
-// both at SeamAvailable, and the guard that makes that true is classifyGraphQLErrors
-// rejecting any partial payload, not the schema's non-null fields: an IssueConnection
-// node is itself nullable, so a field error nulls the whole node rather than the
-// field. Were that guard relaxed, a null node would decode to a zero-valued issue and
-// this pair is what keeps it from reading as ready.
+// SubIssueGapState at SeamAvailable, and raises BlockedByState to SeamUnavailable in
+// one case: a blocked-by edge whose repository the response did not identify, which
+// neither BlockedBy nor BlockedByExternal can carry without misrepresenting it. What
+// keeps that case rare is classifyGraphQLErrors rejecting any partial payload, not
+// the schema's non-null fields: an IssueConnection node is itself nullable, so a
+// field error nulls the whole node rather than the field. Were that guard relaxed, a
+// null node would decode to a zero-valued issue and this pair is what keeps it from
+// reading as ready.
 type Issue struct {
 	Number             int                     `json:"number"`
 	Title              string                  `json:"title"`

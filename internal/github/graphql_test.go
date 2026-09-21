@@ -753,13 +753,15 @@ func TestListOpenIssuesIdentifiesRepositoryByID(t *testing.T) {
 	}
 }
 
-// TestListOpenIssuesDropsUnqualifiedEdge pins that an edge whose repository decodes
-// to nothing is dropped rather than carried. An external reference is only usable
-// because its repository qualifies its number: emitted with an empty repository it
-// would render as a bare number, which addresses a different issue in this repository
-// — the collision the split exists to prevent, reintroduced through the field meant
-// to prevent it. Dropping it restores what this edge got before the split.
-func TestListOpenIssuesDropsUnqualifiedEdge(t *testing.T) {
+// TestListOpenIssuesUnplaceableEdgeIsASeamFault pins what happens to a blocked-by
+// edge that cannot be placed — its repository decodes to nothing, so neither list can
+// take it. Every disposition available to the lists is wrong: listed locally its
+// number addresses a different issue, listed externally it renders as that same bare
+// number for want of a repository, and dropped it is a blocker that vanished, which
+// is the false-ready this whole change exists to close. So it is reported as what it
+// is — an input that could not be read — through the seam state the verdict already
+// consults, and the issue reads provisional rather than ready.
+func TestListOpenIssuesUnplaceableEdgeIsASeamFault(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := `{"data":{"repository":{"issues":{
 			"totalCount":1,
@@ -767,9 +769,15 @@ func TestListOpenIssuesDropsUnqualifiedEdge(t *testing.T) {
 			"nodes":[
 				{"number":1,"title":"a","url":"ua","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
 				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
-				 "blockedBy":{"totalCount":2,"nodes":[
+				 "blockedBy":{"totalCount":3,"nodes":[
 					{"number":7,"state":"OPEN","repository":null},
-					{"number":8,"state":"OPEN"}
+					{"number":8,"state":"OPEN"},
+					{"number":9,"state":"OPEN","repository":{"id":"R_other"}}
+				 ]}},
+				{"number":2,"title":"b","url":"ub","createdAt":"2025-01-01T00:00:00Z","comments":{"nodes":[]},
+				 "repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"},
+				 "blockedBy":{"totalCount":1,"nodes":[
+					{"number":11,"state":"OPEN","repository":{"id":"R_widgets","nameWithOwner":"acme/widgets"}}
 				 ]}}
 			]
 		}}}}`
@@ -783,14 +791,27 @@ func TestListOpenIssuesDropsUnqualifiedEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListOpenIssues: %v", err)
 	}
-	if len(res.Issues) != 1 {
-		t.Fatalf("got %d issues, want 1", len(res.Issues))
+	if len(res.Issues) != 2 {
+		t.Fatalf("got %d issues, want 2", len(res.Issues))
 	}
+	// #7 and #8 carry no repository at all; #9 carries an id but no name, so it is
+	// known to be foreign and still cannot be rendered. All three are unplaceable.
 	if got := res.Issues[0].BlockedBy; len(got) != 0 {
 		t.Errorf("BlockedBy = %v, want empty — an edge with no repository is not known to be local", got)
 	}
 	if got := res.Issues[0].BlockedByExternal; len(got) != 0 {
 		t.Errorf("BlockedByExternal = %v, want empty — an unqualified reference cannot be rendered", got)
+	}
+	if res.Issues[0].BlockedByState != SeamUnavailable {
+		t.Errorf("BlockedByState = %v, want %v — the edges were read and could not be placed",
+			res.Issues[0].BlockedByState, SeamUnavailable)
+	}
+	// The fault is per issue: a sibling whose edges all placed keeps a clean seam.
+	// Tested through Withholds rather than an equality, because the unset zero value
+	// means available and would fail a literal comparison against it.
+	if res.Issues[1].BlockedByState.Withholds() {
+		t.Errorf("issue 2 BlockedByState = %v, want a state that withholds nothing — its own edge placed cleanly",
+			res.Issues[1].BlockedByState)
 	}
 }
 

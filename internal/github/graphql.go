@@ -1691,7 +1691,22 @@ type repositoryRefNode struct {
 	NameWithOwner string `json:"nameWithOwner"`
 }
 
-// sameRepository reports whether an edge belongs to the issue's own repository.
+// edgePlacement is where one dependency edge sits relative to the issue carrying it.
+// The third case is the point of the type: an edge that can be placed in neither list
+// is not the same as one placed in either, and a boolean would have to call it one or
+// the other.
+type edgePlacement int
+
+const (
+	placementLocal edgePlacement = iota
+	placementForeign
+	// placementUnplaceable means the response did not say where the edge lives, or
+	// said only that it lives elsewhere without naming where. Both lists would
+	// misrepresent it — see toIssue for what the fetcher does instead.
+	placementUnplaceable
+)
+
+// place says where an edge sits relative to the issue's own repository.
 //
 // Identity is the node id: a repository keeps it across a rename or a transfer, which
 // its slug does not. Querying a transferred repository by its old slug returns the
@@ -1702,17 +1717,23 @@ type repositoryRefNode struct {
 // it is the redirect that makes a name comparison wrong, not the ids that make it
 // right.
 //
-// Where either side carries no id the comparison falls back to names, which only a
-// payload GitHub does not produce can reach: every query selecting an edge's
-// repository selects its id, and classifyGraphQLErrors refuses a partial response. A
-// caller that reaches it with one side missing gets a foreign verdict, and
-// externalDependencyEdges drops an edge it cannot qualify rather than emitting an
-// unusable reference.
-func (r repositoryRefNode) sameRepository(other repositoryRefNode) bool {
-	if r.ID != "" && other.ID != "" {
-		return r.ID == other.ID
+// So identity needs a real id on both sides, and a foreign edge additionally needs a
+// name to be referenced by. Missing either, the edge is unplaceable rather than
+// guessed at. Only a payload GitHub does not produce reaches that: every query
+// selecting an edge's repository selects both fields, and classifyGraphQLErrors
+// refuses a partial response — so this is the shape of the answer if that guard ever
+// stops holding, not a case seen in practice.
+func (r repositoryRefNode) place(other repositoryRefNode) edgePlacement {
+	if r.ID == "" || other.ID == "" {
+		return placementUnplaceable
 	}
-	return strings.EqualFold(r.NameWithOwner, other.NameWithOwner)
+	if r.ID == other.ID {
+		return placementLocal
+	}
+	if other.NameWithOwner == "" {
+		return placementUnplaceable
+	}
+	return placementForeign
 }
 
 type commentNode struct {
@@ -1750,6 +1771,17 @@ func (n issueNode) toIssue() Issue {
 	if n.Milestone != nil {
 		milestone = &MilestoneRef{Number: n.Milestone.Number, Title: n.Milestone.Title}
 	}
+	// An unplaceable blocked-by edge was read and could not be put in either list, so
+	// neither list's emptiness proves anything about it. That is what SeamUnavailable
+	// already means, and Readiness demotes such an issue to provisional — the one
+	// disposition that neither invents a local number, nor ships a reference with no
+	// repository, nor drops a blocker. It is raised for blocked-by alone: the other
+	// two directions decide how much work an issue gates rather than whether it is
+	// startable, so an edge lost there costs a name, not a verdict.
+	blockedByState := SeamAvailable
+	if anyUnplaceable(n.BlockedBy.Nodes, n.Repository) {
+		blockedByState = SeamUnavailable
+	}
 	return Issue{
 		Number:             n.Number,
 		Title:              n.Title,
@@ -1764,6 +1796,7 @@ func (n issueNode) toIssue() Issue {
 		BlockedBy:          dependencyEdges(n.BlockedBy.Nodes, n.Repository),
 		BlockedByExternal:  externalDependencyEdges(n.BlockedBy.Nodes, n.Repository),
 		BlockedByTruncated: n.BlockedBy.TotalCount > len(n.BlockedBy.Nodes),
+		BlockedByState:     blockedByState,
 		Blocking:           dependencyEdges(n.Blocking.Nodes, n.Repository),
 		BlockingTruncated:  n.Blocking.TotalCount > len(n.Blocking.Nodes),
 		SubIssues:          dependencyEdges(n.SubIssues.Nodes, n.Repository),
@@ -1787,8 +1820,8 @@ func (n issueNode) toIssue() Issue {
 func dependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []DependencyRef {
 	out := make([]DependencyRef, 0, len(nodes))
 	for _, b := range nodes {
-		if !repo.sameRepository(b.Repository) {
-			continue // cross-repository edge — its number would collide locally
+		if repo.place(b.Repository) != placementLocal {
+			continue // its number would collide locally
 		}
 		out = append(out, DependencyRef{Number: b.Number, Open: b.State == "OPEN"})
 	}
@@ -1796,6 +1829,20 @@ func dependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []Depen
 		return nil
 	}
 	return out
+}
+
+// anyUnplaceable reports whether any edge in the connection could not be placed
+// relative to the issue's repository. It is a third pass over the same nodes, kept
+// separate because the two projections answer "which edges belong here" while this
+// answers "was anything lost" — folding it into either would make that list's
+// emptiness mean two things at once.
+func anyUnplaceable(nodes []dependencyEdgeNode, repo repositoryRefNode) bool {
+	for _, b := range nodes {
+		if repo.place(b.Repository) == placementUnplaceable {
+			return true
+		}
+	}
+	return false
 }
 
 // externalDependencyEdges is dependencyEdges' complement: the edges into *other*
@@ -1807,15 +1854,7 @@ func dependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []Depen
 func externalDependencyEdges(nodes []dependencyEdgeNode, repo repositoryRefNode) []ExternalDependencyRef {
 	out := make([]ExternalDependencyRef, 0, len(nodes))
 	for _, b := range nodes {
-		if repo.sameRepository(b.Repository) {
-			continue
-		}
-		if b.Repository.NameWithOwner == "" {
-			// An edge whose repository did not decode cannot be qualified, and an
-			// unqualified reference renders as a bare number that addresses a local
-			// issue — the collision this split exists to prevent. Dropping it leaves
-			// the edge exactly where it was before the split rather than emitting a
-			// reference a caller cannot follow.
+		if repo.place(b.Repository) != placementForeign {
 			continue
 		}
 		out = append(out, ExternalDependencyRef{
