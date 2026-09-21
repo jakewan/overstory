@@ -132,8 +132,8 @@ type Issue struct {
 
 // Reduce classifies the fetched open issues by their native dependency edges.
 // totalOpen keeps OpenIssueCount exact when the window is truncated; every list is
-// capped at listLimit (counts are not). The reduction is
-// time-independent, so it takes no clock.
+// capped at listLimit (counts are not). The reduction is time-independent, so it
+// takes no clock.
 //
 // An issue is blocked when it has an open blocked-by edge — in this repository or
 // another, since a blocker gates wherever it lives — or an open sub-issue gate
@@ -234,8 +234,8 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 		return facts.Blocked[i].Number < facts.Blocked[j].Number
 	})
 
-	// Provisional: by number. Nothing gates these issues, so there is no leverage or
-	// gate count to rank by.
+	// Provisional: by number. No gate was observed on these issues, and ranking them by
+	// the work they block would rank on readiness that is unconfirmed.
 	sort.Slice(facts.Provisional, func(i, j int) bool {
 		return facts.Provisional[i].Number < facts.Provisional[j].Number
 	})
@@ -252,8 +252,9 @@ func Reduce(issues []github.Issue, totalOpen int, listLimit int, caps github.Cap
 // classification without the per-issue blocked-by/blocking edge lists and without
 // the blocked and provisional lists. The orientation read names a blocker or a
 // provisional cause per candidate, from the recommendation block's edges, seam
-// states, and readiness verdict. That block is capped at its own limit, so it does not
-// cover every open issue; the counts here do. It is the signal project_summary adds
+// states, and readiness verdict. That block is capped at the list limit and can be
+// size-trimmed, so it does not cover the fetched window; the counts here do (the
+// window itself is a floor under FetchTruncated). It is the signal project_summary adds
 // over recommendations: the graph-level split and the gate set.
 type Classification struct {
 	OpenIssueCount   int    `json:"openIssueCount"`
