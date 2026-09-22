@@ -73,13 +73,24 @@ type DeferredFacts struct {
 // (never claims a capped list is whole), so a renderer should read it as "possibly
 // missing a tail label", not a precise matched-list signal.
 //
-// BodyRefs are the distinct #N references parsed from the issue body, ascending,
-// with pull-request references and the issue's own number excluded — the parked
-// issue's stated dependencies, so a client can tell whether a blocker has since
-// closed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
-// markdown, so only references surviving plaintext rendering appear. Non-nil even
-// when empty, so it serializes as [] rather than null. It is a heuristic proxy for
-// stated cross-references, complementary to the authoritative BlockedBy below.
+// BodyRefs are the distinct references to this repository's issues parsed from the
+// issue body, ascending, with pull-request references and the issue's own number
+// excluded — the parked issue's stated dependencies, so a client can tell whether a
+// blocker has since closed. A reference qualified with this repository's own name
+// counts. It is parsed from GitHub's plaintext body (bodyText), which keeps code
+// spans and fenced blocks, so a reference quoted as code is parsed too. bodyText
+// keeps only a link's text, not its target, so a markdown link is read by what it
+// says: `[#5](…/other/repo/issues/5)` reads as local 5, and a link whose text holds
+// no reference is not seen at all. Non-nil even when empty, so it serializes as []
+// rather than null. It is a heuristic proxy for stated cross-references,
+// complementary to the authoritative BlockedBy below.
+//
+// BodyRefsExternal are the body's references outside this repository — another
+// repository's issue or a fork's (see reduce.ForeignRef) — distinct and ordered by
+// qualifier then number. They are a separate field because a foreign number read as
+// local names a different issue. They are what the text says rather than
+// dependency edges: an entry can be closed, a pull request, or not exist, so it
+// never gates. Non-nil even when empty.
 //
 // BlockedBy are the ascending, distinct numbers of the issue's still-open native
 // GitHub blocked-by edges — the dependency signal recorded on the issue for what
@@ -126,6 +137,7 @@ type DeferredIssue struct {
 	MatchedLabels      []string             `json:"matchedLabels"`
 	LabelsTruncated    bool                 `json:"labelsTruncated"`
 	BodyRefs           []int                `json:"bodyRefs"`
+	BodyRefsExternal   []reduce.ForeignRef  `json:"bodyRefsExternal"`
 	BlockedBy          []int                `json:"blockedBy"`
 	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
 	BlockedByTruncated bool                 `json:"blockedByTruncated"`
@@ -172,7 +184,7 @@ type DeferredIssue struct {
 // the handler: readiness rests on the per-issue seam states that application
 // reconciles, so this reduction stays correct called directly — the same reason the
 // dependency reduction re-applies it.
-func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listLimit int, caps github.Capabilities, now time.Time) DeferredFacts {
+func ReduceDeferred(issues []github.Issue, self string, totalOpen int, labels []string, listLimit int, caps github.Capabilities, now time.Time) DeferredFacts {
 	issues = github.ApplyCapabilities(issues, caps)
 	facts := DeferredFacts{
 		Configured:       len(labels) > 0,
@@ -195,13 +207,15 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 		if !ok {
 			continue
 		}
+		bodyRefs, bodyRefsExternal := reduce.BodyRefs(is.BodyText, self, is.Number)
 		deferred = append(deferred, DeferredIssue{
 			Number:              is.Number,
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
 			LabelsTruncated:     is.LabelsTruncated,
-			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BodyRefs:            bodyRefs,
+			BodyRefsExternal:    bodyRefsExternal,
 			BlockedBy:           reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByExternal:   reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated:  is.BlockedByTruncated,

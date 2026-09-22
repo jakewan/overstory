@@ -1,6 +1,7 @@
 package backlog
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/jakewan/overstory/internal/github"
@@ -19,7 +20,7 @@ func TestReduceDeferredMatchesConfiguredLabels(t *testing.T) {
 		labeledIssue(2, 50, "bug"), // not a deferred label
 		labeledIssue(3, 50, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 3, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 3, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
 	if !facts.Configured {
 		t.Error("Configured = false, want true")
 	}
@@ -35,7 +36,7 @@ func TestReduceDeferredCaseInsensitive(t *testing.T) {
 	// Configured "deferred" matches an issue labeled "DEFERRED"; the matched
 	// label echoes the issue's original casing.
 	issues := []github.Issue{labeledIssue(1, 50, "DEFERRED")}
-	facts := ReduceDeferred(issues, 1, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 1, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 1 {
 		t.Fatalf("DeferredCount = %d, want 1 (case-insensitive)", facts.DeferredCount)
 	}
@@ -48,7 +49,7 @@ func TestReduceDeferredMultipleLabelsOnOneIssue(t *testing.T) {
 	// An issue carrying several deferred labels appears once, with all matches
 	// listed in deterministic (sorted) order.
 	issues := []github.Issue{labeledIssue(1, 50, "blocked", "bug", "deferred")}
-	facts := ReduceDeferred(issues, 1, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 1, []string{"deferred", "blocked"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 1 {
 		t.Fatalf("DeferredCount = %d, want 1 (one issue, multiple matches)", facts.DeferredCount)
 	}
@@ -63,7 +64,7 @@ func TestReduceDeferredNotConfigured(t *testing.T) {
 	// are still populated for a stable shape — and the slices are non-nil so they
 	// serialize as [] rather than null.
 	issues := []github.Issue{labeledIssue(1, 50, "blocked")}
-	facts := ReduceDeferred(issues, 500, nil, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 500, nil, 20, github.Capabilities{}, now)
 	if facts.Configured {
 		t.Error("Configured = true, want false (no labels)")
 	}
@@ -88,7 +89,7 @@ func TestReduceDeferredListTruncationAndOrder(t *testing.T) {
 		labeledIssue(2, 100, "deferred"),
 		labeledIssue(3, 70, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 3, []string{"deferred"}, 2, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 3, []string{"deferred"}, 2, github.Capabilities{}, now)
 	if facts.DeferredCount != 3 {
 		t.Errorf("DeferredCount = %d, want 3 (count not capped)", facts.DeferredCount)
 	}
@@ -109,7 +110,7 @@ func TestReduceDeferredTieBreakByNumber(t *testing.T) {
 		labeledIssue(5, 50, "deferred"),
 		labeledIssue(2, 50, "deferred"),
 	}
-	facts := ReduceDeferred(issues, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredIssues[0].Number != 2 {
 		t.Errorf("tie not broken by number ascending: got %d first, want 2", facts.DeferredIssues[0].Number)
 	}
@@ -120,6 +121,25 @@ func TestReduceDeferredTieBreakByNumber(t *testing.T) {
 // plaintext bodyText), PR references and the issue's own number excluded. The
 // self-exclusion is checked both alongside real refs and alone (where it empties
 // the slice, which must stay non-nil so it serializes as []).
+// TestReduceDeferredBodyRefsSplitsForeignReferences pins that a parked issue's
+// references into other repositories, or forks, never read as local numbers: they
+// travel in BodyRefsExternal, while one qualified with the surveyed repository's own
+// name stays in BodyRefs.
+func TestReduceDeferredBodyRefsSplitsForeignReferences(t *testing.T) {
+	parked := labeledIssue(1, 50, "deferred")
+	parked.BodyText = "Waits on other/lib#87650, bob#4, and acme/widgets#3."
+
+	facts := ReduceDeferred([]github.Issue{parked}, "acme/widgets", 1, []string{"deferred"}, 20, github.Capabilities{}, now)
+	got := facts.DeferredIssues[0]
+	if !reflect.DeepEqual(got.BodyRefs, []int{3}) {
+		t.Errorf("BodyRefs = %v, want [3]", got.BodyRefs)
+	}
+	want := []reduce.ForeignRef{{ForkOwner: "bob", Number: 4}, {Repo: "other/lib", Number: 87650}}
+	if !reflect.DeepEqual(got.BodyRefsExternal, want) {
+		t.Errorf("BodyRefsExternal = %+v, want %+v", got.BodyRefsExternal, want)
+	}
+}
+
 func TestReduceDeferredBodyRefs(t *testing.T) {
 	withRefs := labeledIssue(1, 50, "deferred")
 	// Plaintext body: a duplicate ref, a PR reference, and a self-reference.
@@ -127,7 +147,7 @@ func TestReduceDeferredBodyRefs(t *testing.T) {
 	selfOnly := labeledIssue(7, 50, "deferred")
 	selfOnly.BodyText = "Depends on #7 only."
 
-	facts := ReduceDeferred([]github.Issue{withRefs, selfOnly}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred([]github.Issue{withRefs, selfOnly}, "acme/widgets", 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 2 {
 		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
 	}
@@ -158,7 +178,7 @@ func TestReduceDeferredProjectsLabelsTruncated(t *testing.T) {
 	capped.LabelsTruncated = true
 	whole := labeledIssue(2, 40, "deferred")
 
-	facts := ReduceDeferred([]github.Issue{capped, whole}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred([]github.Issue{capped, whole}, "acme/widgets", 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.DeferredCount != 2 {
 		t.Fatalf("DeferredCount = %d, want 2", facts.DeferredCount)
 	}
@@ -182,7 +202,7 @@ func TestReduceDeferredCarriesCrossRepoBlockers(t *testing.T) {
 	}
 	clear := labeledIssue(2, 40, "deferred")
 
-	facts := ReduceDeferred([]github.Issue{gated, clear}, 2, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred([]github.Issue{gated, clear}, "acme/widgets", 2, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if len(facts.DeferredIssues) != 2 {
 		t.Fatalf("DeferredIssues = %d, want 2", len(facts.DeferredIssues))
 	}
@@ -211,7 +231,7 @@ func TestReduceDeferredCarriesSeamCompanions(t *testing.T) {
 	unread.BlockedByState = github.SeamUnavailable
 	unread.SubIssueGapState = github.SeamNotApplicable
 
-	facts := ReduceDeferred([]github.Issue{unread}, 1, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred([]github.Issue{unread}, "acme/widgets", 1, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if len(facts.DeferredIssues) != 1 {
 		t.Fatalf("DeferredIssues = %d, want 1", len(facts.DeferredIssues))
 	}
@@ -226,7 +246,7 @@ func TestReduceDeferredCarriesSeamCompanions(t *testing.T) {
 
 func TestReduceDeferredExactOpenCountAndFetchTruncation(t *testing.T) {
 	issues := []github.Issue{labeledIssue(1, 100, "deferred"), labeledIssue(2, 90, "deferred")}
-	facts := ReduceDeferred(issues, 500, []string{"deferred"}, 20, github.Capabilities{}, now)
+	facts := ReduceDeferred(issues, "acme/widgets", 500, []string{"deferred"}, 20, github.Capabilities{}, now)
 	if facts.OpenIssueCount != 500 {
 		t.Errorf("OpenIssueCount = %d, want 500 (exact, from totalOpen)", facts.OpenIssueCount)
 	}
@@ -248,7 +268,7 @@ func TestReduceDeferredAppliesCapabilitiesItself(t *testing.T) {
 	unreconciled := labeledIssue(1, 100, "deferred")
 	unreconciled.SubIssueGapState = github.SeamUnavailable
 
-	facts := ReduceDeferred([]github.Issue{unreconciled}, 1, []string{"deferred"}, 20,
+	facts := ReduceDeferred([]github.Issue{unreconciled}, "acme/widgets", 1, []string{"deferred"}, 20,
 		github.Capabilities{NoSubIssueHierarchy: true}, now)
 
 	if len(facts.DeferredIssues) != 1 {

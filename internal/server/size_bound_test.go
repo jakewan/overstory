@@ -312,6 +312,55 @@ func TestMilestoneTracksBoundKeepsHeadlinesTrimsMembers(t *testing.T) {
 	}
 }
 
+// TestMilestoneTracksBoundTrimsExternalMembers pins that the byte bound reaches the
+// foreign-member lists too: a track made only of references into another repository
+// carries its bytes in externalMembers, so a bound that trimmed members alone would
+// leave the response over budget while claiming to have tried.
+func TestMilestoneTracksBoundTrimsExternalMembers(t *testing.T) {
+	const maxBytes = 8000
+	const milestones, membersPer = 4, 60
+	ms := make([]github.Milestone, 0, milestones)
+	ref := 0
+	for m := 1; m <= milestones; m++ {
+		var b strings.Builder
+		b.WriteString("**Vendor**:\n")
+		for range membersPer {
+			ref++
+			fmt.Fprintf(&b, "other/lib#%d ", ref)
+		}
+		ms = append(ms, github.Milestone{Number: m, Title: fmt.Sprintf("milestone %d", m), URL: "u", Description: b.String()})
+	}
+	root := writeManifestDir(t, fmt.Sprintf("acme/widgets:\n  response:\n    maxBytes: %d\n", maxBytes))
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{Milestones: ms, TotalOpen: milestones}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	res := callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets", "limit": 100})
+	facts := decodeMilestoneTracks(t, res)
+
+	if facts.SizeBound == nil {
+		t.Fatalf("SizeBound = nil, want a marker on an over-budget response")
+	}
+	if got := structuredLen(t, res); got > maxBytes {
+		t.Errorf("structured size = %d bytes, want <= %d", got, maxBytes)
+	}
+	var sawExternalBlock bool
+	for _, tb := range facts.SizeBound.TrimmedBlocks {
+		if strings.HasSuffix(tb.Block, ".externalMembers") && tb.Dropped > 0 {
+			sawExternalBlock = true
+		}
+	}
+	if !sawExternalBlock {
+		t.Errorf("TrimmedBlocks = %+v, want a milestones[#N].tracks[M].externalMembers entry", facts.SizeBound.TrimmedBlocks)
+	}
+	for _, m := range facts.Milestones {
+		for _, tr := range m.Tracks {
+			if len(tr.ExternalMembers) < membersPer && !tr.ListTruncated {
+				t.Errorf("milestone #%d track %q trimmed to %d external members without ListTruncated", m.Number, tr.Label, len(tr.ExternalMembers))
+			}
+		}
+	}
+}
+
 // TestMilestoneTracksNoBoundOnSmallResponse pins the normal-path invariant: a small
 // response carries no marker (key omitted), so existing consumers see byte-identical
 // output.

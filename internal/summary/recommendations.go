@@ -28,17 +28,29 @@ type RecommendationFacts struct {
 // when unmilestoned), its stated dependencies, its age, and its inactivity. No
 // score or rank — the caller owns that.
 //
-// BodyRefs are the distinct #N references parsed from the issue body, ascending,
-// with pull-request references and the issue's own number excluded — the issue's
-// stated dependencies. A caller resolves them against the composite's open-issue-set
-// block: a ref present there names a live open issue in this repo, so the caller can
-// rank a candidate gated behind one after ready work; but absence is not proof of
-// resolution — the ref may be a closed issue, an open PR (PRs share the number
-// space), a cross-repo reference, or, on a truncated window, an open issue the fetch
-// missed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
-// markdown, so only references surviving plaintext rendering appear; these are a
-// heuristic proxy for stated cross-references, complementary to the authoritative
-// BlockedBy below. Non-nil even when empty, so it serializes as [] rather than null.
+// BodyRefs are the distinct references to this repository's issues parsed from the
+// issue body, ascending, with pull-request references and the issue's own number
+// excluded — the issue's stated dependencies. A reference qualified with this
+// repository's own name counts. A caller resolves them against the composite's
+// open-issue-set block: a ref present there names a live open issue in this repo,
+// so the caller can rank a candidate gated behind one after ready work; but absence
+// is not proof of resolution — the ref may be a closed issue, an open PR (PRs share
+// the number space), or, on a truncated window, an open issue the fetch missed. It
+// is parsed from GitHub's plaintext body (bodyText), which keeps code spans and
+// fenced blocks, so a reference quoted as code is parsed too. bodyText keeps only a
+// link's text, not its target, so a markdown link is read by what it says:
+// `[#5](…/other/repo/issues/5)` reads as local 5, and a link whose text holds no
+// reference is not seen at all. These are a heuristic proxy for stated
+// cross-references, complementary to the authoritative BlockedBy below. Non-nil
+// even when empty, so it serializes as [] rather than null.
+//
+// BodyRefsExternal are the body's references outside this repository — another
+// repository's issue or a fork's (see reduce.ForeignRef) — distinct and ordered by
+// qualifier then number. They never resolve against the open-issue set, which is
+// this repository's alone, and are a separate field because a foreign number read
+// as local names a different issue. They are what the text says rather than
+// dependency edges: an entry can be closed, a pull request, or not exist, so it
+// never gates. Non-nil even when empty.
 //
 // BlockedBy are the ascending, distinct numbers of the candidate's still-open
 // native GitHub blocked-by edges — the dependency signal recorded on the issue, which
@@ -101,6 +113,7 @@ type RecommendationCandidate struct {
 	IsBug              bool                 `json:"isBug"`
 	Milestone          *string              `json:"milestone,omitempty"`
 	BodyRefs           []int                `json:"bodyRefs"`
+	BodyRefsExternal   []reduce.ForeignRef  `json:"bodyRefsExternal"`
 	BlockedBy          []int                `json:"blockedBy"`
 	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
 	BlockedByTruncated bool                 `json:"blockedByTruncated"`
@@ -154,7 +167,7 @@ const gateReserve = 5
 // the handler: readiness rests on the per-issue seam states that application
 // reconciles, so this reduction stays correct called directly — the same reason the
 // dependency reduction re-applies it.
-func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []string, listLimit int, caps github.Capabilities, now time.Time) RecommendationFacts {
+func ReduceRecommendations(issues []github.Issue, self string, totalOpen int, bugLabels []string, listLimit int, caps github.Capabilities, now time.Time) RecommendationFacts {
 	issues = github.ApplyCapabilities(issues, caps)
 	facts := RecommendationFacts{
 		OpenIssueCount: totalOpen,
@@ -191,13 +204,15 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 				gatesPrioritized = append(gatesPrioritized, n)
 			}
 		}
+		bodyRefs, bodyRefsExternal := reduce.BodyRefs(is.BodyText, self, is.Number)
 		candidates = append(candidates, RecommendationCandidate{
 			Number:             is.Number,
 			Title:              is.Title,
 			URL:                is.URL,
 			IsBug:              bugMatcher.MatchesAny(is.Labels),
 			Milestone:          milestone,
-			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BodyRefs:           bodyRefs,
+			BodyRefsExternal:   bodyRefsExternal,
 			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByExternal:  reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated: is.BlockedByTruncated,
