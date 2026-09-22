@@ -37,9 +37,12 @@ type RecommendationFacts struct {
 // is not proof of resolution — the ref may be a closed issue, an open PR (PRs share
 // the number space), or, on a truncated window, an open issue the fetch missed. It
 // is parsed from GitHub's plaintext body (bodyText), which keeps code spans and
-// fenced blocks, so a reference quoted as code is parsed too; these are a heuristic
-// proxy for stated cross-references, complementary to the authoritative BlockedBy
-// below. Non-nil even when empty, so it serializes as [] rather than null.
+// fenced blocks, so a reference quoted as code is parsed too. bodyText keeps only a
+// link's text, not its target, so a markdown link is read by what it says:
+// `[#5](…/other/repo/issues/5)` reads as local 5, and a link whose text holds no
+// reference is not seen at all. These are a heuristic proxy for stated
+// cross-references, complementary to the authoritative BlockedBy below. Non-nil
+// even when empty, so it serializes as [] rather than null.
 //
 // BodyRefsExternal are the body's references outside this repository — another
 // repository's issue or a fork's (see reduce.ForeignRef) — distinct and ordered by

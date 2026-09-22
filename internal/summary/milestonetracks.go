@@ -85,7 +85,9 @@ type MilestoneTrackSet struct {
 // fork, goes to ExternalMembers instead: a bare foreign number read as local names
 // a different issue, which is worse than leaving it out, and a consumer written
 // before the split can only leave it out. Each external member's Position restores
-// the operator's order.
+// the operator's order. A GitHub issue URL, or a markdown link to one, is a member
+// placed by its target — the description is raw markdown, so the target is there
+// to read — and a link's text is not read as a second reference.
 //
 // ListTruncated marks either member list capped at the list limit —
 // parse-relative ("parsed more than emitted"), since the description is the only

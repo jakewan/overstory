@@ -12,9 +12,11 @@ import "sort"
 // Presence gates; absence does not clear: a ref in Numbers names a live open issue
 // in this repo (a gate candidate to verify), but a ref absent from Numbers is not
 // proof of resolution — it may be a closed issue, an open PR, or (when
-// FetchTruncated) an open issue beyond the window. A reference into another
-// repository never reaches this question: it travels in bodyRefsExternal, not
-// bodyRefs.
+// FetchTruncated) an open issue beyond the window. A reference written as
+// another repository's travels in bodyRefsExternal, not bodyRefs, so it is never
+// resolved here. The exception is a link in an issue body: bodyText keeps only the
+// link's text, so `[#5](…/other/repo/issues/5)` arrives as local 5, and resolving
+// it here names whichever local issue shares the number.
 type OpenIssueSetFacts struct {
 	Numbers        []int `json:"numbers"`        // ascending, distinct, non-nil; the FULL fetched window, never limit-capped
 	FetchTruncated bool  `json:"fetchTruncated"` // true when the window didn't cover every open issue (Numbers is a floor)

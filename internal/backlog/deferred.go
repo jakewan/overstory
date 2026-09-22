@@ -78,9 +78,12 @@ type DeferredFacts struct {
 // excluded — the parked issue's stated dependencies, so a client can tell whether a
 // blocker has since closed. A reference qualified with this repository's own name
 // counts. It is parsed from GitHub's plaintext body (bodyText), which keeps code
-// spans and fenced blocks, so a reference quoted as code is parsed too. Non-nil
-// even when empty, so it serializes as [] rather than null. It is a heuristic proxy
-// for stated cross-references, complementary to the authoritative BlockedBy below.
+// spans and fenced blocks, so a reference quoted as code is parsed too. bodyText
+// keeps only a link's text, not its target, so a markdown link is read by what it
+// says: `[#5](…/other/repo/issues/5)` reads as local 5, and a link whose text holds
+// no reference is not seen at all. Non-nil even when empty, so it serializes as []
+// rather than null. It is a heuristic proxy for stated cross-references,
+// complementary to the authoritative BlockedBy below.
 //
 // BodyRefsExternal are the body's references outside this repository — another
 // repository's issue or a fork's (see reduce.ForeignRef) — distinct and ordered by

@@ -25,7 +25,21 @@ var (
 	// named `my-pr` is not mistaken for the marker: a word-boundaried `PR`/`PR `
 	// (so "expr" does not match) or a `pull/` path segment.
 	prContextRe = regexp.MustCompile(`(?i)(\bpr\s*|pull/)$`)
+	// issueURLRe matches a GitHub issue or pull-request URL — owner (group 1),
+	// repository (2), `issues` or `pull` (3), number (4) — which names its issue as
+	// surely as a qualified reference does. GitHub shortens such a URL to its display
+	// form (`owner/repo#N`, or `#N` for this repository) in bodyText, so the pattern
+	// matters where no rendering has happened: raw milestone markdown, and a URL
+	// quoted in a code span. A trailing fragment (`#issuecomment-…`) is left
+	// unmatched and holds no digits after its `#`, so it adds no reference.
+	issueURLRe = regexp.MustCompile(`(?i)` + issueURLPattern)
+	// issueLinkRe matches a markdown inline link whose target is such a URL, with the
+	// same groups. GitHub links it to its target whatever its text says, so the text
+	// is not scanned: `[#5](…/other/repo/issues/5)` names other/repo#5, not local #5.
+	issueLinkRe = regexp.MustCompile(`(?i)\[[^\]\n]*\]\(<?` + issueURLPattern + `[^)\n]*\)`)
 )
+
+const issueURLPattern = `https?://(?:www\.)?github\.com/([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)/(issues|pull)/(\d+)`
 
 // IssueRef is one issue reference found in text: its issue Number and the byte
 // Start of the reference — its qualifier when it has one, else its '#' — so a caller
@@ -74,12 +88,55 @@ func (f ForeignRef) qualifier() string {
 // Foreign. It does not dedup: callers that need appearance order and per-reference
 // context (e.g. milestone tracks, which decorate each member) read the raw sequence.
 // BodyRefs is the deduped, sorted convenience over it.
+//
+// A GitHub issue URL, or a markdown link whose target is one, is a reference too,
+// placed by its target like a qualified one; a pull-request URL is excluded like
+// any pull-request reference. Only the target is read: GitHub links a link to its
+// target, so `#N` in the link's text is not also a reference.
 func IssueRefMatches(text, self string) []IssueRef {
 	selfOwner, _, _ := strings.Cut(self, "/")
-	locs := issueRefRe.FindAllStringSubmatchIndex(text, -1)
-	out := make([]IssueRef, 0, len(locs))
-	for _, loc := range locs {
+	out := make([]IssueRef, 0)
+	// claimed holds the byte spans the URL passes already read, so the #N scan does
+	// not read a link's text (or anything inside a URL) a second time.
+	var claimed [][2]int
+	inClaimed := func(pos int) bool {
+		for _, c := range claimed {
+			if pos >= c[0] && pos < c[1] {
+				return true
+			}
+		}
+		return false
+	}
+	addURL := func(text string, loc []int) {
+		claimed = append(claimed, [2]int{loc[0], loc[1]})
+		if strings.EqualFold(text[loc[6]:loc[7]], "pull") {
+			return
+		}
+		num, err := strconv.Atoi(text[loc[8]:loc[9]])
+		if err != nil {
+			return
+		}
+		ref := IssueRef{Number: num, Start: loc[0]}
+		if repo := text[loc[2]:loc[5]]; self == "" || !strings.EqualFold(repo, self) {
+			ref.Foreign = &ForeignRef{Repo: repo, Number: num}
+		}
+		out = append(out, ref)
+	}
+	for _, loc := range issueLinkRe.FindAllStringSubmatchIndex(text, -1) {
+		addURL(text, loc)
+	}
+	for _, loc := range issueURLRe.FindAllStringSubmatchIndex(text, -1) {
+		if !inClaimed(loc[0]) {
+			addURL(text, loc)
+		}
+	}
+	urlRefs := len(out)
+
+	for _, loc := range issueRefRe.FindAllStringSubmatchIndex(text, -1) {
 		refStart, numStart, numEnd := loc[0], loc[8], loc[9]
+		if inClaimed(refStart) || inClaimed(numStart) {
+			continue
+		}
 		if prContextRe.MatchString(text[:refStart]) {
 			continue
 		}
@@ -106,6 +163,10 @@ func IssueRefMatches(text, self string) []IssueRef {
 			}
 		}
 		out = append(out, ref)
+	}
+	if urlRefs > 0 {
+		// The passes each run in appearance order; merging restores it across them.
+		sort.SliceStable(out, func(i, j int) bool { return out[i].Start < out[j].Start })
 	}
 	return out
 }

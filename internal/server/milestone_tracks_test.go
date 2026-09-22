@@ -179,6 +179,43 @@ func TestMilestoneTracksCarriesForeignMembersSeparately(t *testing.T) {
 	}
 }
 
+// TestMilestoneTracksReadsIssueURLsAndLinkTargets pins the URL half of #154's fix
+// on the one surface that arrives as raw markdown: an issue URL or a link to one is
+// a member, placed by its target — so a link whose text reads `#5` but points into
+// another repository is an external member rather than local #5 — and a URL a
+// boundary orphans is counted in unassignedRefs rather than lost.
+func TestMilestoneTracksReadsIssueURLsAndLinkTargets(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets: {}\n")
+	desc := "## Auth\n\n" +
+		"- [ ] [#5](https://github.com/other/lib/issues/5)\n" +
+		"- [x] [SSO rework](https://github.com/acme/widgets/issues/7)\n" +
+		"- [ ] https://github.com/other/lib/pull/9\n\n" +
+		"# Notes\n\n" +
+		"See https://github.com/other/lib/issues/11.\n"
+	fetcher := fakeFetcher{milestones: github.MilestoneListResult{
+		Milestones: []github.Milestone{{Number: 7, Title: "M12", URL: "u7", Description: desc}},
+		TotalOpen:  1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeMilestoneTracks(t, callMilestoneTracks(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Milestones) != 1 || len(facts.Milestones[0].Tracks) != 1 {
+		t.Fatalf("milestones=%+v, want one milestone with one track", facts.Milestones)
+	}
+	ms := facts.Milestones[0]
+	auth := ms.Tracks[0]
+	if got := memberNumbers(auth.Members); !equalInts(got, []int{7}) || auth.Members[0].StatusToken != "x" {
+		t.Errorf("Auth members = %+v, want [7] checked (a link into this repository)", auth.Members)
+	}
+	wantExternal := []summary.ExternalTrackMember{{ForeignRef: reduce.ForeignRef{Repo: "other/lib", Number: 5}, Position: 0}}
+	if !reflect.DeepEqual(auth.ExternalMembers, wantExternal) {
+		t.Errorf("Auth externalMembers = %+v, want %+v (link read by its target; PR URL excluded)", auth.ExternalMembers, wantExternal)
+	}
+	if ms.UnassignedRefs != 1 {
+		t.Errorf("UnassignedRefs = %d, want 1 (the orphaned issue URL under # Notes)", ms.UnassignedRefs)
+	}
+}
+
 // TestMilestoneTracksHeadingsBoundTracksTheyDoNotStart drives #121 through the
 // manifest: with headingLevels emptied, headings no longer start tracks but must
 // still end them, so a narrative section's references stay out of the preceding

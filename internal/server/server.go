@@ -118,9 +118,9 @@ const serverInstructions = "Overstory returns reduced facts about a GitHub repos
 	"blockingCount (project_summary's dependency gates) is how many open same-repository issues a gate blocks, though it may not be their only blocker, " +
 	"a floor under blockingTruncated. " +
 	"bodyRefs are references to this repository's issues parsed from the body text, code spans included; " +
-	"a reference into another repository or a fork goes to bodyRefsExternal as {repo, number} or {forkOwner, number}, " +
-	"never to bodyRefs, since the bare number would name a different issue here. " +
-	"It records what the text says, not an edge: an entry may be closed, a pull request, or nonexistent, and never gates."
+	"one into another repository or a fork goes to bodyRefsExternal as {repo, number} or {forkOwner, number}, " +
+	"except a link, which the body text keeps only as its text, so [#5](a URL elsewhere) reads as local 5. " +
+	"bodyRefsExternal records what the text says, not an edge: an entry may be closed, a pull request, or nonexistent, and never gates."
 
 // New builds the overstory MCP server and registers the backlog_review,
 // project_summary, milestone_tracks, authored_activity, authored_activity_batch,

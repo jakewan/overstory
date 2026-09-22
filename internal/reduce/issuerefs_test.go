@@ -69,6 +69,29 @@ func TestBodyRefs(t *testing.T) {
 		{"leading hyphen is not an owner", "item -#5", 0, []int{5}, []ForeignRef{}},
 		// Nor can a hyphen end one, and GitHub links the #N after it as local.
 		{"trailing hyphen is not an owner", "see re-#12 and bob-#13", 0, []int{12, 13}, []ForeignRef{}},
+		// A GitHub issue URL names its issue as surely as a qualified reference does.
+		// Milestone descriptions arrive as raw markdown, where GitHub has not yet
+		// shortened a URL to its display form, and bodyText keeps a URL raw inside a
+		// code span.
+		{"foreign issue URL is foreign", "see https://github.com/other/lib/issues/5 first", 0, []int{},
+			[]ForeignRef{{Repo: "other/lib", Number: 5}}},
+		{"self issue URL is local", "see https://github.com/Acme/Widgets/issues/5", 0, []int{5}, []ForeignRef{}},
+		{"URL scheme, host casing, and www are tolerated", "http://WWW.GitHub.com/other/lib/issues/6", 0, []int{},
+			[]ForeignRef{{Repo: "other/lib", Number: 6}}},
+		{"URL with a comment fragment still names the issue", "https://github.com/other/lib/issues/7#issuecomment-123", 0, []int{},
+			[]ForeignRef{{Repo: "other/lib", Number: 7}}},
+		{"pull-request URL is excluded like any PR reference", "https://github.com/other/lib/pull/8 and https://github.com/acme/widgets/pull/9", 0, []int{},
+			[]ForeignRef{}},
+		{"non-issue GitHub URL is not a reference", "https://github.com/other/lib/tree/main/5", 0, []int{}, []ForeignRef{}},
+		// A markdown link is read by its target: GitHub links `[#5](…/other/lib/…)`
+		// to other/lib, so its `#5` text must not also read as local #5.
+		{"link text naming #N reads by its foreign target", "[#5](https://github.com/other/lib/issues/5)", 0, []int{},
+			[]ForeignRef{{Repo: "other/lib", Number: 5}}},
+		{"link with prose text reads by its target", "[the SSO fix](https://github.com/other/lib/issues/40)", 0, []int{},
+			[]ForeignRef{{Repo: "other/lib", Number: 40}}},
+		{"link to this repository is local", "[fix](https://github.com/acme/widgets/issues/41)", 0, []int{41}, []ForeignRef{}},
+		{"link text over a pull-request target is excluded", "[#5](https://github.com/other/lib/pull/5) then #6", 0, []int{6}, []ForeignRef{}},
+		{"link to a non-GitHub target keeps its text reference", "[#5](https://example.com/5)", 0, []int{5}, []ForeignRef{}},
 		{"qualified entries order by qualifier then number", "zed/a#1 bob#9 bob#2 alpha/b#3", 0, []int{},
 			[]ForeignRef{{Repo: "alpha/b", Number: 3}, {ForkOwner: "bob", Number: 2}, {ForkOwner: "bob", Number: 9}, {Repo: "zed/a", Number: 1}}},
 	} {
