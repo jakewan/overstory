@@ -73,13 +73,21 @@ type DeferredFacts struct {
 // (never claims a capped list is whole), so a renderer should read it as "possibly
 // missing a tail label", not a precise matched-list signal.
 //
-// BodyRefs are the distinct #N references parsed from the issue body, ascending,
-// with pull-request references and the issue's own number excluded — the parked
-// issue's stated dependencies, so a client can tell whether a blocker has since
-// closed. It is parsed from GitHub's rendered plaintext body (bodyText), not raw
-// markdown, so only references surviving plaintext rendering appear. Non-nil even
-// when empty, so it serializes as [] rather than null. It is a heuristic proxy for
-// stated cross-references, complementary to the authoritative BlockedBy below.
+// BodyRefs are the distinct references to this repository's issues parsed from the
+// issue body, ascending, with pull-request references and the issue's own number
+// excluded — the parked issue's stated dependencies, so a client can tell whether a
+// blocker has since closed. A reference qualified with this repository's own name
+// counts. It is parsed from GitHub's plaintext body (bodyText), which keeps code
+// spans and fenced blocks, so a reference quoted as code is parsed too. Non-nil
+// even when empty, so it serializes as [] rather than null. It is a heuristic proxy
+// for stated cross-references, complementary to the authoritative BlockedBy below.
+//
+// BodyRefsExternal are the body's references outside this repository — another
+// repository's issue or a fork's (see reduce.ForeignRef) — distinct and ordered by
+// qualifier then number. They are a separate field because a foreign number read as
+// local names a different issue. They are what the text says rather than
+// dependency edges: an entry can be closed, a pull request, or not exist, so it
+// never gates. Non-nil even when empty.
 //
 // BlockedBy are the ascending, distinct numbers of the issue's still-open native
 // GitHub blocked-by edges — the dependency signal recorded on the issue for what
