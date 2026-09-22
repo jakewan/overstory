@@ -101,6 +101,7 @@ type RecommendationCandidate struct {
 	IsBug              bool                 `json:"isBug"`
 	Milestone          *string              `json:"milestone,omitempty"`
 	BodyRefs           []int                `json:"bodyRefs"`
+	BodyRefsExternal   []reduce.ForeignRef  `json:"bodyRefsExternal"`
 	BlockedBy          []int                `json:"blockedBy"`
 	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
 	BlockedByTruncated bool                 `json:"blockedByTruncated"`
@@ -154,7 +155,7 @@ const gateReserve = 5
 // the handler: readiness rests on the per-issue seam states that application
 // reconciles, so this reduction stays correct called directly — the same reason the
 // dependency reduction re-applies it.
-func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []string, listLimit int, caps github.Capabilities, now time.Time) RecommendationFacts {
+func ReduceRecommendations(issues []github.Issue, self string, totalOpen int, bugLabels []string, listLimit int, caps github.Capabilities, now time.Time) RecommendationFacts {
 	issues = github.ApplyCapabilities(issues, caps)
 	facts := RecommendationFacts{
 		OpenIssueCount: totalOpen,
@@ -191,13 +192,15 @@ func ReduceRecommendations(issues []github.Issue, totalOpen int, bugLabels []str
 				gatesPrioritized = append(gatesPrioritized, n)
 			}
 		}
+		bodyRefs, bodyRefsExternal := reduce.BodyRefs(is.BodyText, self, is.Number)
 		candidates = append(candidates, RecommendationCandidate{
 			Number:             is.Number,
 			Title:              is.Title,
 			URL:                is.URL,
 			IsBug:              bugMatcher.MatchesAny(is.Labels),
 			Milestone:          milestone,
-			BodyRefs:           reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BodyRefs:           bodyRefs,
+			BodyRefsExternal:   bodyRefsExternal,
 			BlockedBy:          reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByExternal:  reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated: is.BlockedByTruncated,

@@ -126,6 +126,7 @@ type DeferredIssue struct {
 	MatchedLabels      []string             `json:"matchedLabels"`
 	LabelsTruncated    bool                 `json:"labelsTruncated"`
 	BodyRefs           []int                `json:"bodyRefs"`
+	BodyRefsExternal   []reduce.ForeignRef  `json:"bodyRefsExternal"`
 	BlockedBy          []int                `json:"blockedBy"`
 	BlockedByExternal  []reduce.ExternalRef `json:"blockedByExternal"`
 	BlockedByTruncated bool                 `json:"blockedByTruncated"`
@@ -172,7 +173,7 @@ type DeferredIssue struct {
 // the handler: readiness rests on the per-issue seam states that application
 // reconciles, so this reduction stays correct called directly — the same reason the
 // dependency reduction re-applies it.
-func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listLimit int, caps github.Capabilities, now time.Time) DeferredFacts {
+func ReduceDeferred(issues []github.Issue, self string, totalOpen int, labels []string, listLimit int, caps github.Capabilities, now time.Time) DeferredFacts {
 	issues = github.ApplyCapabilities(issues, caps)
 	facts := DeferredFacts{
 		Configured:       len(labels) > 0,
@@ -195,13 +196,15 @@ func ReduceDeferred(issues []github.Issue, totalOpen int, labels []string, listL
 		if !ok {
 			continue
 		}
+		bodyRefs, bodyRefsExternal := reduce.BodyRefs(is.BodyText, self, is.Number)
 		deferred = append(deferred, DeferredIssue{
 			Number:              is.Number,
 			Title:               is.Title,
 			URL:                 is.URL,
 			MatchedLabels:       matched,
 			LabelsTruncated:     is.LabelsTruncated,
-			BodyRefs:            reduce.IssueRefsExcluding(is.BodyText, is.Number),
+			BodyRefs:            bodyRefs,
+			BodyRefsExternal:    bodyRefsExternal,
 			BlockedBy:           reduce.OpenDependencyNumbers(is.BlockedBy),
 			BlockedByExternal:   reduce.OpenExternalDependencies(is.BlockedByExternal),
 			BlockedByTruncated:  is.BlockedByTruncated,

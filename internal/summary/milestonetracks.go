@@ -18,7 +18,8 @@ import (
 // FetchTruncated marks a milestone fetch that did not cover them all, so a capped
 // fetch never silently omits milestones. Repo, GeneratedAt, RateLimit, and SizeBound
 // are stamped by the handler, not the reduction (the reduction is a pure function of
-// the descriptions).
+// the descriptions and the repository they belong to, which it needs only to tell a
+// reference qualified with its own name from one into another repository).
 //
 // SizeBound is present only when the assembled response exceeded the byte budget and
 // had to be trimmed. The trim sheds per-track member lists only; unlike the composite
@@ -59,9 +60,10 @@ type MilestoneTracksFacts struct {
 // silent. It counts only references a boundary heading orphaned — references the
 // operator deliberately excluded (prose before the first marker, or prose under a
 // stoplisted label, whether that label starts a track or only bounds one) are
-// suppressed, so a well-configured repository reads zero. Like Track.Members it
-// counts reference occurrences rather than distinct issues, so the two stay
-// comparable. It is a parse fact, tallied during the scan, so it never overlaps
+// suppressed, so a well-configured repository reads zero. Like a track's member
+// lists it counts reference occurrences rather than distinct issues, and it counts
+// references into other repositories too, so it stays comparable to Members and
+// ExternalMembers taken together. It is a parse fact, tallied during the scan, so it never overlaps
 // ListTruncated, which reports members that were assigned and then capped.
 type MilestoneTrackSet struct {
 	Number         int     `json:"number"`
@@ -75,17 +77,27 @@ type MilestoneTrackSet struct {
 
 // Track is one parsed track: its Label (the marker text), an optional Status (a
 // bold-run-in's raw parenthetical, e.g. "critical-path", uninterpreted), and its
-// Members in description order. ListTruncated marks a member list capped at the
-// list limit — parse-relative ("parsed more than emitted"), since the description
-// is the only source and there is no authoritative member count to compare against.
-// The response size bound also sets it when it trims this member list to fit the byte
+// Members in description order.
+//
+// Members holds only this repository's issues, so a consumer that reads nothing else
+// can render each as a local #N. A reference into another repository, or into a
+// fork, goes to ExternalMembers instead: a bare foreign number read as local names
+// a different issue, which is worse than leaving it out, and a consumer written
+// before the split can only leave it out. Each external member's Position restores
+// the operator's order.
+//
+// ListTruncated marks either member list capped at the list limit —
+// parse-relative ("parsed more than emitted"), since the description is the only
+// source and there is no authoritative member count to compare against. The
+// response size bound also sets it when it trims either list to fit the byte
 // budget; the dropped/remaining split then lives in the sizeBound marker's
 // TrimmedBlock, since Track carries no count field of its own.
 type Track struct {
-	Label         string        `json:"label"`
-	Status        string        `json:"status,omitempty"`
-	Members       []TrackMember `json:"members"`
-	ListTruncated bool          `json:"listTruncated"`
+	Label           string                `json:"label"`
+	Status          string                `json:"status,omitempty"`
+	Members         []TrackMember         `json:"members"`
+	ExternalMembers []ExternalTrackMember `json:"externalMembers"`
+	ListTruncated   bool                  `json:"listTruncated"`
 }
 
 // TrackMember is one referenced issue within a track. StatusToken is the raw,
@@ -96,6 +108,18 @@ type Track struct {
 type TrackMember struct {
 	Number      int    `json:"number"`
 	StatusToken string `json:"statusToken,omitempty"`
+}
+
+// ExternalTrackMember is one track member naming an issue outside this repository:
+// its qualifier and number (see reduce.ForeignRef, which may name an issue that is
+// closed, a pull request, or absent), its StatusToken read as TrackMember's is, and
+// its Position — how many of the track's local members preceded it in the
+// description. Position counts the uncapped member sequence, so one at or past the
+// length of a capped Members list sits after the last member shown.
+type ExternalTrackMember struct {
+	reduce.ForeignRef
+	StatusToken string `json:"statusToken,omitempty"`
+	Position    int    `json:"position"`
 }
 
 // TrackParams is the resolved track convention the reduction consumes, decoupled
@@ -140,12 +164,14 @@ var (
 )
 
 // ReduceMilestoneTracks parses each milestone's description into its track
-// structure as compact facts. It is a pure function of the descriptions: no clock
-// (no time-derived field) and no issue fetch — Repo, GeneratedAt, and RateLimit are
-// stamped by the handler. totalOpenMilestones keeps OpenMilestones exact when the
+// structure as compact facts. It is a pure function of the descriptions and self,
+// the repository as `owner/repo` that tells a reference qualified with its own name
+// (a local member) from one into another repository: no clock (no time-derived
+// field) and no issue fetch — Repo, GeneratedAt, and RateLimit are stamped by the
+// handler. totalOpenMilestones keeps OpenMilestones exact when the
 // milestone fetch truncates (fetchTruncated). listLimit caps the milestone list,
 // the tracks per milestone, and the members per track, each flagged independently.
-func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones int, fetchTruncated bool, params TrackParams, listLimit int) MilestoneTracksFacts {
+func ReduceMilestoneTracks(milestones []github.Milestone, self string, totalOpenMilestones int, fetchTruncated bool, params TrackParams, listLimit int) MilestoneTracksFacts {
 	facts := MilestoneTracksFacts{
 		Available:      true,
 		OpenMilestones: totalOpenMilestones,
@@ -156,7 +182,7 @@ func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones in
 
 	sets := make([]MilestoneTrackSet, 0, len(milestones))
 	for _, m := range milestones {
-		tracks, trackListTruncated, unassigned := parseTracks(m.Description, params, listLimit)
+		tracks, trackListTruncated, unassigned := parseTracks(m.Description, self, params, listLimit)
 		sets = append(sets, MilestoneTrackSet{
 			Number:         m.Number,
 			Title:          m.Title,
@@ -185,7 +211,7 @@ func ReduceMilestoneTracks(milestones []github.Milestone, totalOpenMilestones in
 // with no direct members and a prose-section label both yield no track. It returns
 // the tracks, whether the track list was capped at listLimit, and how many issue
 // references a boundary heading orphaned (see MilestoneTrackSet.UnassignedRefs).
-func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool, int) {
+func parseTracks(desc, self string, params TrackParams, listLimit int) ([]Track, bool, int) {
 	levels := make(map[int]bool, len(params.HeadingLevels))
 	for _, l := range params.HeadingLevels {
 		levels[l] = true
@@ -210,8 +236,9 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 	flush := func() {
 		// A candidate is a real track only if it gathered a member: this is the
 		// "≥1 reference before the next marker or boundary" rule that drops
-		// container headings.
-		if cur != nil && len(cur.Members) > 0 {
+		// container headings. A reference into another repository counts: the
+		// operator listed it in the track.
+		if cur != nil && len(cur.Members)+len(cur.ExternalMembers) > 0 {
 			tracks = append(tracks, *cur)
 		}
 		cur = nil
@@ -243,7 +270,7 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 				flush()
 				counting = false
 				if !stoplisted {
-					cur = &Track{Label: label}
+					cur = newTrack(label, "")
 					curDepth = level
 				}
 				continue
@@ -259,7 +286,7 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 				if counting {
 					// The heading's own text is discarded, so any reference in it belongs
 					// to no track — the same accounting the section below it gets.
-					unassigned += len(reduce.IssueRefMatches(label))
+					unassigned += len(reduce.IssueRefMatches(label, self))
 				}
 				continue
 			}
@@ -270,9 +297,10 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 		if params.BoldRunIn {
 			if m := boldRunInRe.FindStringSubmatchIndex(line); m != nil {
 				label := strings.TrimSpace(line[m[2]:m[3]])
-				// A bold span that is itself an issue number (`**#823**`) is a member, not
-				// a track label — let it fall through to member extraction.
-				if !strings.HasPrefix(label, "#") {
+				// A bold span that opens with an issue reference (`**#823**`,
+				// `**other/repo#823**`) is a member, not a track label — let it fall
+				// through to member extraction.
+				if refs := reduce.IssueRefMatches(label, self); len(refs) == 0 || refs[0].Start != 0 {
 					flush()
 					counting = false
 					if !stop[strings.ToLower(label)] {
@@ -280,10 +308,10 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 						if m[4] >= 0 {
 							status = strings.TrimSpace(strings.Trim(line[m[4]:m[5]], "()"))
 						}
-						cur = &Track{Label: label, Status: status}
+						cur = newTrack(label, status)
 						curDepth = runInDepth(sectionDepth)
 						// Members written inline after the colon belong to this track.
-						addMembers(cur, line[m[1]:])
+						addMembers(cur, line[m[1]:], self)
 					}
 					continue
 				}
@@ -294,9 +322,9 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 		// a boundary heading left none open, to the unassigned tally.
 		switch {
 		case cur != nil:
-			addMembers(cur, line)
+			addMembers(cur, line, self)
 		case counting:
-			unassigned += len(reduce.IssueRefMatches(line))
+			unassigned += len(reduce.IssueRefMatches(line, self))
 		}
 	}
 	flush()
@@ -306,6 +334,10 @@ func parseTracks(desc string, params TrackParams, listLimit int) ([]Track, bool,
 		for i := range tracks {
 			if len(tracks[i].Members) > listLimit {
 				tracks[i].Members = tracks[i].Members[:listLimit]
+				tracks[i].ListTruncated = true
+			}
+			if len(tracks[i].ExternalMembers) > listLimit {
+				tracks[i].ExternalMembers = tracks[i].ExternalMembers[:listLimit]
 				tracks[i].ListTruncated = true
 			}
 		}
@@ -331,11 +363,18 @@ func runInDepth(sectionDepth int) int {
 	return sectionDepth + 1
 }
 
+// newTrack opens a track candidate with both member lists non-nil, so a track whose
+// members are all in one list still serializes the other as [] rather than null.
+func newTrack(label, status string) *Track {
+	return &Track{Label: label, Status: status, Members: []TrackMember{}, ExternalMembers: []ExternalTrackMember{}}
+}
+
 // addMembers appends the issue references found in text to the track, in
-// appearance order, skipping pull-request references. Each member's StatusToken is
-// the raw structural decoration in its context: a strikethrough wrap wins ("~~"),
-// else a task-list checkbox marker char, else empty.
-func addMembers(t *Track, text string) {
+// appearance order, skipping pull-request references: this repository's to Members,
+// any other's to ExternalMembers at its position among them. Each member's
+// StatusToken is the raw structural decoration in its context: a strikethrough wrap
+// wins ("~~"), else a task-list checkbox marker char, else empty.
+func addMembers(t *Track, text, self string) {
 	checkboxChar := ""
 	hasCheckbox := false
 	if cb := checkboxRe.FindStringSubmatch(text); cb != nil {
@@ -347,7 +386,7 @@ func addMembers(t *Track, text string) {
 	// reduce.IssueRefMatches handles the #N scan and PR-reference exclusion (the
 	// shared convention); the per-member decoration is read from the text before
 	// each reference, which ref.Start locates.
-	for _, ref := range reduce.IssueRefMatches(text) {
+	for _, ref := range reduce.IssueRefMatches(text, self) {
 		pre := text[:ref.Start]
 		token := ""
 		switch {
@@ -357,6 +396,14 @@ func addMembers(t *Track, text string) {
 			token = "~~"
 		case hasCheckbox:
 			token = checkboxChar
+		}
+		if ref.Foreign != nil {
+			t.ExternalMembers = append(t.ExternalMembers, ExternalTrackMember{
+				ForeignRef:  *ref.Foreign,
+				StatusToken: token,
+				Position:    len(t.Members),
+			})
+			continue
 		}
 		t.Members = append(t.Members, TrackMember{Number: ref.Number, StatusToken: token})
 	}

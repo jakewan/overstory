@@ -1064,6 +1064,37 @@ func TestBacklogReviewDeferredSurfacesBodyRefs(t *testing.T) {
 	}
 }
 
+// TestBacklogReviewDeferredCarriesForeignBodyRefs pins #154 end-to-end: a
+// reference into another repository, or into a fork (GitHub's owner-only form), is
+// never read as a local issue number — it travels in bodyRefsExternal with its
+// qualifier — while a reference qualified with the surveyed repository's own name,
+// in any casing, stays local. The body models GitHub's rendered bodyText, where a
+// linked self-reference has already become #N, so the self-qualified forms here are
+// the ones that survive rendering: inside code spans, which keep their raw text.
+func TestBacklogReviewDeferredCarriesForeignBodyRefs(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
+	parked := deferredIssue(1, daysAgo(100), "deferred")
+	parked.BodyText = "Waits on other/lib#87650 and #10. Code: acme/widgets#12 and Acme/Widgets#13; acme#14. Fork: bob#40."
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{parked},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeFacts(t, callBacklogReview(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Deferred.DeferredIssues) != 1 {
+		t.Fatalf("listed %d deferred issues, want 1", len(facts.Deferred.DeferredIssues))
+	}
+	di := facts.Deferred.DeferredIssues[0]
+	if want := []int{10, 12, 13, 14}; !equalInts(di.BodyRefs, want) {
+		t.Errorf("BodyRefs = %v, want %v (foreign refs excluded, self-qualified kept)", di.BodyRefs, want)
+	}
+	wantExternal := []reduce.ForeignRef{{ForkOwner: "bob", Number: 40}, {Repo: "other/lib", Number: 87650}}
+	if !equalForeignRefs(di.BodyRefsExternal, wantExternal) {
+		t.Errorf("BodyRefsExternal = %+v, want %+v", di.BodyRefsExternal, wantExternal)
+	}
+}
+
 // TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray pins the non-nil
 // convention through the JSON round-trip: a deferred issue with no body
 // references must serialize bodyRefs as [], not null, so a client never sees a
@@ -1087,6 +1118,21 @@ func TestBacklogReviewDeferredBodyRefsEmptySerializesAsArray(t *testing.T) {
 	if facts.Deferred.DeferredIssues[0].BodyRefs == nil {
 		t.Error("BodyRefs = nil (serialized as null), want non-nil empty slice (serialized as [])")
 	}
+	if facts.Deferred.DeferredIssues[0].BodyRefsExternal == nil {
+		t.Error("BodyRefsExternal = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
+func equalForeignRefs(a, b []reduce.ForeignRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestBacklogReviewDeferredSurfacesNativeBlockedBy pins the authoritative

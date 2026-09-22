@@ -75,7 +75,7 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 		facts.RateLimit = mapRateLimit(budget)
 
 		// Bound the total response the same way the composite tools do, but over the
-		// leaf lists only: each track's members. Trimming members preserves every
+		// leaf lists only: each track's local and external members. Trimming members preserves every
 		// milestone and track headline — the summary a caller orients from, which the
 		// bound must never cost them — and keeps one non-overlapping unit per list; a
 		// whole-track unit would double-count its members' bytes and dangle a pointer
@@ -86,9 +86,9 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 			m := &facts.Milestones[i]
 			for j := range m.Tracks {
 				tr := &m.Tracks[j]
-				units = append(units, trimUnit(
-					fmt.Sprintf("milestones[#%d].tracks[%d].members", m.Number, j),
-					&tr.Members, &tr.ListTruncated))
+				units = append(units,
+					trimUnit(fmt.Sprintf("milestones[#%d].tracks[%d].members", m.Number, j), &tr.Members, &tr.ListTruncated),
+					trimUnit(fmt.Sprintf("milestones[#%d].tracks[%d].externalMembers", m.Number, j), &tr.ExternalMembers, &tr.ListTruncated))
 			}
 		}
 		if err := boundResponse(&facts, &facts.SizeBound, cfg.Response.MaxBytes, units); err != nil {
@@ -109,7 +109,7 @@ func milestoneTracksReduce(ctx context.Context, fetcher github.Fetcher, ownerRep
 	res, err := fetcher.ListOpenMilestones(ctx, ownerRepo, cfg.FetchLimit)
 	if err == nil {
 		truncated := len(res.Milestones) < res.TotalOpen
-		return summary.ReduceMilestoneTracks(res.Milestones, res.TotalOpen, truncated, mapTrackParams(cfg), limit), res.RateLimit, nil
+		return summary.ReduceMilestoneTracks(res.Milestones, ownerRepo, res.TotalOpen, truncated, mapTrackParams(cfg), limit), res.RateLimit, nil
 	}
 	if credentialFailure(err) {
 		return summary.MilestoneTracksFacts{}, nil, err

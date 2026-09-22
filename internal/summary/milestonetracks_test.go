@@ -19,7 +19,8 @@ func defaultTrackParams() TrackParams {
 }
 
 // renderTracks flattens parsed tracks to a compact, comparable form:
-// "label|status|num:token,num:token; …".
+// "label|status|num:token,num:token; …", with any external members appended as
+// "|ext:qualifier#num@position:token,…" so the cases without them read unchanged.
 func renderTracks(tracks []Track) string {
 	parts := make([]string, len(tracks))
 	for i, tr := range tracks {
@@ -28,6 +29,13 @@ func renderTracks(tracks []Track) string {
 			members[j] = fmt.Sprintf("%d:%s", m.Number, m.StatusToken)
 		}
 		parts[i] = fmt.Sprintf("%s|%s|%s", tr.Label, tr.Status, strings.Join(members, ","))
+		if len(tr.ExternalMembers) > 0 {
+			external := make([]string, len(tr.ExternalMembers))
+			for j, m := range tr.ExternalMembers {
+				external[j] = fmt.Sprintf("%s%s#%d@%d:%s", m.Repo, m.ForkOwner, m.Number, m.Position, m.StatusToken)
+			}
+			parts[i] += "|ext:" + strings.Join(external, ",")
+		}
 	}
 	return strings.Join(parts, "; ")
 }
@@ -50,6 +58,23 @@ func TestParseTracks(t *testing.T) {
 			name: "bold run-in with checkbox members and tokens",
 			desc: "**Picker UX** (depends on Foundation):\n- [x] #20\n- [ ] #21\n- [x] ~~#22~~",
 			want: "Picker UX|depends on Foundation|20:x,21:,22:~~",
+		},
+		{
+			name: "foreign references go to external members at their position",
+			desc: "**Auth**: #1 other/lib#5 #2 ~~bob#6~~ acme/widgets#3",
+			want: "Auth||1:,2:,3:|ext:other/lib#5@1:,bob#6@2:~~",
+		},
+		{
+			name: "track of only foreign references is still a track",
+			desc: "## Vendor\n- [x] other/lib#5\n- [ ] other/lib#6",
+			want: "Vendor|||ext:other/lib#5@0:x,other/lib#6@0:",
+		},
+		{
+			// Like `**#823**`, a bold span opening with a qualified reference is a
+			// member of the open track, not a new track label.
+			name: "bold qualified reference is a member, not a label",
+			desc: "**Auth**: #1\n**other/lib#5**: vendor fix",
+			want: "Auth||1:|ext:other/lib#5@1:",
 		},
 		{
 			name: "heading with numbered members",
@@ -184,7 +209,7 @@ func TestParseTracks(t *testing.T) {
 			if tc.params != nil {
 				params = *tc.params
 			}
-			tracks, _, _ := parseTracks(tc.desc, params, 100)
+			tracks, _, _ := parseTracks(tc.desc, "acme/widgets", params, 100)
 			if got := renderTracks(tracks); got != tc.want {
 				t.Errorf("parseTracks =\n  %q\nwant\n  %q", got, tc.want)
 			}
@@ -272,7 +297,7 @@ func TestParseTracksCountsUnassignedRefs(t *testing.T) {
 			if limit == 0 {
 				limit = 100
 			}
-			if _, _, got := parseTracks(tc.desc, params, limit); got != tc.want {
+			if _, _, got := parseTracks(tc.desc, "acme/widgets", params, limit); got != tc.want {
 				t.Errorf("unassigned refs = %d, want %d", got, tc.want)
 			}
 		})
@@ -294,9 +319,28 @@ func TestHeadingReRespectsMaxHeadingLevel(t *testing.T) {
 	}
 }
 
+// TestParseTracksTruncatesExternalMembers pins the cap on the foreign list: it is
+// capped at the list limit like Members and flags the same ListTruncated, and a
+// Position keeps counting the uncapped local members, so a foreign member written
+// after the cap reads as sitting past the last member shown.
+func TestParseTracksTruncatesExternalMembers(t *testing.T) {
+	desc := "**A**: #1 #2 #3 o/r#4 o/r#5 o/r#6"
+	tracks, _, _ := parseTracks(desc, "acme/widgets", defaultTrackParams(), 2)
+	if len(tracks) != 1 {
+		t.Fatalf("got %d tracks, want 1", len(tracks))
+	}
+	a := tracks[0]
+	if len(a.ExternalMembers) != 2 || !a.ListTruncated {
+		t.Errorf("external members=%d truncated=%v, want 2/true", len(a.ExternalMembers), a.ListTruncated)
+	}
+	if len(a.Members) != 2 || a.ExternalMembers[0].Position != 3 {
+		t.Errorf("members=%d first external position=%d, want 2 and 3 (uncapped count)", len(a.Members), a.ExternalMembers[0].Position)
+	}
+}
+
 func TestParseTracksAllMarkersDisabledYieldsNoTracks(t *testing.T) {
 	params := TrackParams{HeadingLevels: nil, BoldRunIn: false}
-	tracks, _, _ := parseTracks("## Heading\n#5\n**Bold** (x): #6", params, 100)
+	tracks, _, _ := parseTracks("## Heading\n#5\n**Bold** (x): #6", "acme/widgets", params, 100)
 	if len(tracks) != 0 {
 		t.Errorf("tracks = %s, want none (all markers disabled)", renderTracks(tracks))
 	}
@@ -306,7 +350,7 @@ func TestParseTracksTruncatesMembersAndTracks(t *testing.T) {
 	// Two tracks, three members each, listLimit 2: the track list and each member
 	// list cap, and both truncation flags are set.
 	desc := "**A** (x): #1 #2 #3\n**B** (y): #4 #5 #6\n**C** (z): #7 #8 #9"
-	tracks, listTruncated, _ := parseTracks(desc, defaultTrackParams(), 2)
+	tracks, listTruncated, _ := parseTracks(desc, "acme/widgets", defaultTrackParams(), 2)
 	if !listTruncated {
 		t.Error("track list not flagged truncated, want true (3 tracks capped to 2)")
 	}
@@ -323,7 +367,7 @@ func TestParseTracksTruncatesMembersAndTracks(t *testing.T) {
 // client can render the milestone's stated theme/purpose.
 func TestReduceMilestoneTracksCarriesDescription(t *testing.T) {
 	desc := "## Ikigai\n\nShip the picker.\n\n**Foundation** (anchor): #1"
-	facts := ReduceMilestoneTracks([]github.Milestone{{Number: 1, Description: desc}}, 1, false, defaultTrackParams(), 20)
+	facts := ReduceMilestoneTracks([]github.Milestone{{Number: 1, Description: desc}}, "acme/widgets", 1, false, defaultTrackParams(), 20)
 	if len(facts.Milestones) != 1 {
 		t.Fatalf("got %d milestones, want 1", len(facts.Milestones))
 	}
@@ -338,7 +382,7 @@ func TestReduceMilestoneTracksSurfacesFetchSeamAndSortsByNumber(t *testing.T) {
 		{Number: 4, Title: "earlier", Description: "prose only"},
 	}
 	// fetchTruncated true, totalOpen 5 > fetched 2: the seam must surface.
-	facts := ReduceMilestoneTracks(ms, 5, true, defaultTrackParams(), 20)
+	facts := ReduceMilestoneTracks(ms, "acme/widgets", 5, true, defaultTrackParams(), 20)
 	if !facts.Available {
 		t.Fatal("Available = false, want true")
 	}

@@ -579,6 +579,39 @@ func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T
 	if facts.Recommendations.Candidates[0].BodyRefs == nil {
 		t.Error("BodyRefs = nil (serialized as null), want non-nil empty slice (serialized as [])")
 	}
+	if facts.Recommendations.Candidates[0].BodyRefsExternal == nil {
+		t.Error("BodyRefsExternal = nil (serialized as null), want non-nil empty slice (serialized as [])")
+	}
+}
+
+// TestProjectSummaryRecommendationCarriesForeignBodyRefs pins #154 on the
+// orientation read: the candidate whose body names another repository's issue must
+// not list that number among its local stated dependencies, where it would resolve
+// against openIssueSet as whichever local issue shares it. The foreign ref travels
+// in bodyRefsExternal instead; a self-qualified ref (as it survives rendering, in a
+// code span) stays local.
+func TestProjectSummaryRecommendationCarriesForeignBodyRefs(t *testing.T) {
+	root := writeManifestDir(t, "acme/widgets:\n  summary:\n    bugLabels: [bug]\n")
+	candidate := summaryIssue(1, nil)
+	candidate.BodyText = "Found via other/lib#87650; see also #2 and acme/widgets#3."
+	fetcher := fakeFetcher{result: github.IssueListResult{
+		Issues:    []github.Issue{candidate},
+		TotalOpen: 1,
+	}}
+	srv := New(WithFetcher(fetcher), WithManifestRoot(root), WithClock(func() time.Time { return fixedClock }))
+
+	facts := decodeSummary(t, callProjectSummary(t, srv, map[string]any{"owner": "acme", "repo": "widgets"}))
+	if len(facts.Recommendations.Candidates) != 1 {
+		t.Fatalf("listed %d candidates, want 1", len(facts.Recommendations.Candidates))
+	}
+	c := facts.Recommendations.Candidates[0]
+	if want := []int{2, 3}; !equalInts(c.BodyRefs, want) {
+		t.Errorf("BodyRefs = %v, want %v", c.BodyRefs, want)
+	}
+	wantExternal := []reduce.ForeignRef{{Repo: "other/lib", Number: 87650}}
+	if !equalForeignRefs(c.BodyRefsExternal, wantExternal) {
+		t.Errorf("BodyRefsExternal = %+v, want %+v", c.BodyRefsExternal, wantExternal)
+	}
 }
 
 // TestProjectSummaryRecommendationSurfacesNativeBlockedBy pins the authoritative
