@@ -75,9 +75,10 @@ func milestoneTracksHandler(resolver *manifest.Resolver, fetcher github.Fetcher,
 		facts.RateLimit = mapRateLimit(budget)
 
 		// Bound the total response the same way the composite tools do, but over the
-		// leaf lists only: each track's local and external members. Trimming members preserves every
-		// milestone and track headline — the summary a caller orients from, which the
-		// bound must never cost them — and keeps one non-overlapping unit per list; a
+		// leaf lists only: each track's local and external members. Trimming members
+		// preserves every milestone and track headline — the summary a caller orients
+		// from, which the bound must never cost them — and keeps one non-overlapping
+		// unit per list; a
 		// whole-track unit would double-count its members' bytes and dangle a pointer
 		// into a dropped track. The verbatim per-milestone Description is not trimmable,
 		// so the bound is best-effort over a prose-dominated floor.

@@ -67,6 +67,8 @@ func TestBodyRefs(t *testing.T) {
 		{"word glued to the # reads as a fork owner", "expr#5", 0, []int{}, []ForeignRef{{ForkOwner: "expr", Number: 5}}},
 		// A hyphen cannot start an owner name, so a dash before the '#' leaves it local.
 		{"leading hyphen is not an owner", "item -#5", 0, []int{5}, []ForeignRef{}},
+		// Nor can a hyphen end one, and GitHub links the #N after it as local.
+		{"trailing hyphen is not an owner", "see re-#12 and bob-#13", 0, []int{12, 13}, []ForeignRef{}},
 		{"qualified entries order by qualifier then number", "zed/a#1 bob#9 bob#2 alpha/b#3", 0, []int{},
 			[]ForeignRef{{Repo: "alpha/b", Number: 3}, {ForkOwner: "bob", Number: 2}, {ForkOwner: "bob", Number: 9}, {Repo: "zed/a", Number: 1}}},
 	} {

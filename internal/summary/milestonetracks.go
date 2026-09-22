@@ -63,8 +63,9 @@ type MilestoneTracksFacts struct {
 // suppressed, so a well-configured repository reads zero. Like a track's member
 // lists it counts reference occurrences rather than distinct issues, and it counts
 // references into other repositories too, so it stays comparable to Members and
-// ExternalMembers taken together. It is a parse fact, tallied during the scan, so it never overlaps
-// ListTruncated, which reports members that were assigned and then capped.
+// ExternalMembers taken together. It is a parse fact, tallied during the scan, so it
+// never overlaps ListTruncated, which reports members that were assigned and then
+// capped.
 type MilestoneTrackSet struct {
 	Number         int     `json:"number"`
 	Title          string  `json:"title"`

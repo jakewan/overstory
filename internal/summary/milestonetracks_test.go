@@ -77,6 +77,13 @@ func TestParseTracks(t *testing.T) {
 			want: "Auth||1:|ext:other/lib#5@1:",
 		},
 		{
+			// Only a bold span that opens with an issue reference is a member; one that
+			// merely starts with '#' (`**#hashtag**`) is an ordinary track label.
+			name: "bold label starting with # but no reference is a label",
+			desc: "**Auth**: #1\n**#hashtag**: #2",
+			want: "Auth||1:; #hashtag||2:",
+		},
+		{
 			name: "heading with numbered members",
 			desc: "## Vocabularies\n7. #592\n8. #593",
 			want: "Vocabularies||592:,593:",

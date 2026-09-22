@@ -11,14 +11,15 @@ var (
 	// issueRefRe matches an issue reference: the `#` and digits, optionally preceded
 	// by the qualifier GitHub links as another repository's issue — `owner/repo#N`
 	// (groups 1–2) or the owner-only fork form `owner#N` (group 3). The character sets
-	// are GitHub's naming rules: an owner is letters, digits, and hyphens and cannot
-	// start with a hyphen; a repository name also allows `.` and `_`. Leftmost-first
+	// follow GitHub's naming rules: an owner is letters and digits joined by single
+	// hyphens, so it neither starts nor ends with one (GitHub links the `#12` in
+	// `re-#12` as local); a repository name also allows `.` and `_`. Leftmost-first
 	// matching takes the last owner/repo pair before the `#`, as GitHub's linker does
 	// (`x/anthropics/claude-code#1` links anthropics/claude-code), because a pair that
 	// is followed by `/` rather than `#` fails and the scan moves on. Pull-request
 	// references are excluded separately by inspecting the preceding text — this
 	// pattern alone cannot tell `#5` from `PR #5`.
-	issueRefRe = regexp.MustCompile(`(?:([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)|([A-Za-z0-9][A-Za-z0-9-]*))?#(\d+)`)
+	issueRefRe = regexp.MustCompile(`(?:([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/([A-Za-z0-9._-]+)|([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*))?#(\d+)`)
 	// prContextRe marks a pull-request reference to exclude by the text immediately
 	// before the reference — before its qualifier, when it has one, so a repository
 	// named `my-pr` is not mistaken for the marker: a word-boundaried `PR`/`PR `
@@ -29,9 +30,9 @@ var (
 // IssueRef is one issue reference found in text: its issue Number and the byte
 // Start of the reference — its qualifier when it has one, else its '#' — so a caller
 // can inspect the text before the reference (for strikethrough or checkbox
-// decoration) or tell whether text opens with one, without re-scanning. Foreign is nil for a
-// reference to the surveyed repository and names the other repository, or the fork
-// owner, otherwise.
+// decoration) or tell whether text opens with one, without re-scanning. Foreign is
+// nil for a reference to the surveyed repository and names the other repository, or
+// the fork owner, otherwise.
 type IssueRef struct {
 	Number  int
 	Start   int
