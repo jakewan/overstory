@@ -116,11 +116,6 @@ func TestReduceDeferredTieBreakByNumber(t *testing.T) {
 	}
 }
 
-// TestReduceDeferredBodyRefs pins the dependency-readiness signal: each deferred
-// issue carries the distinct #N references parsed from its body (the rendered
-// plaintext bodyText), PR references and the issue's own number excluded. The
-// self-exclusion is checked both alongside real refs and alone (where it empties
-// the slice, which must stay non-nil so it serializes as []).
 // TestReduceDeferredBodyRefsSplitsForeignReferences pins that a parked issue's
 // references into other repositories, or forks, never read as local numbers: they
 // travel in BodyRefsExternal, while one qualified with the surveyed repository's own
@@ -140,6 +135,11 @@ func TestReduceDeferredBodyRefsSplitsForeignReferences(t *testing.T) {
 	}
 }
 
+// TestReduceDeferredBodyRefs pins the body-citation signal: each deferred issue
+// carries the distinct #N references parsed from its body (the rendered plaintext
+// bodyText), PR references and the issue's own number excluded. The self-exclusion
+// is checked both alongside real refs and alone (where it empties the slice, which
+// must stay non-nil so it serializes as []).
 func TestReduceDeferredBodyRefs(t *testing.T) {
 	withRefs := labeledIssue(1, 50, "deferred")
 	// Plaintext body: a duplicate ref, a PR reference, and a self-reference.

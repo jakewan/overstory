@@ -123,6 +123,11 @@ func TestServerInstructionsStateDependencyReductions(t *testing.T) {
 		"gatesPrioritized",
 		"blockingCount",
 		"may not be their only blocker",
+		// what a body reference is not
+		"Neither bodyRefs nor bodyRefsExternal is an edge",
+		"direction unread",
+		"never gates",
+		"any entry may be closed",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Errorf("server instructions lack %q", want)

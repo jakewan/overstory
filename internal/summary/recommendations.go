@@ -25,17 +25,18 @@ type RecommendationFacts struct {
 
 // RecommendationCandidate is one open issue reduced to the facts a caller ranks
 // from: whether it is a bug (a configured bug label), its milestone title (nil
-// when unmilestoned), its stated dependencies, its age, and its inactivity. No
-// score or rank — the caller owns that.
+// when unmilestoned), its dependency edges and the issues its body cites, its age,
+// and its inactivity. No score or rank — the caller owns that.
 //
 // BodyRefs are the distinct references to this repository's issues parsed from the
 // issue body, ascending, with pull-request references and the issue's own number
-// excluded — the issue's stated dependencies. A reference qualified with this
-// repository's own name counts. A caller resolves them against the composite's
-// open-issue-set block: a ref present there names a live open issue in this repo,
-// so the caller can rank a candidate gated behind one after ready work; but absence
-// is not proof of resolution — the ref may be a closed issue, an open PR (PRs share
-// the number space), or, on a truncated window, an open issue the fetch missed. It
+// excluded — what the body cites, not which way the relationship runs: a body names
+// the issues it blocks or split out of it as readily as those that block it, so a
+// ref is never a gate. A reference qualified with this repository's own name counts.
+// A caller resolves them against the composite's open-issue-set block: a ref present
+// there names a live open issue in this repo; but absence is not proof of
+// resolution — the ref may be a closed issue, an open PR (PRs share the number
+// space), or, on a truncated window, an open issue the fetch missed. It
 // is parsed from GitHub's plaintext body (bodyText), which keeps code spans and
 // fenced blocks, so a reference quoted as code is parsed too. bodyText keeps only a
 // link's text, not its target, so a markdown link is read by what it says:
@@ -138,9 +139,8 @@ type RecommendationCandidate struct {
 	// not a ranking one: which candidate to do next stays the caller's judgment.
 	//
 	// The raw fields stay because the verdict is a scalar — naming an issue's actual
-	// blockers still needs BlockedBy, SubIssues, and their truncation flags, and a
-	// caller folding its own stated-dependency conjunct in still resolves BodyRefs
-	// itself.
+	// blockers still needs BlockedBy, SubIssues, and their truncation flags. BodyRefs
+	// never enter it.
 	Readiness    reduce.Verdict `json:"readiness"`
 	AgeDays      int            `json:"ageDays"`
 	InactiveDays int            `json:"inactiveDays"`

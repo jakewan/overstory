@@ -36,16 +36,10 @@ func TestReduceRecommendationsAnnotatesAndPreSorts(t *testing.T) {
 	}
 }
 
-// TestReduceRecommendationsBodyRefs pins the dependency-readiness signal: each
-// candidate carries the distinct #N references parsed from its body (the rendered
-// plaintext bodyText), PR references and the issue's own number excluded — so a
-// caller's "what to start next" ranking can tell a ready issue from one gated
-// behind open siblings. Self-exclusion is checked both alongside real refs and
-// alone (where it empties the slice, which must stay non-nil to serialize as []).
 // TestReduceRecommendationsBodyRefsSplitsForeignReferences pins the orientation
 // read's half of the split: a candidate's reference into another repository is not
-// a local stated dependency, which a caller would otherwise resolve against the
-// open-issue set as whichever local issue shares its number.
+// a local citation, which a caller would otherwise resolve against the open-issue
+// set as whichever local issue shares its number.
 func TestReduceRecommendationsBodyRefsSplitsForeignReferences(t *testing.T) {
 	candidate := mkIssue(1, 10, 2, nil, nil)
 	candidate.BodyText = "Found via other/lib#87650; see #2."
@@ -61,6 +55,11 @@ func TestReduceRecommendationsBodyRefsSplitsForeignReferences(t *testing.T) {
 	}
 }
 
+// TestReduceRecommendationsBodyRefs pins the body-citation signal: each candidate
+// carries the distinct #N references parsed from its body (the rendered plaintext
+// bodyText), PR references and the issue's own number excluded. Self-exclusion is
+// checked both alongside real refs and alone (where it empties the slice, which
+// must stay non-nil to serialize as []).
 func TestReduceRecommendationsBodyRefs(t *testing.T) {
 	withRefs := mkIssue(1, 10, 2, nil, nil)
 	// Plaintext body: a duplicate ref, a PR reference, and a self-reference.

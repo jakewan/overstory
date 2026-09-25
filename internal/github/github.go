@@ -56,8 +56,9 @@ import (
 // blocker gates wherever it lives. BlockedByTruncated is set when the issue had more
 // native edges than the fetch cap, so a consumer flags that absence past the window
 // is not proof of readiness; it bounds the two lists together, since the cap is over
-// the one connection that feeds both. This is the trustworthy counterpart to the
-// heuristic body-text dependency proxy the reductions derive from BodyText.
+// the one connection that feeds both. Unlike the body-text references the
+// reductions derive from BodyText, which record a mention with its direction unread,
+// these edges say which way the dependency runs.
 //
 // Blocking is the reverse direction: the native edges to same-repository issues
 // this one is declared to block, with each downstream issue's open/closed state.

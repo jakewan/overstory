@@ -126,7 +126,7 @@ func TestProjectSummaryPopulatesBlocks(t *testing.T) {
 // TestProjectSummaryOpenIssueSetUncappedByLimit is the soundness guard: the
 // open-issue set is the FULL fetched window, never capped by limit. With a fetched
 // window larger than the limit, an open issue sitting beyond the recommendation
-// list cap must still appear in numbers — otherwise a real open blocker would read
+// list cap must still appear in numbers — otherwise an open cited issue would read
 // as ∉ set and the resolution contract would silently lie.
 func TestProjectSummaryOpenIssueSetUncappedByLimit(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")
@@ -586,7 +586,7 @@ func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T
 
 // TestProjectSummaryRecommendationCarriesForeignBodyRefs pins #154 on the
 // orientation read: the candidate whose body names another repository's issue must
-// not list that number among its local stated dependencies, where it would resolve
+// not list that number among its local citations, where it would resolve
 // against openIssueSet as whichever local issue shares it. The foreign ref travels
 // in bodyRefsExternal instead; a self-qualified ref (as it survives rendering, in a
 // code span) stays local.

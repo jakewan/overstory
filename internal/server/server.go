@@ -102,7 +102,7 @@ func WithClock(now func() time.Time) Option {
 // per session, which leaves each description's budget for what that tool alone needs.
 // Claude Code cuts the instructions at the same limit as a description; the server
 // tests hold both to it.
-const serverInstructions = "Overstory returns reduced facts about a GitHub repository for the caller to render. " +
+const serverInstructions = "Overstory returns reduced GitHub repository facts for the caller to render. " +
 	"The dependency fields that backlog_review and project_summary project are the server's reductions, not GitHub's lists. " +
 	"blockedBy, blocking, and subIssues are the ascending, distinct numbers of same-repository issues still open: " +
 	"closed edges are removed, a blocked-by edge into another repository moves to blockedByExternal as a {repo, number} pair " +
@@ -119,8 +119,9 @@ const serverInstructions = "Overstory returns reduced facts about a GitHub repos
 	"a floor under blockingTruncated. " +
 	"bodyRefs are references to this repository's issues parsed from the body text, code spans included; " +
 	"one into another repository or a fork goes to bodyRefsExternal as {repo, number} or {forkOwner, number}, " +
-	"except a link, which the body text keeps only as its text, so [#5](a URL elsewhere) reads as local 5. " +
-	"bodyRefsExternal records what the text says, not an edge: an entry may be closed, a pull request, or nonexistent, and never gates."
+	"except a link, kept only as its text, so [#5](a URL elsewhere) reads as local 5. " +
+	"Neither bodyRefs nor bodyRefsExternal is an edge: each is what the text says, direction unread, and never gates; " +
+	"any entry may be closed, a pull request, or nonexistent."
 
 // New builds the overstory MCP server and registers the backlog_review,
 // project_summary, milestone_tracks, authored_activity, authored_activity_batch,
@@ -305,8 +306,8 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			Repo:        ownerRepo,
 			GeneratedAt: n,
 			// The full fetched open-issue window, never capped by in.Limit: a caller
-			// resolves a deferred issue's bodyRefs against this set, so a real open
-			// blocker beyond any list cap must still appear here. Always present.
+			// resolves a deferred issue's bodyRefs against this set, so an open cited
+			// issue beyond any list cap must still appear here. Always present.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
 		}
 		// Projection sets a block's pointer only when requested; an unset (nil) block
