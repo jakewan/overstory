@@ -128,7 +128,7 @@ func projectSummaryHandler(resolver *manifest.Resolver, fetcher github.Fetcher, 
 			Repo:        ownerRepo,
 			GeneratedAt: n,
 			// The full fetched open-issue window, never capped by in.Limit: a caller
-			// resolves a candidate's bodyRefs against this set, so a real open blocker
+			// resolves a candidate's bodyRefs against this set, so an open cited issue
 			// beyond the list cap must still appear here or the contract would lie.
 			// Always present.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(issues), len(issues) < totalOpen),

@@ -1040,10 +1040,10 @@ func TestBacklogReviewDeferredSurfacesLabelsTruncation(t *testing.T) {
 	}
 }
 
-// TestBacklogReviewDeferredSurfacesBodyRefs pins the dependency-readiness signal
+// TestBacklogReviewDeferredSurfacesBodyRefs pins the body-citation signal
 // end-to-end (#32): each deferred issue carries the distinct #N references parsed
 // from its (plaintext) body, with PR references and the issue's own number
-// excluded, so a client can tell whether a parked issue's blocker has closed.
+// excluded.
 func TestBacklogReviewDeferredSurfacesBodyRefs(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
 	withRefs := deferredIssue(1, daysAgo(100), "deferred")

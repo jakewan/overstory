@@ -171,9 +171,9 @@ func IssueRefMatches(text, self string) []IssueRef {
 	return out
 }
 
-// BodyRefs splits the references in text into an issue's stated dependencies: the
-// distinct local numbers, ascending, with exclude dropped (an issue citing its own
-// number is never a dependency, so a reduction passes the issue's own number), and
+// BodyRefs splits the references in text into the issues it cites: the distinct
+// local numbers, ascending, with exclude dropped (an issue citing its own number
+// says nothing about another issue, so a reduction passes the issue's own number), and
 // the distinct foreign references, ordered by qualifier and then number. Both
 // compare qualifiers case-insensitively and keep the first spelling seen, since text
 // GitHub did not render keeps its author's casing. Both are non-nil even when empty,

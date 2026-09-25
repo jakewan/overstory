@@ -586,7 +586,7 @@ func TestProjectSummaryRecommendationBodyRefsEmptySerializesAsArray(t *testing.T
 
 // TestProjectSummaryRecommendationCarriesForeignBodyRefs pins #154 on the
 // orientation read: the candidate whose body names another repository's issue must
-// not list that number among its local stated dependencies, where it would resolve
+// not list that number among its local citations, where it would resolve
 // against openIssueSet as whichever local issue shares it. The foreign ref travels
 // in bodyRefsExternal instead; a self-qualified ref (as it survives rendering, in a
 // code span) stays local.

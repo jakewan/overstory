@@ -14,7 +14,7 @@ import (
 // cross-repository edges, so every ref here is a same-repo issue and a bare number
 // addresses it unambiguously (OpenExternalDependencies projects the rest). The result
 // is non-nil even when empty, so a reduction embedding it serializes [] rather than
-// null — matching the bodyRefs convention the dependency signals share.
+// null — matching the convention bodyRefs and the dependency signals share.
 //
 // This is the single open-edge projection both the backlog and summary reductions
 // call for both directions, so the native dependency signal reads identically on

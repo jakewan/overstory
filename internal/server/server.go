@@ -306,8 +306,8 @@ func backlogReviewHandler(resolver *manifest.Resolver, fetcher github.Fetcher, n
 			Repo:        ownerRepo,
 			GeneratedAt: n,
 			// The full fetched open-issue window, never capped by in.Limit: a caller
-			// resolves a deferred issue's bodyRefs against this set, so a real open
-			// blocker beyond any list cap must still appear here. Always present.
+			// resolves a deferred issue's bodyRefs against this set, so an open cited
+			// issue beyond any list cap must still appear here. Always present.
 			OpenIssueSet: reduce.NewOpenIssueSet(openIssueNumbers(result.Issues), len(result.Issues) < result.TotalOpen),
 		}
 		// Projection sets a block's pointer only when requested; an unset (nil) block
