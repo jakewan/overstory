@@ -9,10 +9,10 @@ import "sort"
 // self-containment so a caller resolving refs against Numbers reads the coverage
 // caveat from the same block.
 //
-// A ref in Numbers names a live open issue in this repo — open, not a gate, since a
-// body reference does not say which way it points — but a ref absent from Numbers
-// is not proof of resolution — it may be a closed issue, an open PR, or (when
-// FetchTruncated) an open issue beyond the window. A reference written as
+// A ref in Numbers names a live open issue in this repo. That makes it open, not a
+// gate: a body reference does not say which way it points. A ref absent from
+// Numbers is not proof of resolution: it may be a closed issue, an open PR, or
+// (when FetchTruncated) an open issue beyond the window. A reference written as
 // another repository's travels in bodyRefsExternal, not bodyRefs, so it is never
 // resolved here. The exception is a link in an issue body: bodyText keeps only the
 // link's text, so `[#5](…/other/repo/issues/5)` arrives as local 5, and resolving

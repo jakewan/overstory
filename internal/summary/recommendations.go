@@ -34,8 +34,9 @@ type RecommendationFacts struct {
 // the issues it blocks or split out of it as readily as those that block it, so a
 // ref is never a gate. A reference qualified with this repository's own name counts.
 // A caller resolves them against the composite's open-issue-set block: a ref present
-// there names a live open issue in this repo; but absence is not proof of resolution — the ref may be a closed issue, an open PR (PRs share
-// the number space), or, on a truncated window, an open issue the fetch missed. It
+// there names a live open issue in this repo; but absence is not proof of
+// resolution — the ref may be a closed issue, an open PR (PRs share the number
+// space), or, on a truncated window, an open issue the fetch missed. It
 // is parsed from GitHub's plaintext body (bodyText), which keeps code spans and
 // fenced blocks, so a reference quoted as code is parsed too. bodyText keeps only a
 // link's text, not its target, so a markdown link is read by what it says:

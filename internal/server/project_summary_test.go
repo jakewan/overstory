@@ -126,7 +126,7 @@ func TestProjectSummaryPopulatesBlocks(t *testing.T) {
 // TestProjectSummaryOpenIssueSetUncappedByLimit is the soundness guard: the
 // open-issue set is the FULL fetched window, never capped by limit. With a fetched
 // window larger than the limit, an open issue sitting beyond the recommendation
-// list cap must still appear in numbers — otherwise a real open blocker would read
+// list cap must still appear in numbers — otherwise an open cited issue would read
 // as ∉ set and the resolution contract would silently lie.
 func TestProjectSummaryOpenIssueSetUncappedByLimit(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n")

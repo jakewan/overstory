@@ -121,7 +121,7 @@ const serverInstructions = "Overstory returns reduced GitHub repository facts fo
 	"one into another repository or a fork goes to bodyRefsExternal as {repo, number} or {forkOwner, number}, " +
 	"except a link, kept only as its text, so [#5](a URL elsewhere) reads as local 5. " +
 	"Neither bodyRefs nor bodyRefsExternal is an edge: each is what the text says, direction unread, and never gates; " +
-	"an external one may be closed, a pull request, or nonexistent."
+	"any entry may be closed, a pull request, or nonexistent."
 
 // New builds the overstory MCP server and registers the backlog_review,
 // project_summary, milestone_tracks, authored_activity, authored_activity_batch,

@@ -1372,7 +1372,7 @@ func TestBacklogReviewSurfacesOpenIssueSet(t *testing.T) {
 // TestBacklogReviewOpenIssueSetUncappedByLimit is the soundness guard for the
 // grooming read: the open-issue set is the full fetched window, never capped by
 // limit. An open issue beyond the deferred list cap must still appear in numbers,
-// or a real open blocker would read as ∉ set.
+// or an open cited issue would read as ∉ set.
 func TestBacklogReviewOpenIssueSetUncappedByLimit(t *testing.T) {
 	root := writeManifestDir(t, "acme/widgets:\n  staleness:\n    thresholdDays: 30\n  deferred:\n    labels: [deferred]\n")
 	fetcher := fakeFetcher{result: github.IssueListResult{

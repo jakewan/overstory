@@ -78,8 +78,9 @@ type DeferredFacts struct {
 // excluded — what the parked issue's body cites, not which way the relationship
 // runs: a body names the issues it blocks or split out of it as readily as those
 // that block it, so a ref is never a gate. A reference qualified with this
-// repository's own name counts. It is parsed from GitHub's plaintext body (bodyText), which keeps code
-// spans and fenced blocks, so a reference quoted as code is parsed too. bodyText
+// repository's own name counts. It is parsed from GitHub's plaintext body
+// (bodyText), which keeps code spans and fenced blocks, so a reference quoted as
+// code is parsed too. bodyText
 // keeps only a link's text, not its target, so a markdown link is read by what it
 // says: `[#5](…/other/repo/issues/5)` reads as local 5, and a link whose text holds
 // no reference is not seen at all. Non-nil even when empty, so it serializes as []
