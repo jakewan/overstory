@@ -71,8 +71,8 @@ func TestServerExposesTools(t *testing.T) {
 }
 
 // TestToolsDeclareWhetherTheyAreReadOnly pins the read/write split clients see.
-// A client that gates writes — a read-only planning mode, an approval prompt —
-// treats a tool without readOnlyHint as a write, so an unannotated read prompts
+// A client that gates writes — Claude Code's plan mode, for one — treats a tool
+// without readOnlyHint as a write, so an unannotated read prompts
 // on every call. Every exposed tool must appear here, so a new one is classified
 // on purpose rather than inheriting the write default.
 func TestToolsDeclareWhetherTheyAreReadOnly(t *testing.T) {
@@ -103,10 +103,10 @@ func TestToolsDeclareWhetherTheyAreReadOnly(t *testing.T) {
 			t.Errorf("tool %q readOnlyHint = %v, want %v", tool.Name, got, want)
 			continue
 		}
-		// Every tool reads from GitHub, an external system, so none may claim a
-		// closed world. An unset hint defaults to open, which is also correct.
-		if want && tool.Annotations.OpenWorldHint != nil && !*tool.Annotations.OpenWorldHint {
-			t.Errorf("tool %q openWorldHint = false, want true: it reads GitHub", tool.Name)
+		// Every tool reads from GitHub, an external system, so each declares an
+		// open world explicitly rather than leaning on the spec default.
+		if want && (tool.Annotations.OpenWorldHint == nil || !*tool.Annotations.OpenWorldHint) {
+			t.Errorf("tool %q openWorldHint unset or false, want true: it reads GitHub", tool.Name)
 		}
 	}
 }

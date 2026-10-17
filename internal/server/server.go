@@ -162,9 +162,11 @@ func New(opts ...Option) *mcp.Server {
 }
 
 // readsGitHub is the annotation set every tool here carries: each one only reads
-// GitHub, an external system. Clients that gate writes treat a tool without
-// readOnlyHint as a write, so leaving it off would put an approval prompt in
-// front of every call.
+// GitHub, an external system. MCP's readOnlyHint defaults to false (go-sdk
+// mcp.ToolAnnotations), so a client that gates writes — Claude Code's plan
+// mode, for one — treats an unannotated tool as a write and prompts before
+// every call. Were that default to flip, the annotation would be redundant
+// rather than wrong.
 func readsGitHub() *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(true)}
 }
