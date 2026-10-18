@@ -161,6 +161,16 @@ func New(opts ...Option) *mcp.Server {
 	return srv
 }
 
+// readsGitHub is the annotation set every tool here carries: each one only reads
+// GitHub, an external system. MCP's readOnlyHint defaults to false (go-sdk
+// mcp.ToolAnnotations), so a client that gates writes — Claude Code's plan
+// mode, for one — treats an unannotated tool as a write and prompts before
+// every call. Were that default to flip, the annotation would be redundant
+// rather than wrong.
+func readsGitHub() *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: new(true)}
+}
+
 // manifestFilesFromEnv parses OVERSTORY_MANIFESTS as a colon-separated file
 // list, treating empty-after-trim as unset.
 func manifestFilesFromEnv() []string {
@@ -219,6 +229,7 @@ var backlogBlockNames = []string{
 func backlogReviewTool() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "backlog_review",
+		Annotations: readsGitHub(),
 		Description: "Grooming read of a GitHub repository's open-issue backlog as facts for the caller to render. Blocks: staleness (the exact open count, inactivity bands, and the stalest issues, deferred ones excluded as parked); deferred (issues carrying the manifest's deferred labels, each with heuristic bodyRefs/bodyRefsExternal, native blockedBy/blockedByExternal/blocking/sub-issue edges, and a readiness verdict); areaBalance (spread across the manifest's areas); quality (thin body, no labels, or a missing required category); overlap (similar-title groups: candidate duplicates); crossRef (issues referencing one another: candidate consolidation); dependencies (convention-free ready/blocked/provisional counts, gates blocking open downstream work, blocked issues with their blocked-by edges, the authoritative direction the crossRef mention graph can invert, and provisional issues with the states and flag behind each); trajectory (issues created, closed, and net per lookback window); prTrajectory (pull requests opened, closed including merged, and net per window); criticalPath (per declared stream, its open critical-path issues and whether its gate is cleared, provisional under a truncated fetch or labelTruncatedCount). Always returned: repo, generatedAt, and openIssueSet (the open issue numbers bodyRefs resolve against). Absence from openIssueSet is not proof of resolution: the ref may be closed, a pull request, or past a truncated window. Readiness is the same verdict the dependencies block counts: blocked by an open blocked-by edge in any repository or an open sub-issue gate; provisional when no blocker was seen but a truncated edge list or an unread seam leaves it unconfirmed, since an empty edge list is not evidence of readiness. Issue-derived blocks cover the fetched window, fetchTruncated marking a floor, though every openIssueCount stays exact; listTruncated means a list was cut at limit. Blocks with their own fetch carry their own flags and degrade to available:false. sizeBound marks a size-trimmed response.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
@@ -666,6 +677,7 @@ type authoredActivityInput struct {
 func authoredActivityTool() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "authored_activity",
+		Annotations: readsGitHub(),
 		Description: "Measure how much one GitHub user authored and engaged with in one repository over a caller-supplied time window, and return six decomposed, objective counts for the caller to weigh and render: commitsAuthored (default-branch commits attributed to the author's linked identity — misses squash-merged and email-unlinked commits), issuesOpened and pullRequestsOpened (items the author created in the window), reviewsSubmitted (others' pull requests the author reviewed — peer review, excluding the author's own PRs), and pullRequestsEngaged and issuesEngaged (items the author commented on but did not author). Each count ships with a per-category fidelity label, because the categories are not equally precise: the commit count is event-precise within its attribution limits, while the five search-derived counts are search-index-approximate and (for reviews and engagement) windowed by the item's activity rather than the exact comment/review date. The counts are never summed — weighting and the attention verdict stay caller-side. This tool is author- and window-driven and reads no manifest conventions; it inherits the operator's gh credentials, so it can measure private repositories the user-rooted contributions query cannot. It runs over a single owner/repo per call (the caller loops to measure several). An unresolved author login is a named error, never six silent zeros; any fetch failure surfaces as a tool error rather than a partial count.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
@@ -782,6 +794,7 @@ func authoredActivityBatchTool() *mcp.Tool {
 	minRepos, maxRepos := 1, authoredBatchMaxRepos
 	return &mcp.Tool{
 		Name:        "authored_activity_batch",
+		Annotations: readsGitHub(),
 		Description: "Measure how much one GitHub user authored and engaged with across several repositories over a caller-supplied time window — the batched form of authored_activity. Given a list of owner/repo and one author login, it returns one entry per repository, in request order: the same six decomposed counts, each with its per-category fidelity label, or one of four per-repo markers: not_found, rate_limited, fetch_failed, not_attempted. Repositories are independent. A not_found or fetch_failed repository degrades to its own marker without sinking the others' counts, and the batch surfaces a single aggregated rate-limit budget — the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. A rate_limited repository additionally trips backpressure: to avoid amplifying the rate limit the batch stops launching new fetches, so an arbitrary subset of the not-yet-started repositories returns not_attempted (a deliberate skip, not a failure — in-flight fetches still complete); this can pre-empt the whole-batch author error below when a throttle precedes the author's resolution. Because the author login resolves globally (independent of repository), an unresolvable login is one whole-batch error naming it rather than per-repo markers — but a login that resolves to a real, unrelated account yields honest zeros that no tool can distinguish from genuine inactivity. A credential failure — gh not installed, holding no token GitHub accepts, or not responding — is likewise shared by every repository: it is one whole-batch error naming the fix, reported ahead of the author error. It reads no manifest conventions and, using the operator's gh credentials, can measure private repositories. It returns per-repo facts only — summing across repositories, ranking, and the attention verdict stay caller-side.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
@@ -1065,6 +1078,7 @@ type maintenanceActivityInput struct {
 func maintenanceActivityTool() *mcp.Tool {
 	return &mcp.Tool{
 		Name:        "maintenance_activity",
+		Annotations: readsGitHub(),
 		Description: "Measure the state-mutation maintenance one GitHub user paid to existing issues and pull requests in one repository over a caller-supplied time window — the grooming attention authored_activity structurally misses (a relabeling, milestoning, deferral-labeling, closing/reopening, assigning, and renaming afternoon produces near-zero authored counts). It returns the touched items, most-recently-touched first, each carrying the actor's qualifying mutations in chronological order: an event's type, instant, and per-type payload (the label name, milestone title, assignee login, or rename before/after). Each item flags isPullRequest, because the events stream mixes issues and pull requests (roughly a third are PR events) — the tool stays tag-blind and lets the caller split the mix. Each event flags viaAutomation (set when GitHub attributes it to an app), so a caller can exclude workflow/app-driven churn — with the blind spot that an automation acting as the measured login is still attributed to that login, so the flag, not the count, carries the meaning. The actor is matched by login string against the events stream, so an unknown or inactive login yields zero items, never an error (unlike authored_activity's author resolution). The truncated flag marks a window the fetch could not fully cover (a busy repo past the internal scan cap), so a recent mutation may be missing. The rateLimit budget is the REST core pool (requests per hour) — a different pool from authored_activity's GraphQL points, so the two budgets are not comparable. The window's upper bound is applied after the fetch; a window ending far in the past over-reads from now and can report truncated with no in-window items. This tool is actor- and window-driven, reads no manifest conventions, inherits the operator's gh credentials, and runs over a single owner/repo per call.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",
@@ -1154,6 +1168,7 @@ func maintenanceActivityBatchTool() *mcp.Tool {
 	minRepos, maxRepos := 1, maintenanceBatchMaxRepos
 	return &mcp.Tool{
 		Name:        "maintenance_activity_batch",
+		Annotations: readsGitHub(),
 		Description: "Measure the state-mutation maintenance one GitHub user paid to existing issues and pull requests across several repositories over a caller-supplied time window — the batched form of maintenance_activity. Given a list of owner/repo and one actor login, it fans out per repository and returns one entry per repository in request order, each either the touched items (most-recently-touched first, the actor's qualifying mutations grouped under each, with isPullRequest per item and viaAutomation per event) or one of four per-repo markers: not_found, rate_limited, fetch_failed, not_attempted. A not_found or fetch_failed repository degrades to its own marker without sinking the others; a rate_limited repository additionally trips backpressure (the batch stops launching new fetches to avoid amplifying the limit, so an arbitrary subset of the not-yet-started repositories returns not_attempted — a deliberate skip, not a failure). The batch surfaces a single aggregated rate-limit budget: the tightest remaining across the successful repositories, or a throttle's reset instant when any repository was throttled. That budget is the REST core pool (requests per hour) — a different pool from authored_activity_batch's GraphQL points, so a caller must not compare or combine the two batches' budgets. Unlike the authored batch there is no whole-batch author error: the actor is matched by login string, so an unknown or inactive login simply yields zero items per repository. A credential failure — gh not installed, holding no token GitHub accepts, or not responding — is shared by every repository, though, and fails the whole batch with one error naming the fix. The tool reads no manifest conventions, inherits the operator's gh credentials, and returns per-repo facts only — merging across repositories and the attention verdict stay caller-side.",
 		InputSchema: &jsonschema.Schema{
 			Type: "object",

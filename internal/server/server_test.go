@@ -70,6 +70,47 @@ func TestServerExposesTools(t *testing.T) {
 	}
 }
 
+// TestToolsDeclareWhetherTheyAreReadOnly pins the read/write split clients see.
+// A client that gates writes — Claude Code's plan mode, for one — treats a tool
+// without readOnlyHint as a write, so an unannotated read prompts
+// on every call. Every exposed tool must appear here, so a new one is classified
+// on purpose rather than inheriting the write default.
+func TestToolsDeclareWhetherTheyAreReadOnly(t *testing.T) {
+	cs := connect(t, New())
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+
+	wantReadOnly := map[string]bool{
+		"backlog_review":             true,
+		"project_summary":            true,
+		"milestone_tracks":           true,
+		"authored_activity":          true,
+		"authored_activity_batch":    true,
+		"maintenance_activity":       true,
+		"maintenance_activity_batch": true,
+	}
+
+	for _, tool := range res.Tools {
+		want, ok := wantReadOnly[tool.Name]
+		if !ok {
+			t.Errorf("tool %q is not classified as read-only or write", tool.Name)
+			continue
+		}
+		got := tool.Annotations != nil && tool.Annotations.ReadOnlyHint
+		if got != want {
+			t.Errorf("tool %q readOnlyHint = %v, want %v", tool.Name, got, want)
+			continue
+		}
+		// Every tool reads from GitHub, an external system, so each declares an
+		// open world explicitly rather than leaning on the spec default.
+		if want && (tool.Annotations.OpenWorldHint == nil || !*tool.Annotations.OpenWorldHint) {
+			t.Errorf("tool %q openWorldHint unset or false, want true: it reads GitHub", tool.Name)
+		}
+	}
+}
+
 // claudeCodeDisplayLimit is how much of a tool description, and of the server
 // instructions, Claude Code shows a model: text past it is cut and marked
 // "… [truncated]". The limit is undocumented. It was read from Claude Code's own
