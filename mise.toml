@@ -7,13 +7,13 @@
 lockfile = true
 
 [tools]
-go = "1.27.0"
+go = "1.27.2"
 # The golangci-lint version is pinned identically here and in the CI workflow's
 # golangci-lint-action `version:` — treat them as one atomic value so local and
 # CI lint run the same binary against the same config schema.
-golangci-lint = "2.13.1"
-just = "1.58.0"
-lefthook = "2.1.11"
+golangci-lint = "2.15.0"
+just = "1.59.0"
+lefthook = "2.2.2"
 mdbook = "0.5.4"
 # mdbook-linkcheck2 is an mdbook renderer backend: it links against mdbook's
 # renderer crates (mdbook-driver/mdbook-renderer), so the pair is compatible
