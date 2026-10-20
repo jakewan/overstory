@@ -34,9 +34,10 @@ Bump `go.mod` and `mise.toml` together on a Go upgrade. The coupling now carries
 
 What a stale lock does depends on where it runs, and the difference is the trap. **In CI** it fails loudly — `jdx/mise-action` runs `mise install --locked`, which refuses any tool lacking a recorded URL for the runner's platform. **Locally** it fails silently in the other direction: `mise install` updates an existing lockfile in place, so a bump followed by an install quietly rewrites `mise.lock` and hands you a diff you did not ask for. Review that diff rather than assuming your install could not have touched it. (`mise lock` is what *creates* the lockfile; `mise install` only maintains one that exists.)
 
-Two more facts worth knowing before editing either file:
+More facts worth knowing before editing either file:
 
 - A platform absent from the lock gets written in by whoever first installs on it, so an install from a new platform also produces a diff to review.
+- A regeneration can change entries for a tool whose version did not move. `mise lock` re-resolves the whole toolchain, not only the bumped tools, and a regeneration on a local mise newer than the workflows' pinned mise has been seen to switch an unchanged tool's platform entry to a different asset of the same release, for reasons not yet established. So review the lock diff as the last step before committing, after any later `mise lock` or `mise install` as well: for each platform already in the lock, an unchanged tool's entry should be identical, and a bumped tool's asset name should differ only in its version. Restore a stray entry by hand from the base branch's `mise.lock`, since restoring the whole file also discards the bumped entries. An entry whose URL is unchanged but whose checksum differs is not a re-resolution: investigate it rather than restoring it.
 - `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` asset and nothing else, so its `mise.toml` entry carries `os = ["linux"]` and its lock entry covers the linux platforms only. Both follow from the artifact's own limit; neither is an incomplete lock. If upstream ever ships other platforms, the `os` restriction is what has to be relaxed before `mise lock` will record them.
 
 ## The mise version is one atomic value across both workflows
