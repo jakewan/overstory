@@ -28,7 +28,7 @@ mise install        # Install Go, golangci-lint, just, lefthook, mdbook (+ linkc
 just hooks          # Install git hooks (lefthook)
 ```
 
-Tool versions come from `mise.toml`, and their checksums from the committed `mise.lock` — `mise install` verifies downloads against it. If you change a version pin, run `mise lock` and commit the updated lockfile in the same change. `mise lock` re-resolves the whole toolchain, and a newer local mise can rewrite an entry for a tool you did not bump, so before committing, check that only the bumped tools' entries changed for platforms already in the lock, and restore any other entry by hand from the base branch's `mise.lock`.
+Tool versions come from `mise.toml`, and their checksums from the committed `mise.lock` — `mise install` verifies downloads against it. If you change a version pin, run `mise lock` and commit the updated lockfile in the same change. `mise lock` re-resolves the whole toolchain, and a newer local mise can rewrite an entry for a tool you did not bump, so before committing, check that only the bumped tools' entries changed for platforms already in the lock, and restore any other entry by hand from the base branch's `mise.lock`. The exception is an entry whose URL is unchanged but whose checksum differs: the same download now has different bytes, so investigate it rather than restoring it.
 
 One platform caveat: `mdbook-linkcheck2` publishes an `x86_64-unknown-linux-gnu` binary and no others, so `mise.toml` restricts it to Linux and mise skips it elsewhere. `mise install` provisions the rest of the toolchain normally on macOS and arm64; only `just docs-build` is unavailable there, and it needs a Linux x86-64 machine or a container.
 
