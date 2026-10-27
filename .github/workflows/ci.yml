@@ -109,7 +109,7 @@ jobs:
       # runs. Because mise.lock is present, the action runs `mise install
       # --locked`, which refuses any tool lacking a recorded URL for the
       # platform.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
         with:
           version: 2026.8.3
 
